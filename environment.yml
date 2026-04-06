@@ -1,0 +1,24 @@
+name: AusLAMP_GA
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - matplotlib
+  - pandas
+  - jupyter
+  - ipython
+  - h5py
+  - xarray
+  - cartopy
+  - geopandas
+  - folium
+  - obspy
+  - pytest
+  - pip
+  - pip:
+    - ipykernel
+    - mth5>=0.6.5
+    - mt-metadata
