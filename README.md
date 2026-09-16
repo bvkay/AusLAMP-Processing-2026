@@ -51,7 +51,7 @@ periods in s.
 
 ## Layout
 
-    auslamp_proc/     the package (survey tables, raw readers and placement, cache, look, geo, observatory, register, figures, processing)
+    auslamp_proc/     the package (survey tables, raw readers and placement, cache, look, geo, observatory, register, figures, processing, products and agreement)
     auslamp_proc/bands/   the two EMTF band files with the level count and window length each belongs to
     workbooks/        the generator, the runner, the six workbooks, and examples/<survey>/ with the executed copies
     surveys/          one folder per survey: survey.yaml, sites.csv, decisions.csv, SITES_COLUMNS.md in _template/
@@ -60,11 +60,13 @@ periods in s.
 
 ## Status
 
-2026-09-16: workbooks 01, 02 and 03 run end to end. Workbook 01 takes about 20 s a phase over Queensland
+2026-09-17: workbooks 01, 02, 03 and 04 run end to end. Workbook 01 takes about 20 s a phase over Queensland
 Phases 1, 2 and 3 (56 sites) with nine checks reporting. Workbook 03 processed all 23 sites of Queensland
 Phase 1 at 1 Hz over the five reference kinds -- 115 products in 3.9 hours on three lanes, six checks passing
 -- then the five cleanest of them at 10 Hz (15 products, 22-37 GB a pass on one lane), with Phases 2 and 3 and
-Victoria as five-site examples under `workbooks/examples/`. The package also reads the GA Victoria release
+Victoria as five-site examples under `workbooks/examples/`. Workbook 04 reads those 130 products in 50 s,
+writes a page per site, the kind-against-kind and comparison tables and a four-page gallery, and passes its
+four checks on Phase 1 and on all three examples. The package also reads the GA Victoria release
 (EDL miniSEED and LEMI-424), on which the raw readers were checked bit for bit against the released mt-io.
 The repository's history before this date is an April 2026 exploration of the Victoria MTH5 files, retired in
 the first commit of the package.

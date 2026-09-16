@@ -66,7 +66,26 @@ dipole_default: {}
 # Ben's September 2026 processing of this same raw data, for the comparison in workbook 04 only (read-only).
 earlier_processing:
   folder: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/processed_2026/phase3_v1
-  note: "Ben's September 2026 Aurora processing of Phase 3, single station and remote site, 1 Hz and 10 Hz"
+  frame: geomagnetic
+  note: "Ben's September 2026 Aurora processing of Phase 3, single station and remote site, 1 Hz and 10 Hz;
+    the same raw data through a different code path, rotated so each site's mean Hy is zero (processed_2026
+    README, Site setup and the coordinate frame)"
+  layout: "aurora/<kind>_<params>/<site>.edi"
+  params: kaiser20_75
+  kind_map: {single: single, remote: partner, obs: obs_cta, stack: stack, stack_obs: hybrid}
+
+# Further comparison sources, each of the same shape as earlier_processing and each declaring its frame and
+# its note.
+comparisons:
+  campaign_merged:
+    folder: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/processed_2026/final_2026-09-09/merged_edi
+    frame: geomagnetic
+    note: "the September 2026 campaign's deliverable, one merged EDI per station (qld_merge_edis.py,
+      2026-09-09): a 1 Hz long file, a middle piece below 100 s where a clean window beat the whole record,
+      and a 10 Hz short end below 20 s aligned onto the long file by a local level and phase factor, on a
+      common grid of ten periods a decade; it is one curve per site and not one per reference kind, and rows
+      that are not products are blanked with the EDI 1e32 fill"
+    layout: "<site>.edi"
 
 # The deployment sheet position, compared in workbook 01 and never used as a value. The sheets were
 # transcribed into phase3_master.csv on 2026-09-05, and Q54's degree-digit slip was corrected there, so the
