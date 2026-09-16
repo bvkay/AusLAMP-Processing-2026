@@ -3,10 +3,16 @@
     python workbooks/run_workbooks.py 01                              by prefix, in place
     python workbooks/run_workbooks.py                                 all, in order
     python workbooks/run_workbooks.py 01 --survey queensland_phase2   a copy, on another survey
+    python workbooks/run_workbooks.py 02 --survey victoria --set SITES='"largest"' --set MAX_SITES=13
 
 With --survey the workbook is copied to workbooks/examples/<survey>/<name>.ipynb with its outputs cleared and
 its SURVEY assignment rewritten, and that copy is executed. The workbook in workbooks/ is not touched, so the
 survey its parameter cell names stays the one the repository ships executed.
+
+--set NAME=VALUE rewrites one more module-level assignment in the copy, the right-hand side taken as the
+Python source it is given. It applies only with --survey, because rewriting a parameter of the workbook the
+repository ships would leave that workbook executed under parameters its own cell does not carry. A name the
+workbook does not assign raises.
 
 This check fails if nbconvert exits non-zero, if any executed cell carries an error output, or if a code cell
 has no execution count.
@@ -46,26 +52,34 @@ def execute(nb_path, timeout=7200):
     return r.returncode, (r.stderr or "")[-1500:]
 
 
-def for_survey(nb_path, survey):
+def for_survey(nb_path, survey, overrides=()):
     """A copy of the workbook under examples/<survey>/, outputs cleared and SURVEY rewritten.
 
     The assignment is rewritten rather than the whole parameter cell, so every other parameter and the inline
     comment that names the alternatives survive. A workbook whose parameter cell holds no SURVEY assignment
-    raises, because executing it would silently run the survey the copy was made from.
+    raises, because executing it would silently run the survey the copy was made from. `overrides` is a list
+    of (name, source) pairs rewritten the same way.
     """
     n = nbf.read(nb_path, as_version=4)
-    n_hits = 0
+    hits = {"SURVEY": 0}
+    pats = [("SURVEY", SURVEY_LINE, 'SURVEY = "%s"\\1' % survey)]
+    for name, value in overrides:
+        hits[name] = 0
+        pats.append((name, re.compile(r'^%s\s*=\s*[^#\n]*(.*)$' % re.escape(name), re.M),
+                     "%s = %s\\1" % (name, value)))
     for c in n.cells:
         if c.cell_type != "code":
             continue
         c["outputs"] = []
         c["execution_count"] = None
-        new, k = SURVEY_LINE.subn('SURVEY = "%s"\\1' % survey, c["source"])
-        if k:
-            c["source"] = new
-            n_hits += k
-    if not n_hits:
-        raise ValueError("%s holds no SURVEY assignment to rewrite" % nb_path.name)
+        for name, pat, repl in pats:
+            new, k = pat.subn(repl, c["source"])
+            if k:
+                c["source"] = new
+                hits[name] += k
+    for name, k in hits.items():
+        if not k:
+            raise ValueError("%s holds no %s assignment to rewrite" % (nb_path.name, name))
     out = HERE / "examples" / survey / nb_path.name
     out.parent.mkdir(parents=True, exist_ok=True)
     nbf.write(n, out)
@@ -90,7 +104,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("prefix", nargs="*", help="workbook name prefixes, e.g. 01")
     ap.add_argument("--survey", default="", help="run a copy under examples/<survey>/ on that survey")
+    ap.add_argument("--set", dest="sets", action="append", default=[], metavar="NAME=VALUE",
+                    help="rewrite one more parameter in the copy; needs --survey")
     a = ap.parse_args(argv)
+    overrides = [tuple(s.split("=", 1)) for s in a.sets]
+    if overrides and not a.survey:
+        print("--set needs --survey: a parameter of the shipped workbook is not rewritten in place")
+        return 1
 
     names = sorted(p.name for p in HERE.glob("*.ipynb"))
     if a.prefix:
@@ -100,7 +120,7 @@ def main(argv=None):
         return 1
     bad = 0
     for name in names:
-        path = for_survey(HERE / name, a.survey) if a.survey else HERE / name
+        path = for_survey(HERE / name, a.survey, overrides) if a.survey else HERE / name
         rc, err = execute(path)
         errs = errors(path)
         status = "PASS" if rc == 0 and not errs else "FAIL"

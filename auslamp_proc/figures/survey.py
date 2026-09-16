@@ -4,6 +4,11 @@ The map draws the coastline from auslamp_proc/data/coastline_au.npz, the Natural
 lon 108-160 deg and lat -48 to -8 deg as two float32 arrays with NaN between parts (17.2 KB, 2,962 vertices),
 built once by tools/build_coastline.py. The environment that runs the workbooks needs no GIS package.
 
+The frame is the sites' own bounding box padded by 10 per cent of its span or 0.5 deg, whichever is larger, so
+the survey fills the picture. An observatory inside that frame is drawn; one outside it is named in a one-line
+box in the lower left with its bearing in degrees east of north and its distance in km from the survey
+centroid, which keeps a 1,000 km observatory from setting the scale of a 3 deg survey.
+
 Aspect is set to 1 / cos(mean latitude) so a degree of longitude is drawn at its real length.
 
 Site labels are the digits of the site name and what follows them: VIC073 is drawn as 073. Full names overlap
@@ -24,6 +29,36 @@ COASTLINE = DATA / "coastline_au.npz"
 EDL_COLOUR = "C0"
 LEMI_COLOUR = "C1"
 OBS_COLOUR = "k"
+
+FRAME_PAD_FRACTION = 0.10
+FRAME_PAD_MIN_DEG = 0.5
+
+COMPASS = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+           "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")
+
+
+def bearing_deg(a, b) -> float:
+    """The initial great-circle bearing from (lat, lon) a to b, in degrees east of north, 0 to 360."""
+    la1, lo1, la2, lo2 = np.radians([a[0], a[1], b[0], b[1]])
+    y = np.sin(lo2 - lo1) * np.cos(la2)
+    x = np.cos(la1) * np.sin(la2) - np.sin(la1) * np.cos(la2) * np.cos(lo2 - lo1)
+    return float((np.degrees(np.arctan2(y, x)) + 360.0) % 360.0)
+
+
+def compass_point(bearing: float) -> str:
+    """A bearing in degrees to one of the 16 compass points."""
+    return COMPASS[int(round((bearing % 360.0) / 22.5)) % 16]
+
+
+def site_frame(lats, lons, pad_fraction=FRAME_PAD_FRACTION, pad_min_deg=FRAME_PAD_MIN_DEG):
+    """(lon_min, lon_max, lat_min, lat_max) of the sites padded by pad_fraction of the span or pad_min_deg."""
+    la = np.asarray([v for v in lats if np.isfinite(v)], float)
+    lo = np.asarray([v for v in lons if np.isfinite(v)], float)
+    if not la.size or not lo.size:
+        return None
+    pad_x = max(pad_fraction * (lo.max() - lo.min()), pad_min_deg)
+    pad_y = max(pad_fraction * (la.max() - la.min()), pad_min_deg)
+    return lo.min() - pad_x, lo.max() + pad_x, la.min() - pad_y, la.max() + pad_y
 
 
 def load_coastline(path=None):
@@ -46,7 +81,9 @@ def map(sites, observatories, out, title="", coastline=None, figsize=(9.0, 8.0),
     """Sites as points with short labels, one colour per instrument, observatories as black triangles.
 
     `sites` is a frame with site, lat, lon and the `colour_by` column; `observatories` is [(code, name, lat,
-    lon)]. Returns the figure.
+    lon)]. The frame is the sites' bounding box padded by 10 per cent or 0.5 deg, whichever is larger; an
+    observatory outside it is not drawn but is named in a one-line box with its bearing and distance from the
+    survey centroid. Returns the figure.
     """
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=figsize)
@@ -65,17 +102,29 @@ def map(sites, observatories, out, title="", coastline=None, figsize=(9.0, 8.0),
             ax.annotate(short_label(r[label_col]), (r.lon, r.lat), xytext=(3, 3),
                         textcoords="offset points", fontsize=6, color="0.25", zorder=4)
 
+    # the frame is the sites', not the sites plus the observatories: a 1,000 km observatory otherwise sets the
+    # scale and the survey shrinks into a corner
+    from ..geo import distance_km
+    x0, x1, y0, y1 = site_frame(s.lat.values, s.lon.values)
+    centroid = (float(np.mean(s.lat.values)), float(np.mean(s.lon.values)))
+    outside = []
     for code, name, olat, olon in observatories:
-        ax.plot(olon, olat, "^", ms=9, color=OBS_COLOUR, zorder=5)
-        ax.annotate(code, (olon, olat), xytext=(5, -9), textcoords="offset points",
-                    fontsize=8, color=OBS_COLOUR, zorder=5)
+        if x0 <= olon <= x1 and y0 <= olat <= y1:
+            ax.plot(olon, olat, "^", ms=9, color=OBS_COLOUR, zorder=5)
+            ax.annotate(code, (olon, olat), xytext=(5, -9), textcoords="offset points",
+                        fontsize=8, color=OBS_COLOUR, zorder=5)
+        else:
+            bd = bearing_deg(centroid, (olat, olon))
+            outside.append("%s %03.0f deg %s %.0f km"
+                           % (code, bd, compass_point(bd), distance_km(centroid, (olat, olon))))
+    if outside:
+        ax.text(0.01, 0.01, "outside the frame, from the survey centroid: " + "; ".join(outside),
+                transform=ax.transAxes, ha="left", va="bottom", fontsize=7, color="0.2",
+                bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="0.7", alpha=0.9), zorder=6)
 
-    la = np.r_[s.lat.values, [o[2] for o in observatories]]
-    lo = np.r_[s.lon.values, [o[3] for o in observatories]]
-    pad = 0.6
-    ax.set_xlim(lo.min() - pad, lo.max() + pad)
-    ax.set_ylim(la.min() - pad, la.max() + pad)
-    ax.set_aspect(1.0 / np.cos(np.radians(float(np.mean(la)))))
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
+    ax.set_aspect(1.0 / np.cos(np.radians(centroid[0])))
     ax.set_xlabel("longitude (deg)")
     ax.set_ylabel("latitude (deg)")
     ax.set_title(title)
@@ -132,7 +181,8 @@ def register(spans, groups, active, out, title="", figsize=(11.0, 11.0), dpi=110
     ax2.fill_between(active.index, active.values, step="mid", color="0.35", alpha=0.8)
     ax2.set_ylabel("sites active")
     ax2.grid(alpha=0.25, lw=0.5)
-    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    # day of month in the tick: a survey inside one month labelled %Y-%m repeats the same month on every tick
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
     for lbl in ax2.get_xticklabels():
         lbl.set_rotation(30)
         lbl.set_ha("right")

@@ -272,6 +272,38 @@ def read_reference(spec: dict, path_key: str = "table", columns_key: str = "colu
     return pd.DataFrame({k: raw[v].values for k, v in cm.items() if v in raw.columns})
 
 
+def select_sites(survey: Survey, spec, max_sites: int = 0, groups_csv=None) -> tuple[list[str], str]:
+    """The sites a workbook was asked for, and one line saying where the set came from.
+
+    `spec` is "all", "largest" (the largest group of the register's deployment_groups.csv), a group name such
+    as "G01", or a list of site names. `max_sites` above zero keeps the first that many of the chosen set in
+    the register's own order; the line says how many were dropped and names the ones kept.
+    """
+    known = list(survey.sites.site)
+    if isinstance(spec, (list, tuple, set)):
+        chosen = [s for s in spec if s in known]
+        source = "the list the parameter names"
+        missing = [s for s in spec if s not in known]
+        if missing:
+            source += " (not in sites.csv: %s)" % ", ".join(missing)
+    elif str(spec).strip().lower() == "all":
+        chosen, source = list(known), "every site in sites.csv"
+    else:
+        path = Path(groups_csv) if groups_csv else Path(survey.cfg["work_root"]) / "survey" / "deployment_groups.csv"
+        if not path.exists():
+            raise FileNotFoundError("%s has not been written; run workbook 01 first" % path)
+        g = pd.read_csv(path)
+        row = g.loc[g.n.astype(int).idxmax()] if str(spec).strip().lower() == "largest" \
+            else g[g.group == str(spec)].iloc[0]
+        chosen = [s for s in str(row.members).split() if s in known]
+        source = "register group %s (%d members, common window %s d)" % (row.group, int(row.n),
+                                                                        row.common_days)
+    if max_sites and len(chosen) > int(max_sites):
+        source += "; capped at %d of %d" % (int(max_sites), len(chosen))
+        chosen = chosen[:int(max_sites)]
+    return chosen, source
+
+
 def blank_decisions(sites: list[str]) -> pd.DataFrame:
     """A decisions table with 'decide' in every cell except the site name."""
     rows = [{c: (s if c == "site" else DECIDE) for c in DECISIONS_COLUMNS} for s in sites]

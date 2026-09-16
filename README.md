@@ -31,7 +31,7 @@ silently escapes the environment where `python -m jupyterlab` and `python -m nbc
 | workbook | what it does |
 |---|---|
 | `01_survey` | reads the raw folder into a site table (instrument, serial, dipoles, positions from the logger's own GPS, dates with the EDL week rollover, declination), draws the map and the deployment register, and checks or fetches the observatory record for the span |
-| `02_records` | builds each site's cache and draws its record, band coherence, coherence maps, spectra and spectrograms -- look before processing |
+| `02_records` | builds each site's cache (every file placed on one absolute axis, gaps NaN, no sign or frame) and draws its record, band coherence, coherence maps, spectra and spectrograms, with the magnetometer DC test and the per-day state of each electric line -- look before processing |
 | `03_process` | Aurora over the chosen sites and reference kinds (single station, remote site, fleet stack, observatory, stack + observatory), at 1 Hz and 10 Hz, one folder per run with its provenance |
 | `04_products` | every product of a site, group or survey on one page; run against run; the release turned into our frame as a comparison |
 | `05_site` | one site in depth: windows and masks with their random control, the north-minus-east diagonal, the notch, a magnetic channel replaced from a neighbour, the stack or the observatory |
@@ -51,7 +51,7 @@ periods in s.
 
 ## Layout
 
-    auslamp_proc/     the package (survey tables, raw readers and placement, cache, geo, observatory, register, figures, processing)
+    auslamp_proc/     the package (survey tables, raw readers and placement, cache, look, geo, observatory, register, figures, processing)
     workbooks/        the generator, the runner, the six workbooks, and examples/<survey>/ with the executed copies
     surveys/          one folder per survey: survey.yaml, sites.csv, decisions.csv, SITES_COLUMNS.md in _template/
     tools/            one-off builders: the coastline the map draws, the sheet cells merged into a survey's tables

@@ -8,4 +8,4 @@ read by survey.load_survey.
 """
 __version__ = "0.1.0"
 
-from . import geo, observatory, register, survey  # noqa: F401
+from . import geo, look, observatory, register, survey  # noqa: F401
