@@ -219,13 +219,19 @@ def read_tf(path) -> TFData:
     Every component is masked on its own: a period where Zxy is a fill and Zyx is a measurement keeps Zyx.
     Duplicated periods are dropped, the first of each kept. meta carries what the header says and what the
     sort and the mask had to do, so a check can score it.
+
+    A file whose impedance is the empty-data fill at every period and component -- an H-only delivery, where
+    the tipper is the product and the two rows carry no measurement -- reads back with no impedance at all,
+    because the reader masks the fill and is left with nothing. It comes back here as an empty tensor on the
+    file's own periods rather than as an error, so a tipper-only product can be read like any other.
     """
     from mt_metadata.transfer_functions.core import TF
 
     tf = TF(fn=str(path))
     tf.read()
     p = np.asarray(tf.period, float)
-    z = np.asarray(tf.impedance.values, complex)
+    z = (np.asarray(tf.impedance.values, complex) if tf.impedance is not None
+         else np.full((len(p), 2, 2), np.nan + 1j * np.nan, complex))
     try:
         ze = np.abs(np.asarray(tf.impedance_error.values, float))
     except Exception:
