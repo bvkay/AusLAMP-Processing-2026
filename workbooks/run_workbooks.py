@@ -4,6 +4,7 @@
     python workbooks/run_workbooks.py                                 all, in order
     python workbooks/run_workbooks.py 01 --survey queensland_phase2   a copy, on another survey
     python workbooks/run_workbooks.py 02 --survey victoria --set SITES='"largest"' --set MAX_SITES=13
+    python workbooks/run_workbooks.py 03 --timeout 21600              a workbook that processes
 
 With --survey the workbook is copied to workbooks/examples/<survey>/<name>.ipynb with its outputs cleared and
 its SURVEY assignment rewritten, and that copy is executed. The workbook in workbooks/ is not touched, so the
@@ -13,6 +14,10 @@ survey its parameter cell names stays the one the repository ships executed.
 Python source it is given. It applies only with --survey, because rewriting a parameter of the workbook the
 repository ships would leave that workbook executed under parameters its own cell does not carry. A name the
 workbook does not assign raises.
+
+--timeout is the per-cell limit in seconds, 7200 by default. A workbook that processes needs more: the run
+cell of workbook 03 is one cell holding every site's pass, and nbconvert stops a cell at the limit and
+reports a timeout, which is indistinguishable from a fault.
 
 This check fails if nbconvert exits non-zero, if any executed cell carries an error output, or if a code cell
 has no execution count.
@@ -106,6 +111,7 @@ def main(argv=None):
     ap.add_argument("--survey", default="", help="run a copy under examples/<survey>/ on that survey")
     ap.add_argument("--set", dest="sets", action="append", default=[], metavar="NAME=VALUE",
                     help="rewrite one more parameter in the copy; needs --survey")
+    ap.add_argument("--timeout", type=int, default=7200, help="per-cell limit in seconds")
     a = ap.parse_args(argv)
     overrides = [tuple(s.split("=", 1)) for s in a.sets]
     if overrides and not a.survey:
@@ -121,7 +127,7 @@ def main(argv=None):
     bad = 0
     for name in names:
         path = for_survey(HERE / name, a.survey, overrides) if a.survey else HERE / name
-        rc, err = execute(path)
+        rc, err = execute(path, timeout=a.timeout)
         errs = errors(path)
         status = "PASS" if rc == 0 and not errs else "FAIL"
         print("%s  %s  (nbconvert exit %d, %d error cell(s))"

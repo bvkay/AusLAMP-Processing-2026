@@ -31,12 +31,24 @@ instruments:
     e_gain: 10
     source: "mt_io.uoa.pr624 constants (BARTINGTON_UV_PER_NT, BZ_DIVIDER_RATIO, E_TERMINAL_BOX_GAIN,
       ADC_LOW_GAIN_FULL_SCALE_V)"
+    logger_manufacturer: Earth Data Ltd
+    logger_model: PR6-24
+    sensor_manufacturer: Bartington
+    sensor_model: Mag-03
 
 # Products are processed and served in geomagnetic north: each site's horizontal magnetics are rotated so the
 # mean Hy is zero, which removes the hand-compass misalignment. The IGRF declination is recorded in every file
 # and NOT applied.
 frame: geomagnetic
 declination_source: "IGRF via ppigrf, at the site, at the record midpoint"
+
+# The identity every product's header carries. survey_id is the EDI SURVEY id, project its name,
+# geographic_name the region named beside each station, author the person the products are processed by.
+survey_id: AusLAMP_QLD_P3
+project: AusLAMP Queensland Phase 3
+geographic_name: northern Queensland, Australia
+author: Ben Kay
+organization: AuScope and the University of Adelaide
 
 observatory:
   archive: E:/MT_Timeseries_DATA/Geomagnetic_Observatory_Data/INTERMAGNET_1sec
@@ -77,6 +89,24 @@ floors:
   member_chunk_days: 0.5
   align_fallback_s: 43200
   min_window_days: 0.5
+# The clean-pool thresholds of stage 3, each with its value. A site is fit to reference another when its
+# H record carries few transients AND its baseline is normal: the event fraction catches a site that is fine
+# except for a power-cycle, and the baseline catches one that never spikes because it is loud all the time.
+# The scan walks the rotated record in chunk_s chunks and takes the median band power over band_hz.
+pool:
+  chunk_s: 600                 # the tail scan's chunk, in s
+  nperseg: 512                 # the Welch segment inside a chunk, in samples at 1 Hz
+  band_hz: [0.005, 0.05]       # 20-200 s: on a cache decimated from 10 Hz the 2-20 s band
+                               # sits on the anti-alias roll-off and reads each unit's own
+                               # noise floor, which spans five decades across a fleet
+  own_ratio: 100               # a chunk is a candidate event above this multiple of the site's own median
+  fleet_excess: 10             # ... and only where it also exceeds this multiple of the fleet's median
+  min_fleet: 3                 # below this many other sites recording, the site's own threshold decides alone
+  event_frac_max: 0.02         # clean: at most this fraction of chunks flagged
+  baseline_max: 10             # clean: at most this multiple of the survey median baseline
+  e_burst_ratio: 100           # an E burst: this multiple of the line's own median band power
+  min_segment_s: 3600          # a kept stretch shorter than this yields no run and is dropped and counted
+
 bands:
   liveness: ["10-30", "30-100", "100-1000", "300-3000"]
   splice_step_below: "8-16"
