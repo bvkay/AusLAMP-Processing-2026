@@ -1,0 +1,1 @@
+site,raw_path,instrument,serial,serial_source,layout,sample_rate_hz,files,start_utc,end_utc,days,date_correction,lat,lon,elev_m,position_source,position_scatter_m,dipole_n_m,dipole_e_m,dipole_source,azimuth_n_deg,azimuth_e_deg,azimuth_source,declination_deg,observatory,notes

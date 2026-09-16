@@ -1,24 +1,40 @@
-name: AusLAMP_GA
+name: auslamp-processing-2026
 channels:
   - conda-forge
-  - defaults
 dependencies:
-  - python=3.11
+  - python=3.12
+  # OpenBLAS, not MKL. With the MKL build of libblas (mkl 2026.1.0 against llvm-openmp 23.1.1, checked
+  # 2026-09-16) numpy's BLAS and LAPACK calls kill the interpreter outright: np.dot and np.linalg.inv exit
+  # with the Windows delay-load failure 0xc06d007f and no traceback, which takes down any figure that calls
+  # tight_layout. MKL_THREADING_LAYER=SEQUENTIAL or TBB works around it per process; this pin fixes it for the
+  # environment.
+  - libblas=*=*openblas
   - numpy
   - scipy
-  - matplotlib
   - pandas
-  - jupyter
-  - ipython
-  - h5py
   - xarray
-  - cartopy
-  - geopandas
-  - folium
+  - matplotlib
   - obspy
+  - h5py
+  - pyarrow
+  - pyyaml
+  - requests
+  - openpyxl
+  - jupyterlab
+  - ipykernel
+  - nbformat
+  - nbconvert
+  - nbclient
   - pytest
+  - git
   - pip
   - pip:
-    - ipykernel
-    - mth5>=0.6.5
-    - mt-metadata
+      - mt-io==0.0.5
+      - mth5==0.6.9
+      # PyPI still carries 1.0.10; the 1.0.11 tag is on GitHub (checked 2026-09-16). Its __version__ still reads 1.0.10.
+      - mt-metadata @ git+https://github.com/IAGA-DVI-DataStandards/mt-metadata@v1.0.11
+      - aurora==0.6.2
+      - ppigrf
+      - -e .
+# After creating the environment, register the kernel the workbooks run on:
+#   python -m ipykernel install --user --name auslamp-processing-2026 --display-name "Python (auslamp-processing-2026)"

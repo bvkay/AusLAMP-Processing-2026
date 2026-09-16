@@ -1,66 +1,9 @@
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
+*.pyc
 *.egg-info/
-dist/
 build/
-
-# Jupyter
 .ipynb_checkpoints/
-*.ipynb_checkpoints
-
-# Data files (large)
-data/raw/
-*.hdf5
-*.h5
-*.nc
-*.mat
-
-# Outputs
-outputs/*.png
-outputs/*.pdf
-outputs/*.jpg
-outputs/*.svg
-
-# Keep folder structure
-!outputs/figures/.gitkeep
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-
-# OS
-.DS_Store
-Thumbs.db
-*.swp
-*.swo
-*~
-
-# IDEs
-.vscode/
-.idea/
-*.code-workspace
-
-# Temporary files
-*.tmp
-*.bak
-*.log
-
-# Claude Code (personal context)
-.claude/
-CLAUDE.md
-
-# Reference folder (copy of other project)
-2026_Geomagnetic_AusLAMP/
-
-# Archived notebooks (keep tracked for history)
-# notebooks_archive/ - intentionally NOT ignored
-
-# Test coverage
-.pytest_cache/
-.coverage
-htmlcov/
+notes/*.tmp
+docs/
+notes/
+workbooks/.ipynb_checkpoints/

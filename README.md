@@ -1,219 +1,63 @@
-# AusLAMP Victoria Magnetotelluric Data Analysis
+# AusLAMP-Processing-2026
 
-Magnetotelluric (MT) data analysis for 100 sites across Victoria, Australia:
-- **81 EDL sites** (Earth Data Logger with Bartington Mag-03, 10 Hz, 2014)
-- **19 LEMI-424 sites** (LEMI-424 fluxgate, 1 Hz, 2016-2017)
+Long-period magnetotelluric processing for the AusLAMP surveys recorded on Earth Data Logger PR6-24 (with a
+Bartington Mag-03 fluxgate, 10 Hz) or LEMI-424 (1 Hz) instruments, as six Jupyter workbooks on one Python package.
+The workbooks take a survey from a folder of raw time series to one transfer function per site; every function lives
+in `auslamp_proc`, so a batch run and a single-site run share one code path and any cell can be re-run. Built on the
+IAGA-DVI-DataStandards packages mt-metadata, mt-io and mth5, with Aurora as the estimator.
 
-**Data source**: Geoscience Australia MTH5 files
-**GitHub**: https://github.com/bvkay/AusLAMP-Vic
+Worked examples: AusLAMP Victoria (GA eCat 150806, 81 EDL and 19 LEMI-424 sites, 2013-2018) and AusLAMP Queensland
+Phases 1, 2 and 3 (EDL, 2025-26). To run them on another machine, edit `raw_root` and `work_root` in the survey's
+`surveys/<survey>/survey.yaml`; to run your own survey, copy `surveys/_template/`.
 
----
+Author: Ben Kay (bvkay). Started 2026-09-13; re-cut for the workbook layout 2026-09-16.
 
-## Quick Start
+## Install
 
-### 1. Setup Environment
+    conda env create -f environment.yml
+    conda activate auslamp-processing-2026
+    python -m ipykernel install --user --name auslamp-processing-2026 --display-name "Python (auslamp-processing-2026)"
 
-```bash
-# Create conda environment
-conda env create -f environment.yml
-conda activate AusLAMP_GA
+The readers are the released packages (mt-io 0.0.5, mth5 0.6.9, mt-metadata v1.0.11); nothing depends on a fork.
 
-# Register Jupyter kernel
-python -m ipykernel install --user --name=AusLAMP_GA --display-name="Python (AusLAMP_GA)"
-```
+Launch the workbooks as `python -m jupyterlab`, and run the runner as `python workbooks/run_workbooks.py 01`,
+with the environment's own interpreter. The `jupyter` dispatcher resolves its subcommands from PATH, which on a
+machine with a base Anaconda install is a different nbconvert from the environment's, so `python -m jupyter ...`
+silently escapes the environment where `python -m jupyterlab` and `python -m nbconvert` do not.
 
-### 2. Run Demo Notebook
+## The workbooks
 
-```bash
-cd notebooks
-jupyter notebook 01_quick_start_demo.ipynb
-```
+| workbook | what it does |
+|---|---|
+| `01_survey` | reads the raw folder into a site table (instrument, serial, dipoles, positions from the logger's own GPS, dates with the EDL week rollover, declination), draws the map and the deployment register, and checks or fetches the observatory record for the span |
+| `02_records` | builds each site's cache and draws its record, band coherence, coherence maps, spectra and spectrograms -- look before processing |
+| `03_process` | Aurora over the chosen sites and reference kinds (single station, remote site, fleet stack, observatory, stack + observatory), at 1 Hz and 10 Hz, one folder per run with its provenance |
+| `04_products` | every product of a site, group or survey on one page; run against run; the release turned into our frame as a comparison |
+| `05_site` | one site in depth: windows and masks with their random control, the north-minus-east diagonal, the notch, a magnetic channel replaced from a neighbour, the stack or the observatory |
+| `06_final` | the readings rule over every product, the product of record per component, the splice, one EDI per site |
 
-Select **Kernel → Change kernel → Python (AusLAMP_GA)** in Jupyter.
+Each workbook is generated from `workbooks/make_workbooks.py`, which holds it as one Python list of markdown and
+code cells, and is executed in place by `workbooks/run_workbooks.py`, which fails on a non-zero nbconvert exit, on
+any cell carrying an error output and on any code cell that was not run: edit the generator and re-run it, never
+the notebook itself.
 
----
+## Frame and units
 
-## Project Structure
+Products are processed and served in geomagnetic north: each site's horizontal magnetics are rotated so the mean Hy
+is zero, which removes the hand-compass misalignment. The IGRF declination is recorded in every file and not applied.
+The release EDIs (geographic north) are turned by the declination when compared. Magnetics in nT, electrics in mV/km,
+periods in s.
 
-```
-AusLAMP-Vic/
-├── src/
-│   ├── config.py                    # Path configuration
-│   ├── readers/
-│   │   ├── __init__.py
-│   │   └── mth5_reader.py          # Unified MTH5 reader (EDL + LEMI-424)
-│   └── (future: qaqc/, processing/, plotting/)
-│
-├── notebooks/
-│   ├── 01_quick_start_demo.ipynb   # Demonstrates unified reader
-│   └── (future: metadata, QA/QC, MT processing)
-│
-├── notebooks_archive/               # Original exploratory notebooks (pre-refactor)
-│   ├── README.md                    # Documentation of archived work
-│   └── old_*.ipynb                  # 5 archived notebooks
-│
-├── scripts/                         # Standalone Python scripts
-│   ├── explore_mth5_structure.py
-│   └── test_mth5_direct.py
-│
-├── data/                            # Local processed data (git-ignored)
-│   ├── raw/
-│   │   └── eCat_150056_AGRF25/     # AGRF25 geomagnetic model
-│   └── processed/
-│       └── metadata_all_sites.csv  # Combined metadata (future)
-│
-├── outputs/                         # Figures and reports (git-ignored)
-│   ├── figures/
-│   └── reports/
-│
-├── tests/                           # Unit tests (future)
-├── environment.yml                  # Conda environment
-├── .gitignore
-└── README.md                        # This file
-```
+## Layout
 
----
+    auslamp_proc/     the package (survey tables, raw readers and placement, cache, geo, observatory, register, figures, processing)
+    workbooks/        the generator, the runner and the six workbooks
+    surveys/          one folder per survey: survey.yaml, sites.csv, decisions.csv, SITES_COLUMNS.md in _template/
+    tools/            one-off builders: the coastline the map draws, the decisions table a previous survey seeds
+    tests/            pytest over the raw readers and the register, and the regression the products must reproduce
 
-## Data Location
+## Status
 
-**External data** (E: drive, read-only):
-- `E:\MT_Timeseries_DATA\MT_AusLAMP_GA\EDL_MTH5\` — 81 EDL MTH5 files
-- `E:\MT_Timeseries_DATA\MT_AusLAMP_GA\LEMI_MTH5\` — 19 LEMI-424 MTH5 files
-
-**Local reference data**:
-- `data/raw/eCat_150056_AGRF25/` — Australian Geomagnetic Reference Field model
-
-Override data location with environment variable:
-```bash
-export AUSLAMP_DATA_ROOT="/path/to/data"
-```
-
----
-
-## Key Features
-
-### Unified MTH5 Reader
-- **Single interface** for both EDL and LEMI-424 instruments
-- **Automatic instrument detection** and calibration
-- **Correct Bartington Mag-03 calibration** for EDL (GA's is wrong)
-- **Read directly from GA's MTH5 files** (no ASCII conversion needed)
-- **Handles multiple runs** (LEMI-424 long deployments)
-
-### Example Usage
-
-```python
-from src.readers import read_station, get_station_metadata
-
-# Read EDL station
-df_edl = read_station('E:/MT_Timeseries_DATA/.../EDL_MTH5/VIC001.h5')
-# Returns: DataFrame with BX, BY, BZ in nT (calibrated)
-
-# Read LEMI-424 station
-df_lemi = read_station('E:/MT_Timeseries_DATA/.../LEMI_MTH5/VIC065R.h5')
-# Returns: DataFrame with BX, BY, BZ in nT (already calibrated)
-
-# Get metadata without loading full dataset
-metadata = get_station_metadata('VIC001.h5')
-```
-
----
-
-## MTH5 Data Format
-
-### EDL (Bartington Mag-03)
-- **Raw data**: Uncalibrated µV in MTH5 (GA labeled it wrong as "celsius degrees")
-- **Calibration** (applied by reader):
-  - BX, BY: 0.007 nT/µV
-  - BZ: 0.0175 nT/µV (includes 2.5× voltage divider)
-- **Sample rate**: 10 Hz
-- **Channels**: BX, BY, BZ (magnetic), EX, EY (electric)
-
-### LEMI-424
-- **Raw data**: Already calibrated in nT and µV/m
-- **Sample rate**: 1 Hz
-- **Channels**: BX, BY, BZ (magnetic), EX, EY (electric), temperature_e, temperature_h
-- **Multiple runs**: Long deployments with battery swaps
-
----
-
-## Dataset Summary
-
-| Instrument | Sites | Sample Rate | Duration (median) | Year |
-|------------|-------|-------------|-------------------|------|
-| EDL        | 81    | 10 Hz       | ~25 days          | 2014 |
-| LEMI-424   | 19    | 1 Hz        | ~55 days          | 2016-2017 |
-| **Total**  | **100** | —         | —                 | —    |
-
----
-
-## Refactoring History
-
-**April 2026**: Major refactoring to use GA's MTH5 files as primary data source.
-
-**Before** (archived in `notebooks_archive/`):
-- Read MiniSEED files with ObsPy
-- Exported to ASCII (.dat files)
-- Inline LEMI-424 reader in notebooks
-- Manual metadata extraction
-
-**After** (current):
-- Read MTH5 files directly with h5py
-- Unified reader for both instruments
-- Modular architecture with proper config
-- Correct calibration applied
-
-See [`notebooks_archive/README.md`](notebooks_archive/README.md) for details.
-
----
-
-## Dependencies
-
-**Core**: Python 3.11, numpy, scipy, pandas, matplotlib
-**Data I/O**: h5py, xarray, obspy
-**Geospatial**: cartopy, geopandas, folium
-**Testing**: pytest
-**MT libraries**: mth5, mt-metadata (optional, not currently used)
-
-See [`environment.yml`](environment.yml) for complete specification.
-
----
-
-## Next Steps
-
-1. **Build metadata CSV** — Extract metadata from all 100 MTH5 files
-2. **QA/QC analysis** — Statistics, outlier detection, data quality flags
-3. **Site visualization** — Location maps, recording timelines, AGRF comparison
-4. **MT processing** — Remote reference selection, impedance tensor estimation
-5. **Unit tests** — Test suite for readers and processing functions
-
----
-
-## Documentation
-
-See project-specific documentation (git-ignored):
-- **CLAUDE.md** — Detailed project context for AI assistant
-- **notebooks_archive/README.md** — History of exploratory analysis phase
-
----
-
-## Citation
-
-Data provided by Geoscience Australia:
-- **EDL Survey**: AusLAMP Victoria, 2014 (eCat Record 2018.021)
-- **LEMI-424 Survey**: AusLAMP Victoria, 2016-2017
-
-**AGRF25 Model**: Geoscience Australia, Australian Geomagnetic Reference Field 2025
-DOI: 10.11636/Record.2020.XXX (check GA website for correct DOI)
-
----
-
-## License
-
-[Specify license - typically CC-BY-4.0 for GA data]
-
----
-
-## Contact
-
-Project maintained by: [Your name/organization]
-For data access: Geoscience Australia Client Services (ClientServices@ga.gov.au)
+2026-09-16: workbook 01 runs end to end on AusLAMP Victoria (100 sites, 243,157 data files, about 20 s) with nine
+checks reporting. The repository's history before this date is an April 2026 exploration of the Victoria MTH5
+files, retired in the first commit of the package.

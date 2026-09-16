@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auslamp-proc"
+version = "0.1.0"
+description = "Long-period AusLAMP MT processing (EDL PR6-24 and LEMI-424) in six workbooks on mt-metadata, mt-io, mth5 and Aurora"
+authors = [{ name = "Ben Kay" }]
+requires-python = ">=3.12"
+dependencies = [
+  "numpy", "scipy", "pandas", "xarray", "matplotlib", "obspy", "h5py", "pyarrow", "pyyaml", "ppigrf", "requests",
+  "mt-io==0.0.5", "mth5==0.6.9", "aurora==0.6.2",
+  "mt-metadata @ git+https://github.com/IAGA-DVI-DataStandards/mt-metadata@v1.0.11",
+]
+
+[tool.setuptools.packages.find]
+include = ["auslamp_proc*"]
+
+[tool.setuptools.package-data]
+auslamp_proc = ["data/*"]
