@@ -13,15 +13,17 @@ years: []
 # One block per instrument in the survey.
 instruments_layout:
   PR6-24+Mag-03:
-    subdir: ""              # the folder under raw_root holding this instrument's site folders
+    subdir: ""              # the folder under raw_root holding this instrument's site folders; "" = raw_root
     layout: edl_dayofyear   # edl_dayofyear | lemi_data_nnnn | lemi_zip
     sample_rate_hz: 10      # read from the files and checked against this
     site_layout: edl_L      # edl_L (north and east arms with a shared centre) | lemi_cross
+    exclude: []             # folders beside the sites that are not sites (KML, docs)
   LEMI-424:
     subdir: ""
     layout: lemi_data_nnnn
     sample_rate_hz: 1
     site_layout: lemi_cross
+    exclude: []
 
 # A site whose raw folder is not <raw_root>/<subdir>/<site> -- a split deployment, a re-cut tree.
 raw_overrides: {}
@@ -56,6 +58,28 @@ release_tensors:
 release_mth5: {}            # instrument: folder of the release's own MTH5 files (compared, never used)
 instrument_register: ""     # a CSV of logger serials against sites, if the release ships one
 
+# An earlier processing of the same raw data, for the comparison in workbook 04 only (read-only).
+earlier_processing: {}
+# earlier_processing:
+#   folder: ""
+#   note: ""
+
+# A position from outside the instrument -- a deployment sheet, a site metadata table. Workbook 01 compares it
+# against the position the instrument's own GPS recorded and never reads a value from it.
+comparison_positions: {}
+# comparison_positions:
+#   table: ""
+#   columns: {site: site, lat: sheet_lat, lon: sheet_lon}
+#   select: {}              # rows of that table to keep, as column: value
+#   label: ""               # what the table is, printed above the comparison
+
+# Per-site facts a check in a workbook tests against. Each entry is an input, not a computed value.
+checks: {}
+# checks:
+#   first_data_file: {}     # site: the name its first data file must start with, where the logger wrote that
+#                           # hour under a previous deployment's name; the discovery must read headers and not
+#                           # glob on the site name
+
 # Where a dipole length is not recorded anywhere, the value written as assume:<value> and why.
 dipole_default: {}
 
@@ -81,6 +105,15 @@ regression: {}
 #   sites: ""                 # a CSV with one row per site
 #   dated: ""
 #   columns: {site: site, lat: gps_lat, lon: gps_lon, start_utc: start, end_utc: end, tier: tier}
+#   select: {}                # rows of that table to keep, as column: value, where it covers more than this
+#                             # survey (one file holding every phase of a campaign)
+#   times: ""                 # a second CSV holding the spans, where positions and spans live in different
+#                             # tables; omit it and the spans come from `sites`
+#   time_columns: {site: site, start_utc: first_sample_utc, end_utc: last_sample_utc}
+#   times_kind: raw_span     # raw_span = the first and last sample on disk, tested for
+#                            # equality; processing_window = the hours a run kept, tested for
+#                            # containment inside the discovered raw span
+#   time_select: {}
 #   position_tolerance_m: 20
 #   time_tolerance_h: 1
 #   waves: ""                 # a concurrent-core table to reproduce, if one exists

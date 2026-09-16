@@ -6,9 +6,10 @@ The workbooks take a survey from a folder of raw time series to one transfer fun
 in `auslamp_proc`, so a batch run and a single-site run share one code path and any cell can be re-run. Built on the
 IAGA-DVI-DataStandards packages mt-metadata, mt-io and mth5, with Aurora as the estimator.
 
-Worked examples: AusLAMP Victoria (GA eCat 150806, 81 EDL and 19 LEMI-424 sites, 2013-2018) and AusLAMP Queensland
-Phases 1, 2 and 3 (EDL, 2025-26). To run them on another machine, edit `raw_root` and `work_root` in the survey's
-`surveys/<survey>/survey.yaml`; to run your own survey, copy `surveys/_template/`.
+The worked example is AusLAMP Queensland Phase 1 (23 EDL sites, September-November 2025), the survey the workbooks
+open on; Phases 2 (18 sites, March-May 2026) and 3 (15 sites, June-July 2026) are kept as executed examples under
+`workbooks/examples/`. The raw time series are not in this repository: point `raw_root` and `work_root` in
+`surveys/<survey>/survey.yaml` at where they live on your machine. To run your own survey, copy `surveys/_template/`.
 
 Author: Ben Kay (bvkay). Started 2026-09-13; re-cut for the workbook layout 2026-09-16.
 
@@ -51,13 +52,14 @@ periods in s.
 ## Layout
 
     auslamp_proc/     the package (survey tables, raw readers and placement, cache, geo, observatory, register, figures, processing)
-    workbooks/        the generator, the runner and the six workbooks
+    workbooks/        the generator, the runner, the six workbooks, and examples/<survey>/ with the executed copies
     surveys/          one folder per survey: survey.yaml, sites.csv, decisions.csv, SITES_COLUMNS.md in _template/
-    tools/            one-off builders: the coastline the map draws, the decisions table a previous survey seeds
+    tools/            one-off builders: the coastline the map draws, the sheet cells merged into a survey's tables
     tests/            pytest over the raw readers and the register, and the regression the products must reproduce
 
 ## Status
 
-2026-09-16: workbook 01 runs end to end on AusLAMP Victoria (100 sites, 243,157 data files, about 20 s) with nine
-checks reporting. The repository's history before this date is an April 2026 exploration of the Victoria MTH5
-files, retired in the first commit of the package.
+2026-09-16: workbook 01 runs end to end on Queensland Phases 1, 2 and 3 (56 sites, about 20 s a phase) with nine
+checks reporting; the package also reads the GA Victoria release (EDL miniSEED and LEMI-424), on which the raw
+readers were checked bit for bit against the released mt-io. The repository's history before this date is an
+April 2026 exploration of the Victoria MTH5 files, retired in the first commit of the package.

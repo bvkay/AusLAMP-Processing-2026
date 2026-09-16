@@ -1,0 +1,112 @@
+# AusLAMP Queensland Phase 2: the survey-level inputs. Everything the package needs that is not per site.
+# Paths are read-only except work_root, which is the only place the package writes.
+name: queensland_phase2
+release: "University of Adelaide AusLAMP Queensland Phase 2, 2025-26 (unpublished; raw on E:)"
+raw_root: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/Phase2
+work_root: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/Processing_WB/phase2
+
+# The years the survey recorded. This is what the EDL GPS week-rollover test compares against: a file stamped
+# before the first of these years is 1024 weeks (7168 days) early and is corrected. Every file of this phase
+# is stamped 2006 and every one is corrected to 2026.
+years: [2026]
+
+# The 18 site folders sit directly under raw_root, so subdir is empty. Only the process spreadsheet sits
+# beside them, and a file is never taken for a site.
+instruments_layout:
+  PR6-24+Mag-03:
+    subdir: ""
+    layout: edl_dayofyear          # <site>/<DDD>/<stem><YYMMDDhhmmss>.<BX BY BZ EX EY TP>
+    sample_rate_hz: 10
+    site_layout: edl_L             # north and east arms with a shared centre electrode
+    exclude: []
+
+raw_overrides: {}
+
+# The instrument constants, with the source of each. They convert counts to field and are never guessed.
+instruments:
+  PR6-24+Mag-03:
+    uv_per_count: 1.0
+    h_uv_per_nt: 142.857
+    bz_divider: 0.4
+    e_gain: 10
+    source: "mt_io.uoa.pr624 constants (BARTINGTON_UV_PER_NT, BZ_DIVIDER_RATIO, E_TERMINAL_BOX_GAIN,
+      ADC_LOW_GAIN_FULL_SCALE_V)"
+
+# Products are processed and served in geomagnetic north: each site's horizontal magnetics are rotated so the
+# mean Hy is zero, which removes the hand-compass misalignment. The IGRF declination is recorded in every file
+# and NOT applied.
+frame: geomagnetic
+declination_source: "IGRF via ppigrf, at the site, at the record midpoint"
+
+observatory:
+  archive: E:/MT_Timeseries_DATA/Geomagnetic_Observatory_Data/INTERMAGNET_1sec
+  code: CTA                         # Charters Towers; the nearest one-second observatory to the Queensland sites
+
+# The students' LEMI MT transfer functions for this phase, for the stage-7 comparison only. The stem rule
+# drops the trailing N of the site name; three sites have no EDI (15 files for 18 sites) and are listed so the
+# comparison does not silently miss a site.
+release_tensors:
+  folder: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/Phase2_EDI_V3
+  stem_rule: "Q<NN>N -> Q<NN>, Q82 -> Q82"
+  exceptions: {Q56N: "", Q58N: "", Q66N: ""}
+  release_note: "the students' LEMI MT EDIs; their rho is 1.42x low (the 2^23-count rail mapped to 70000 nT
+    instead of 58720), phase correct"
+
+release_mth5: {}
+instrument_register: ""
+
+# Every dipole is on the process spreadsheet, so no default is needed.
+dipole_default: {}
+
+# Ben's September 2026 processing of this same raw data, for the comparison in workbook 04 only (read-only).
+earlier_processing:
+  folder: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/processed_2026/aurora
+  note: "Ben's September 2026 Aurora processing of Phase 2, single station and remote site, 1 Hz and 10 Hz"
+
+# The process spreadsheet's position, compared in workbook 01 and never used as a value. The spreadsheet's
+# Latitude and Longitude columns are transcribed into qld_positions.csv ref_latitude and ref_longitude, which
+# is the copy this package reads: the spreadsheet itself needs a reader the environment does not carry.
+comparison_positions:
+  table: D:/BEN/MTH5_Aurora_mt-io_2026/work/qld_positions.csv
+  columns: {site: site, lat: ref_latitude, lon: ref_longitude}
+  select: {phase: 2}
+  label: "QLD_AusLAMP_process.xlsx sheet Phase2 Latitude/Longitude, as transcribed into qld_positions.csv"
+
+# Per-site facts a check in a workbook tests against, each an input and not a computed value.
+checks:
+  first_data_file: {}
+
+floors:
+  member_chunk_days: 0.5
+  align_fallback_s: 43200
+  min_window_days: 0.5
+bands:
+  liveness: ["10-30", "30-100", "100-1000", "300-3000"]
+  splice_step_below: "8-16"
+  splice_step_above: "32-100"
+  splice_guard: "18-36"
+  splice_join_s: 16
+  splice_max_step_pct: 2.0
+controls:
+  best_hours_random_control: true
+  zero_items_is_fail: true
+
+# Site tables built by other code, for workbook 01 to regress its discovery against. They are a regression and
+# not a source: nothing is read from them into sites.csv. qld_positions.csv carries all 56 sites of the three
+# phases, so `select` keeps this phase's rows. The spans live in a second table, phase2_master.csv, whose
+# start and end are the window the campaign processed: the transit hours at the head and the tail beyond the
+# last clean day are outside it, so those sites differ from the raw first and last sample by that trimming.
+regression:
+  sites: D:/BEN/MTH5_Aurora_mt-io_2026/work/qld_positions.csv
+  dated: "2026-09-07 positions, 2026-09-05 spans"
+  columns: {site: site, lat: latitude, lon: longitude}
+  select: {phase: 2}
+  times: D:/BEN/MTH5_Aurora_mt-io_2026/work/campaign_v2/phase2_master.csv
+  time_columns: {site: site, start_utc: start, end_utc: end}
+  time_select: {}
+  # The spans in `times` are the hours the campaign's processing kept, not the raw first and last sample:
+  # the head of each record loses its transit hours and a dead tail or a leading outage is cut. Declaring the
+  # kind makes workbook 01 test containment -- the raw span must hold that window -- instead of equality.
+  times_kind: processing_window
+  position_tolerance_m: 20
+  time_tolerance_h: 1

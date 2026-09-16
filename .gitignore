@@ -7,3 +7,5 @@ notes/*.tmp
 docs/
 notes/
 workbooks/.ipynb_checkpoints/
+surveys/victoria/
+workbooks/examples/victoria/
