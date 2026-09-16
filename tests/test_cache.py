@@ -175,11 +175,22 @@ def test_the_state_machine_reads_sound_dead_and_common():
     assert list(sound.Ey_state) == ["sound"] * len(sound)
     assert len(sound) == 2
 
-    dead = look.elines(t0, {"Hx": hx, "Hy": hy,
-                            "Ex": rng.normal(0, 0.01, n),
-                            "Ey": 5.0 * hx + rng.normal(0, 0.05, n)})
-    assert list(dead.Ex_state) == ["dead"] * len(dead)
-    assert list(dead.Ey_state) == ["sound"] * len(dead)
+    # the dead threshold is relative to the line's own record (0.2 of its median daily std, Ben 2026-09-16):
+    # a line that dies on its last day is dead there and sound before
+    n4 = 4 * 86400
+    hx4 = np.cumsum(rng.normal(0, 1.0, n4)) * 0.02
+    hy4 = np.cumsum(rng.normal(0, 1.0, n4)) * 0.02
+    ex4 = 5.0 * hy4 + rng.normal(0, 0.05, n4)
+    ex4[3 * 86400:] = rng.normal(0, 0.01, 86400)
+    dead = look.elines(t0, {"Hx": hx4, "Hy": hy4, "Ex": ex4, "Ey": 5.0 * hx4 + rng.normal(0, 0.05, n4)})
+    assert list(dead.Ex_state) == ["sound", "sound", "sound", "dead"]
+    assert list(dead.Ey_state) == ["sound"] * 4
+    assert float(dead.dead_std_Ex.iloc[0]) < float(dead.std_Ex.iloc[:3].median())
+    # a line dead for its whole record sits at its own floor and reads weak under the relative rule; the
+    # absolute floor is the switch for that case
+    all_dead = {"Hx": hx, "Hy": hy, "Ex": rng.normal(0, 0.01, n), "Ey": 5.0 * hx + rng.normal(0, 0.05, n)}
+    assert list(look.elines(t0, all_dead).Ex_state) == ["weak"] * 2
+    assert list(look.elines(t0, all_dead, dead_abs_mv_per_km=0.2).Ex_state) == ["dead"] * 2
 
     shared = np.cumsum(rng.normal(0, 1.0, n)) * 0.05        # one noise on both lines, coherent with no H
     common = look.elines(t0, {"Hx": hx, "Hy": hy,

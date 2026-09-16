@@ -14,10 +14,16 @@ Per day the 20-200 s squared coherence of Ex with the site's own Hy, of Ey with 
 (Welch, nperseg 4096 samples, noverlap 2048), and the standard deviation of each line after a 3,000 s
 high-pass (Butterworth order 2). The state per line:
 
-    dead    high-passed std < 0.2 mV/km
+    dead    high-passed std < DEAD_FRACTION x the line's own median daily std over the scored days
+            (0.2, Ben's ruling of 2026-09-16; the source used 0.2 mV/km absolute), or below the absolute
+            floor DEAD_ABS_MV_PER_KM where one is set (0 = off). Both are parameters of the workbook,
+            because the level of a line depends on the dipole length and the survey.
     sound   coherence with H >= 0.4 and Ex-Ey coherence < 0.5
     common  Ex-Ey coherence >= 0.6 and coherence with H < 0.3
     weak    otherwise
+
+A line dead for the whole record has its median at its own noise floor, so no day falls under 0.2 of it and
+the line reads `weak` on its coherence with H; the absolute floor is the switch for that case.
 
 Every series is despiked before the high-pass (vic_windows.py:95): a sample whose one-second step exceeds 30
 times the robust scale of the steps (1.4826 x the median absolute deviation) is blanked with samples i-2 to
@@ -43,7 +49,8 @@ ANGLE_TOLERANCE_DEG = 30.0
 # vic_windows.py:95 and :294-298
 DESPIKE_K = 30.0
 HIGHPASS_S = 3000.0
-DEAD_STD_MV_PER_KM = 0.2
+DEAD_FRACTION = 0.2            # of the line's own median daily high-passed std (Ben, 2026-09-16)
+DEAD_ABS_MV_PER_KM = 0.0       # an absolute floor in mV/km; 0 = off
 SOUND_COH = 0.4
 SOUND_EX_EY_MAX = 0.5
 COMMON_EX_EY = 0.6
@@ -159,11 +166,23 @@ def band_coherence(x, y, fs: float = 1.0, lo_s: float = BAND_S[0], hi_s: float =
     return float(np.median(C[band])) if band.any() else float("nan")
 
 
-def e_state(coh_with_h: float, coh_ex_ey: float, std: float) -> str:
-    """The per-day state of one electric line. The rule with its values is in the module docstring."""
+def dead_threshold(stds, dead_fraction: float = DEAD_FRACTION,
+                   dead_abs_mv_per_km: float = DEAD_ABS_MV_PER_KM) -> float:
+    """The std below which a day of one line is dead: dead_fraction x the median of the line's daily stds,
+    or the absolute floor, whichever is larger. NaN when no day was scored."""
+    s = np.asarray(stds, float)
+    s = s[np.isfinite(s)]
+    if not len(s):
+        return float("nan")
+    return float(max(dead_fraction * np.median(s), dead_abs_mv_per_km))
+
+
+def e_state(coh_with_h: float, coh_ex_ey: float, std: float, dead_std: float) -> str:
+    """The per-day state of one electric line; `dead_std` is dead_threshold() of that line. The rule with its
+    values is in the module docstring."""
     if not np.isfinite(std):
         return "gap"
-    if std < DEAD_STD_MV_PER_KM:
+    if np.isfinite(dead_std) and std < dead_std:
         return "dead"
     if coh_with_h >= SOUND_COH and coh_ex_ey < SOUND_EX_EY_MAX:
         return "sound"
@@ -172,13 +191,15 @@ def e_state(coh_with_h: float, coh_ex_ey: float, std: float) -> str:
     return "weak"
 
 
-def elines(t0, arrays, fs: float = 1.0, min_day_hours: float = MIN_DAY_HOURS) -> pd.DataFrame:
+def elines(t0, arrays, fs: float = 1.0, min_day_hours: float = MIN_DAY_HOURS,
+           dead_fraction: float = DEAD_FRACTION, dead_abs_mv_per_km: float = DEAD_ABS_MV_PER_KM) -> pd.DataFrame:
     """The per-UTC-day table of the two electric lines. Ported from vic_windows.cmd_elines (:273-312).
 
     `t0` is the first sample's time in seconds since the epoch. Each UTC day holding at least
     `min_day_hours` = 6 h of axis is scored; a day in which any of Hx, Hy, Ex, Ey is under 80 per cent finite
     is scored `gap` on both lines and is not counted as a day. One row per day with the three coherences, the
-    two high-passed standard deviations and the two states.
+    two high-passed standard deviations and the two states. The dead threshold of each line is
+    dead_threshold() over the scored days and is carried in the columns dead_std_Ex and dead_std_Ey.
     """
     b, a = highpass(fs)
     n = len(arrays["Hx"])
@@ -210,9 +231,19 @@ def elines(t0, arrays, fs: float = 1.0, min_day_hours: float = MIN_DAY_HOURS) ->
         rows.append(dict(day=label, t_start=int(ta), t_end=int(tb),
                          coh_Ex_Hy=round(cx, 3), coh_Ey_Hx=round(cy, 3), coh_Ex_Ey=round(ce, 3),
                          std_Ex=round(sx, 3), std_Ey=round(sy, 3),
-                         Ex_state=e_state(cx, ce, sx), Ey_state=e_state(cy, ce, sy), gap_reason=""))
+                         Ex_state="", Ey_state="", gap_reason=""))
+    # the dead threshold is relative to the line's own record, so the states are assigned once every day is in
+    dead = {c: dead_threshold([r["std_%s" % c] for r in rows], dead_fraction, dead_abs_mv_per_km)
+            for c in ("Ex", "Ey")}
+    for r in rows:
+        r["dead_std_Ex"], r["dead_std_Ey"] = round(dead["Ex"], 4), round(dead["Ey"], 4)
+        if r["Ex_state"] == "gap":
+            continue
+        r["Ex_state"] = e_state(r["coh_Ex_Hy"], r["coh_Ex_Ey"], r["std_Ex"], dead["Ex"])
+        r["Ey_state"] = e_state(r["coh_Ey_Hx"], r["coh_Ex_Ey"], r["std_Ey"], dead["Ey"])
     return pd.DataFrame(rows, columns=["day", "t_start", "t_end", "coh_Ex_Hy", "coh_Ey_Hx", "coh_Ex_Ey",
-                                       "std_Ex", "std_Ey", "Ex_state", "Ey_state", "gap_reason"])
+                                       "std_Ex", "std_Ey", "dead_std_Ex", "dead_std_Ey", "Ex_state", "Ey_state",
+                                       "gap_reason"])
 
 
 def eline_summary(table: pd.DataFrame, site: str = "") -> dict:

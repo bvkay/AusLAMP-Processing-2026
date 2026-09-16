@@ -905,6 +905,8 @@ WORK_ROOT = None              # None = survey.yaml work_root; every cache and fi
 RATES = [1, 10]               # the caches built; 10 is EDL only, and a student short of disk sets [1]
 WIN_MIN, STEP_MIN = 60, 30    # the base window and step of figures 02, 03 and 05, in minutes
 PMAX = 20000                  # the longest period the level ladder reaches, in s
+DEAD_FRACTION = 0.2           # a day of a line is dead below this fraction of the line's own median daily std
+DEAD_ABS_MV_PER_KM = 0.0      # or below this absolute floor in mV/km; 0 = off (a line dead all record reads weak)
 REBUILD = False               # True rebuilds every cache from the raw files, which is the slow path
 SHOW = "first"                # the site whose five figures are shown below; a site name, or "none"
 '''
@@ -1195,8 +1197,12 @@ Figure 02 is the squared coherence of four pairs against time, one line per band
 
 The table under it is the per-UTC-day state of each line: the 20-200 s coherence of Ex with the site's own Hy
 and of Ey with its Hx, of Ex with Ey, and the standard deviation of each line after a 3,000 s high-pass, with
-the state `dead` (high-passed std under 0.2 mV/km), `sound` (coherence with H at least 0.4 and Ex-Ey under
-0.5), `common` (Ex-Ey at least 0.6 and coherence with H under 0.3) or `weak` (`auslamp_proc.look.elines`).
+the state `dead` (high-passed std under `DEAD_FRACTION` = 0.2 of the line's own median daily std, or under
+the absolute floor `DEAD_ABS_MV_PER_KM` where one is set; the threshold is relative because the level of a
+line scales with its dipole length and differs between surveys), `sound` (coherence with H at least 0.4 and
+Ex-Ey under 0.5), `common` (Ex-Ey at least 0.6 and coherence with H under 0.3) or `weak`
+(`auslamp_proc.look.elines`). A line dead for its whole record sits at its own noise floor and reads `weak`
+under the relative rule; the absolute floor is the switch for that case.
 Every series is despiked before the high-pass: one logger spike inside one Welch segment otherwise puts a
 whole day's coherence at zero. A day in which any of the four channels is under 80 per cent finite is scored
 `gap` and is not a scored day.
@@ -1211,7 +1217,8 @@ for s in CHOSEN:
     t = time.time()
     t0, arrays, meta, row = load(s)
     n = len(arrays["Hx"])
-    el = look.elines(t0, arrays, fs=1.0)
+    el = look.elines(t0, arrays, fs=1.0, dead_fraction=DEAD_FRACTION,        # <- DEAD_FRACTION, DEAD_ABS_MV_PER_KM
+                     dead_abs_mv_per_km=DEAD_ABS_MV_PER_KM)
     el.to_csv(site_dir(s) / "elines.csv", index=False)
     WRITTEN.append(site_dir(s) / "elines.csv")
     fig, maps = FSITE.coherence_maps(
