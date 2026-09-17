@@ -12,8 +12,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from auslamp_proc.process import aurora_run, coherence as COH, frame as FR, mth5_build
-from auslamp_proc.process import references as REF, transients as TR
+from auslamp_proc.process import aurora_run, coherence as COH, edi as EDI, frame as FR, mth5_build
+from auslamp_proc.process import rate as RATE, references as REF, run as RUN
+from auslamp_proc.process import selection as SEL, transients as TR
 
 
 # ------------------------------------------------------------------ the frame
@@ -244,3 +245,224 @@ def test_band_objects_read_through_aurora():
 
     assert aurora_run.BANDS["1hz"].decimation_factors == [1, 4, 4, 4, 4, 4]
     assert aurora_run.BANDS["10hz"].window == 256
+
+
+# ------------------------------------------------- the 10 Hz hour selection
+
+def _pair_record(t0, hours, fs=10.0, seed=7):
+    """A record of whole hours whose Ex-Hy pair is coherent in the last third and noise before it."""
+    rng = np.random.default_rng(seed)
+    n = int(hours * 3600 * fs)
+    hx = rng.standard_normal(n)
+    hy = rng.standard_normal(n)
+    ex = rng.standard_normal(n)
+    ey = rng.standard_normal(n)
+    live = slice(int(2 * n / 3), n)
+    ex[live] = 5.0 * hy[live] + 0.05 * rng.standard_normal(n - live.start)
+    ey[live] = 5.0 * hx[live] + 0.05 * rng.standard_normal(n - live.start)
+    return t0, {"Hx": hx, "Hy": hy, "Ex": ex, "Ey": ey}
+
+
+def test_selection_tags_are_the_four_the_package_names():
+    """Fails if a fraction does not key to its documented tag."""
+    assert [SEL.key_for(f) for f in SEL.SELECT10] == ["f05", "f10", "f25"]
+    assert SEL.key_for(SEL.RANDOM_FRACTION, True) == "r25"
+    assert SEL.nperseg_for(10) == SEL.SCORE_NPERSEG_10HZ and SEL.nperseg_for(1) == 205
+
+
+def test_hour_grid_starts_on_a_whole_utc_hour():
+    """Fails if the first scored hour does not begin on a UTC hour boundary, or an hour runs past the end."""
+    t0 = 1759017600 + 900                      # a record that starts a quarter past the hour
+    n = int(6 * 3600 * 10.0)
+    starts, t_starts = SEL.hour_grid(t0, n, 10.0)
+    assert np.all(np.asarray(t_starts) % SEL.HOUR_S == 0)
+    assert starts[0] == int(2700 * 10)
+    assert int(starts[-1]) + int(SEL.HOUR_S * 10) <= n
+
+
+def test_score_hours_reads_the_coherent_hours_and_drops_a_dead_line():
+    """Fails if a coherent hour does not outscore a noise hour, or a `dead` line is still in the average."""
+    t0 = 1759017600
+    t0, arrays = _pair_record(t0, 6)
+    table = SEL.score_hours(t0, arrays, 10.0)
+    assert len(table) == 6 and table.pairs.max() == 2
+    assert float(table.score.iloc[-1]) > 0.8 > float(table.score.iloc[0])
+
+    days = pd.DataFrame([dict(t_start=t0, t_end=t0 + 86400, Ex_state="dead", Ey_state="sound")])
+    dead = SEL.score_hours(t0, arrays, 10.0, elines=days)
+    assert set(dead.pairs) == {1}
+    assert np.allclose(dead.score.to_numpy(float), table.score_yx.to_numpy(float), equal_nan=True)
+
+
+def test_selection_keeps_whole_hours_and_the_control_costs_the_same():
+    """Fails if a kept hour is not one whole 3,600 s run, or the control keeps a different number of hours."""
+    t0 = 1759017600
+    t0, arrays = _pair_record(t0, 24)
+    n = len(arrays["Hx"])
+    table = SEL.score_hours(t0, arrays, 10.0)
+    sel = SEL.selections(table, t0, n, 10.0, fractions=(0.25,), random_fraction=0.25, seed=11)
+    assert sorted(sel) == ["f25", "r25"]
+    assert sel["f25"]["n_hours"] == sel["r25"]["n_hours"] == 6
+    assert sel["r25"]["threshold"] is None and sel["f25"]["threshold"] is not None
+    keep = SEL.mask_from_hours(sel["f25"]["hours"], t0, n, 10.0)
+    runs = TR.segments(keep, int(TR.MIN_SEGMENT_S * 10))
+    assert len(runs) == len({tuple(h) for h in sel["f25"]["hours"]}) or all(
+        L % int(TR.MIN_SEGMENT_S * 10) == 0 for _o, L in runs)
+    assert int(keep.sum()) == 6 * int(SEL.HOUR_S * 10)
+    # the ranked selection takes the coherent third and the random control cannot
+    assert float(np.mean([table.score[table.t_start == h[0]].iloc[0] for h in sel["f25"]["hours"]])) > \
+        float(np.mean([table.score[table.t_start == h[0]].iloc[0] for h in sel["r25"]["hours"]]))
+
+
+def test_widen_ledger_adds_the_column_and_keeps_the_rows(tmp_path):
+    """Fails if widening a ledger written before `selection` existed loses or reorders a row."""
+    p = tmp_path / "runs.csv"
+    old = [c for c in RUN.RUNS_COLUMNS if c != "selection"]
+    before = pd.DataFrame([{c: ("Q49" if c == "site" else 1) for c in old},
+                           {c: ("Q50" if c == "site" else 2) for c in old}], columns=old)
+    before.to_csv(p, index=False)
+    assert RUN.widen_ledger(p) is True
+    after = pd.read_csv(p)
+    assert list(after.columns) == RUN.RUNS_COLUMNS
+    assert list(after.site) == ["Q49", "Q50"] and after.selection.isna().all()
+    assert RUN.widen_ledger(p) is False
+
+
+# --------------------------------------------------- the rate the caveat states
+
+class _TF:
+    """The two fields process.rate reads off a transfer function."""
+
+    def __init__(self, period, z):
+        self.period = np.asarray(period, float)
+        self.z = np.asarray(z, complex)
+
+
+def _tf(periods, rho_xy, rho_yx=None):
+    """A transfer function whose xy and yx apparent resistivities are the ones given."""
+    p = np.asarray(periods, float)
+    rho_yx = rho_xy if rho_yx is None else rho_yx
+    z = np.zeros((len(p), 2, 2), complex)
+    z[:, 0, 1] = np.sqrt(np.asarray(rho_xy, float) / (0.2 * p))
+    z[:, 1, 0] = np.sqrt(np.asarray(rho_yx, float) / (0.2 * p))
+    return _TF(p, z)
+
+
+def test_rate_departure_reads_the_ratio_and_refuses_to_extrapolate():
+    """Fails if a known 5 per cent offset is not read back, or a period outside the 1 Hz row is compared."""
+    p = np.array([2.0, 4.0, 8.0, 16.0, 30.0])
+    base = _tf(p, np.full(5, 100.0))
+    high = _tf(p, np.full(5, 105.0))
+    d = RATE.departure(high, base)
+    assert d["xy"] == pytest.approx(1.05, rel=1e-6)
+    assert d["yx"] == pytest.approx(1.05, rel=1e-6)
+    # the 1 Hz row starts at 8 s, so the 4-8 s half of the band has nothing to compare against and the
+    # periods below it are dropped rather than measured against the end point numpy.interp clamps to
+    short = _tf(np.array([8.0, 16.0, 30.0]), np.full(3, 100.0))
+    wild = _tf(p, np.array([1e6, 1e6, 105.0, 105.0, 105.0]))
+    assert RATE.departure(wild, short)["xy"] == pytest.approx(1.05, rel=1e-6)
+
+
+def test_rate_caveat_carries_the_survey_number_or_says_there_is_none():
+    """Fails if the caveat quotes a figure without a measurement, or omits the band or the site count."""
+    empty = RATE.caveat(None)
+    assert "has not been measured" in empty and "per cent" not in empty
+    rec = RATE.measure([("A", _tf([4.0, 8.0, 16.0], [100.0] * 3), _tf([4.0, 8.0, 16.0], [100.0] * 3)),
+                        ("B", _tf([4.0, 8.0, 16.0], [90.0] * 3), _tf([4.0, 8.0, 16.0], [100.0] * 3))],
+                       "remote")
+    assert rec["n_sites"] == 2 and rec["n_scored"]["xy"] == 2
+    assert rec["median_ratio"]["xy"] == pytest.approx(0.95, rel=1e-3)
+    said = RATE.caveat(rec)
+    assert "4-32 s" in said and "2 whole-record 10 Hz remote product(s)" in said
+    assert "-5.0 per cent" in said and "Victoria" not in said
+
+
+def test_rate_record_round_trips(tmp_path):
+    """Fails if the measurement written for a survey does not read back as the same sentence."""
+    rec = RATE.measure([("A", _tf([4.0, 8.0], [96.0] * 2), _tf([4.0, 8.0], [100.0] * 2))], "remote")
+    RATE.write_record(tmp_path, rec)
+    assert RATE.caveat(RATE.read_record(tmp_path)) == RATE.caveat(rec)
+    assert RATE.caveat(RATE.read_record(tmp_path / "nowhere")) == RATE.caveat(None)
+
+
+def test_run_refuses_the_single_station_with_the_ruling_sentence():
+    """Fails if --kinds single is accepted, or the refusal does not say why the kind is gone."""
+    assert "single" in RUN.REFUSED_KINDS
+    said = RUN.REFUSED_KINDS["single"]
+    assert "biases it low" in said and "error bars" in said
+    assert RUN.main(["--survey", "queensland_phase1", "--site", "Q49", "--kinds", "single"]) == 2
+    with pytest.raises(ValueError, match="not a kind of this package"):
+        RUN.one_site("queensland_phase1", "Q49", "first", ["single"], [1], "kaiser20_75")
+
+
+def test_rewrite_caveat_changes_one_line_and_nothing_else(tmp_path):
+    """Fails if the rewrite moves a byte outside the caveat line, or does not report what it replaced."""
+    p = tmp_path / "x.edi"
+    body = ("\n".join(["  >HEAD", "    DATAID=Q49", "    caveat_10hz=the old sentence",
+                       "    other=kept", ">END"]) + "\n").encode("utf-8")
+    p.write_bytes(body)
+    r = RATE.rewrite_caveat(p, "the new sentence")
+    assert r["changed"] and r["old"] == "the old sentence" and r["new"] == "the new sentence"
+    after = p.read_bytes()
+    strip = lambda b: [ln for ln in b.splitlines(keepends=True) if b"caveat_10hz=" not in ln]  # noqa: E731
+    assert strip(after) == strip(body)
+    assert RATE.carries_caveat(p, "the new sentence")
+    assert RATE.rewrite_caveat(p, "the new sentence")["reason"].startswith("the file already carries")
+
+
+def test_rewrite_caveat_refuses_what_it_cannot_place(tmp_path):
+    """Fails if a file with no caveat line, two of them, or a sentence carrying a newline is rewritten."""
+    none = tmp_path / "none.edi"
+    none.write_bytes(b"    DATAID=Q49\n>END\n")
+    before = none.read_bytes()
+    assert RATE.rewrite_caveat(none, "s")["reason"] == "the file carries no caveat_10hz line"
+    assert none.read_bytes() == before
+
+    two = tmp_path / "two.edi"
+    two.write_bytes(b"    caveat_10hz=a\n    caveat_10hz=b\n")
+    before = two.read_bytes()
+    assert "2 caveat_10hz lines" in RATE.rewrite_caveat(two, "s")["reason"]
+    assert two.read_bytes() == before
+
+    one = tmp_path / "one.edi"
+    one.write_bytes(b"    caveat_10hz=a\n")
+    before = one.read_bytes()
+    assert RATE.rewrite_caveat(one, "two\nlines")["reason"].startswith("the sentence carries a line ending")
+    assert one.read_bytes() == before
+
+
+def test_rewrite_is_recorded_in_the_run_folder(tmp_path):
+    """Fails if a rewritten product leaves no record of the sentence it carried before."""
+    (tmp_path / "provenance.json").write_text('{"run": "first"}', encoding="utf-8")
+    rows = [dict(path=str(tmp_path / "a.edi"), changed=True, old="was", new="is", reason=""),
+            dict(path=str(tmp_path / "b.edi"), changed=False, old=None, new=None, reason="no line")]
+    RATE.record_rewrite(tmp_path, rows, at="2026-09-17T00:00:00+00:00")
+    import json as _json
+    d = _json.loads((tmp_path / "provenance.json").read_text(encoding="utf-8"))
+    assert len(d[RATE.REWRITE_NAME]) == 1
+    assert d[RATE.REWRITE_NAME][0] == dict(at="2026-09-17T00:00:00+00:00", product="a.edi",
+                                           old="was", new="is")
+
+
+def test_read_parameter_finds_the_line_under_its_dotted_name(tmp_path):
+    """Fails if a processing_parameters line is missed because the writer emits its full dotted name.
+
+    The EDI writer emits `transfer_function.processing_parameters.selection=...`, so a reader that asks for
+    a line beginning with `selection=` finds nothing and reports a product that carries the line as one that
+    does not. Section 9's check read it that way and failed 184 sound products before this was fixed.
+    """
+    p = tmp_path / "x.edi"
+    p.write_text("\n".join([
+        "  >HEAD",
+        "    transfer_function.processing_parameters.selection=f05: the best 5 per cent",
+        "    transfer_function.processing_parameters.caveat_10hz=a sentence",
+        "    transfer_function.processing_parameters.runs=30 kept stretch(es)",
+        "    DATAID=Q49",
+        ">END"]) + "\n", encoding="utf-8")
+    assert EDI.read_parameter(p, "selection").startswith("f05")
+    assert EDI.read_parameter(p, "caveat_10hz") == "a sentence"
+    assert EDI.read_parameter(p, "runs").startswith("30 kept")
+    assert EDI.read_parameter(p, "DATAID") == "Q49"
+    assert EDI.read_parameter(p, "not_there") == ""
+    # the key is matched where it sits, not as a substring of a longer name
+    assert EDI.read_parameter(p, "election") == ""

@@ -1,7 +1,7 @@
 """One site, end to end: the frame, the mask, the MTH5, the Aurora pass, the EDI and the provenance.
 
     python -m auslamp_proc.process.run --survey queensland_phase1 --site Q49 --run first \
-        --kinds single remote stack obs stack_obs --rates 1 --params kaiser20_75 [--redo]
+        --kinds remote stack obs stack_obs --rates 1 --params kaiser20_75 [--redo]
 
 Everything lands in <work_root>/<site>/<RUN>_<stamp>/, where the stamp is the launch time in UTC of the whole
 run and is passed in with --stamp so every site of one run shares a folder name. Each product writes
@@ -15,6 +15,17 @@ runs.
 A decisions.csv `keep_mask` cell naming a boolean .npy applies that selection of hours on top of the
 transient mask. A cell naming a file that is not there is said loudly and the pass runs on the whole record,
 because a selection silently ignored produces a whole-record product in a folder named after the selection.
+
+`--selections` names the hour selections of process.selection a pass is run on, one product each: f05, f10
+and f25 are the best 5, 10 and 25 per cent of the scored hours and r25 is the random 25 per cent that is
+their control (Ben's ruling, 2026-09-17: the 10 Hz product only needs the most coherent parts). A selected
+product carries its tag between the rate and the parameter set, `<site>_<kind>_10hz_<sel>_<params>.edi`, and
+its tag in the ledger's `selection` column and in the EDI's own `selection=` line. The default is the whole
+record, whose name carries no tag, so the 1 Hz names and the 1 Hz path are unchanged.
+
+`single` is refused as a kind: noise in H biases the single station low and its error bars carry no sign of
+that bias (Ben's ruling, 2026-09-17). The key stays in process.KINDS so a product already written under it
+still reads.
 
 The BLAS thread count is pinned to 3 before numpy is imported. A lane that takes every core makes three
 concurrent lanes slower than one, and the memory a pass peaks at is per lane.
@@ -43,11 +54,15 @@ import pandas as pd                                                          # n
 from .. import survey as SV                                                  # noqa: E402
 from ..raw import cache                                                      # noqa: E402
 from . import KINDS, aurora_run, edi as EDI, frame as FR, mth5_build, provenance as PROV  # noqa: E402
-from . import references as REF, transients as TR                            # noqa: E402
+from . import rate as RATE, references as REF, selection as SEL, transients as TR  # noqa: E402
 
-RUNS_COLUMNS = ["site", "run", "stamp", "kind", "rate_hz", "params", "remote", "members", "n_runs",
-                "mask_dropped_frac", "floor_dropped_frac", "seconds", "peak_rss_mb", "status", "error",
-                "edi", "xml"]
+RUNS_COLUMNS = ["site", "run", "stamp", "kind", "rate_hz", "params", "selection", "remote", "members",
+                "n_runs", "mask_dropped_frac", "floor_dropped_frac", "seconds", "peak_rss_mb", "status",
+                "error", "edi", "xml"]
+WHOLE = SEL.WHOLE                       # the untagged pass over the whole record
+SINGLE_REFUSED = ("the single station is not a kind of this package: noise in H biases it low and its error "
+                  "bars carry no sign of that bias (Ben's ruling, 2026-09-17)")
+REFUSED_KINDS = {"single": SINGLE_REFUSED}
 
 
 def stamp_now() -> str:
@@ -68,6 +83,28 @@ def rss_mb() -> tuple:
         return float("nan"), float("nan")
 
 
+def widen_ledger(path):
+    """Give a ledger written before a column existed that column, empty, and leave the rows alone.
+
+    The ledger is appended to, so a file whose header is narrower than RUNS_COLUMNS would take rows with
+    more fields than names and no reader could split it. The rewrite goes through a temporary file and one
+    replace, so a reader sees either the old file or the new one.
+    """
+    path = Path(path)
+    if not path.exists():
+        return False
+    d = pd.read_csv(path)
+    if list(d.columns) == RUNS_COLUMNS:
+        return False
+    for c in RUNS_COLUMNS:
+        if c not in d.columns:
+            d[c] = np.nan
+    tmp = path.with_suffix(".rewrite")
+    d[RUNS_COLUMNS].to_csv(tmp, index=False)
+    os.replace(str(tmp), str(path))
+    return True
+
+
 def append_row(path, row):
     """Append one ledger row under a lock, so three lanes writing at once do not interleave a line."""
     path = Path(path)
@@ -83,6 +120,7 @@ def append_row(path, row):
     else:
         lock.unlink(missing_ok=True)
     try:
+        widen_ledger(path)
         header = not path.exists()
         pd.DataFrame([row], columns=RUNS_COLUMNS).to_csv(path, mode="a", header=header, index=False)
     finally:
@@ -120,6 +158,27 @@ def _external_mask(dec_row, work, site, n, fs, say):
     return m[:n], p.name
 
 
+def _selection_mask(work, site, tag, t0, n, fs, say):
+    """(the sample mask of one named hour selection, its record), or (None, {}) for the whole record.
+
+    The hours are read from <work_root>/<site>/hour_selection_10hz.json, which process.selection wrote, and
+    the mask is rebuilt from their intervals. A tag with no entry there is raised rather than passed over: a
+    selection silently ignored produces a whole-record product under a name that says otherwise.
+    """
+    tag = str(tag or "").strip()
+    if not tag or tag == WHOLE:
+        return None, {}
+    d = SEL.read_selection(work, site)
+    item = (d.get("selections") or {}).get(tag)
+    if item is None:
+        raise FileNotFoundError("%s carries no %s selection in %s; build the hour scores first"
+                                % (site, tag, SEL.selection_path(work, site)))
+    m = SEL.mask_from_hours(item["hours"], t0, n, fs)
+    say("   %s: selection %s keeps %d hour(s), %.2f %% of the record, score threshold %s"
+        % (site, tag, item["n_hours"], 100 * m.mean(), item.get("threshold")))
+    return m, item
+
+
 def load_local(sv, site, rate):
     """(t0, the signed and rotated five channels, the angle, the signs applied, the undecided channels).
 
@@ -144,8 +203,15 @@ def load_local(sv, site, rate):
 
 
 def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None, redo=False,
-             work_root=None, verbose=True) -> list:
-    """Every asked-for product of one site. Returns the ledger rows it wrote."""
+             work_root=None, verbose=True, selections=None) -> list:
+    """Every asked-for product of one site. Returns the ledger rows it wrote.
+
+    `selections` is the hour selections each kind is run on, one product each: None or an empty list is the
+    whole record, whose product carries no tag in its name.
+    """
+    refused = [k for k in kinds if k in REFUSED_KINDS]
+    if refused:
+        raise ValueError("; ".join(REFUSED_KINDS[k] for k in refused))
     aurora_run.silence_loggers()
     import aurora
     sv = SV.load_survey(survey_name)
@@ -166,6 +232,7 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
         if verbose:
             print(line, flush=True)
 
+    sels = [str(s) for s in (selections or [])] or [""]
     rows, ref_info_all, mask_all, products = [], {}, {}, []
     site_row = sv.site(site)
     dec_row = sv.decision(site)
@@ -173,7 +240,8 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
     # a resumed run rewrites this folder's provenance, so what an earlier pass recorded about a product
     # already on disk is carried over rather than blanked
     prev = PROV.read(out_dir / "provenance.json")
-    prev_products = {(p.get("kind"), float(p.get("rate_hz", 0))): p for p in (prev.get("products") or [])}
+    prev_products = {(p.get("kind"), float(p.get("rate_hz", 0)), p.get("selection") or WHOLE): p
+                     for p in (prev.get("products") or [])}
     try:
         for rate in rates:
             t0, local, ang, applied, undecided, _meta = load_local(sv, site, rate)
@@ -190,108 +258,138 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
             ev_e = TR.e_events(site, work, sv.cfg)
             extra_mask, extra_name = _external_mask(dec_row, work, site, n, fs, say)
             for kind in kinds:
-                t_start = time.time()
-                edi_out = out_dir / ("%s_%s_%dhz_%s.edi" % (site, kind, int(rate), params_name))
-                row = dict(site=site, run=run_name, stamp=stamp, kind=kind, rate_hz=float(rate),
-                           params=params_name, remote=None, members=None, n_runs=None,
-                           mask_dropped_frac=None, floor_dropped_frac=None, seconds=None,
-                           peak_rss_mb=None, status=None, error=None, edi=str(edi_out), xml=None)
-                if edi_out.exists() and not redo:
-                    row.update(status="exists", xml=str(edi_out.with_suffix(".xml"))
-                               if edi_out.with_suffix(".xml").exists() else None)
-                    rows.append(row)
-                    old = prev_products.get((kind, float(rate)))
-                    if old:
-                        products.append(old)
-                        key = "%s_%dhz" % (kind, int(rate))
+                ref_held = {}                   # the reference array, read once and used by every selection
+                for sel in sels:
+                    t_start = time.time()
+                    tag = "" if sel in ("", WHOLE) else "%s_" % sel
+                    label = "%s %s" % (kind, sel or WHOLE)
+                    edi_out = out_dir / ("%s_%s_%dhz_%s%s.edi"
+                                         % (site, kind, int(rate), tag, params_name))
+                    key = "%s_%dhz%s" % (kind, int(rate), ("_%s" % sel) if tag else "")
+                    row = dict(site=site, run=run_name, stamp=stamp, kind=kind, rate_hz=float(rate),
+                               params=params_name, selection=(sel or WHOLE), remote=None, members=None,
+                               n_runs=None, mask_dropped_frac=None, floor_dropped_frac=None, seconds=None,
+                               peak_rss_mb=None, status=None, error=None, edi=str(edi_out), xml=None)
+                    if edi_out.exists() and not redo:
+                        row.update(status="exists", xml=str(edi_out.with_suffix(".xml"))
+                                   if edi_out.with_suffix(".xml").exists() else None)
+                        rows.append(row)
+                        old = prev_products.get((kind, float(rate), sel or WHOLE))
+                        if old:
+                            products.append(old)
+                        else:
+                            # a pass over a subset of the kinds rewrites this folder's provenance, and a
+                            # product it did not iterate would drop out of `products` and be lost from the
+                            # record. What the file itself can still say is written instead of nothing.
+                            products.append(dict(kind=kind, rate_hz=float(rate), params=params_name,
+                                                 selection=(sel or WHOLE), edi=str(edi_out),
+                                                 xml=row["xml"], tipper=EDI.has_tipper(edi_out),
+                                                 carried="read off the product; this pass did not make it"))
                         if key in (prev.get("mask") or {}):
                             mask_all[key] = prev["mask"][key]
                         if key in (prev.get("references") or {}):
                             ref_info_all[key] = prev["references"][key]
-                    say("   %-10s exists" % kind)
-                    continue
-                try:
-                    rt0, rh, rmask, info = REF.load_reference(kind, site, rate, work)
-                    ref_info_all["%s_%dhz" % (kind, int(rate))] = {
-                        k: v for k, v in info.items() if k != "mask"}
-                    if rh is not None and rt0 != t0:
-                        raise ValueError("%s %s: the reference starts at %d and the record at %d"
-                                         % (site, kind, rt0, t0))
-                    ev_rem = []
-                    if kind == "remote":
-                        ev_rem = [(float(pd.Timestamp(a).timestamp()), float(pd.Timestamp(b).timestamp()))
-                                  for a, b in (info.get("remote_events") or [])]
-                    keep, stats = TR.build_keep(t0, local, fs, ev_site, ev_rem, ev_e,
-                                                remote_mask=(None if rmask is None else rmask[:n]),
-                                                extra_mask=extra_mask, extra_name=extra_name)
-                    floor = TR.floor_dropped_frac(keep, fs)
-                    h5 = scratch / ("%s_%s_%dhz.h5" % (site, kind, int(rate)))
-                    rid = REF.reference_station_id(kind, info,
-                                                   (sv.cfg.get("observatory") or {}).get("code", ""))
-                    ref_row = None
-                    if kind == "remote":
-                        try:
-                            ref_row = sv.site(info["remote"])
-                        except KeyError:
-                            ref_row = None
-                    _p, segs = mth5_build.write_h5(
-                        h5, site, local, (None if rh is None else (rid, rh)), t0, fs,
-                        sv.cfg["name"], site_row, keep=keep, reference_row=ref_row)
-                    raw = scratch / ("raw_%s_%dhz.edi" % (kind, int(rate)))
-                    aurora_run.run_pass(h5, site, (rid or None), rate, params_name, raw)
-                    bs = aurora_run.bands_for(rate)
-                    plines = EDI.reference_lines(kind, info)
-                    plines += EDI.mask_lines(stats, len(segs), floor)
-                    plines += EDI.sign_lines(applied, undecided)
-                    plines += ["h_rotation_deg=%s" % ang,
-                               "sample_rate_hz=%g" % fs,
-                               "parameter_set=%s (%s)" % (params_name,
-                                                          ", ".join("%s=%s" % kv for kv in
-                                                                    aurora_run.AURORA_PARAMS[params_name].items())),
-                               "band_file=%s, %d levels, window %d samples"
-                               % (bs.file.name, bs.levels, bs.window),
-                               "engine=Aurora %s" % aurora.__version__,
-                               "cache=%s built %s; notch: %s; signs in the cache: %s; frame in the cache: %s"
-                               % (sidecar.get("builder"), sidecar.get("built_utc"),
-                                  sidecar.get("notch_applied", "none"),
-                                  sidecar.get("signs_applied", "none"),
-                                  sidecar.get("frame_applied", "none"))]
-                    if int(rate) == 10:
-                        plines.append("caveat_10hz=%s" % EDI.TEN_HZ_CAVEAT)
-                    _o, missed, xml, xml_err = EDI.finish_edi(
-                        raw, edi_out, site_row, dec_row, sv.cfg, kind, info, plines,
-                        (t0, t0 + n / fs), ang, "Aurora", aurora.__version__,
-                        remote_ids=([rid] if rid else []), rate=fs)
-                    raw.unlink(missing_ok=True)
-                    left = mth5_build.remove(h5)
-                    if left:
-                        say("   %s" % left)
-                    res, peak = rss_mb()
-                    members = ";".join("%s:%s" % (m.get("name"), m.get("weight"))
-                                       for m in (info.get("members") or [])
-                                       if m.get("role") != "refused")
-                    row.update(remote=rid or None, members=members or None, n_runs=len(segs),
-                               mask_dropped_frac=round(stats["mask_dropped_frac"], 5),
-                               floor_dropped_frac=round(float(floor), 5),
-                               seconds=round(time.time() - t_start, 1), peak_rss_mb=round(peak, 1),
-                               status="made", xml=(str(xml) if xml else None),
-                               error=(None if not xml_err else "xml: %s" % xml_err))
-                    mask_all["%s_%dhz" % (kind, int(rate))] = dict(stats, runs=len(segs),
-                                                                   floor_dropped_frac=round(float(floor), 5))
-                    products.append(dict(kind=kind, rate_hz=float(rate), params=params_name,
-                                         edi=str(edi_out), xml=(str(xml) if xml else None),
-                                         seconds=row["seconds"], peak_rss_mb=row["peak_rss_mb"],
-                                         n_runs=len(segs), tipper=EDI.has_tipper(edi_out),
-                                         metadata_missed=missed[:5], xml_error=xml_err))
-                    say("   %-10s made in %5.1f s, %d runs, mask drops %.2f %%, peak %.0f MB%s"
-                        % (kind, row["seconds"], len(segs), 100 * stats["mask_dropped_frac"], peak,
-                           "" if not xml_err else "; the XML was not written (%s)" % xml_err))
-                except Exception as exc:
-                    row.update(status="FAILED", error="%s: %s" % (type(exc).__name__, str(exc)[:400]),
-                               seconds=round(time.time() - t_start, 1))
-                    say("   %-10s FAILED: %s" % (kind, row["error"]))
-                    say(traceback.format_exc(limit=10))
-                rows.append(row)
+                        say("   %-18s exists" % label)
+                        continue
+                    try:
+                        if kind not in ref_held:
+                            ref_held[kind] = REF.load_reference(kind, site, rate, work)
+                        rt0, rh, rmask, info = ref_held[kind]
+                        ref_info_all[key] = {k: v for k, v in info.items() if k != "mask"}
+                        if rh is not None and rt0 != t0:
+                            raise ValueError("%s %s: the reference starts at %d and the record at %d"
+                                             % (site, kind, rt0, t0))
+                        sel_mask, sel_meta = _selection_mask(work, site, sel, t0, n, fs, say)
+                        pass_mask, pass_name = extra_mask, extra_name
+                        if sel_mask is not None:
+                            pass_mask = sel_mask if extra_mask is None else (extra_mask & sel_mask)
+                            pass_name = "%s: the best %.0f per cent of the scored hours by %g-%g s E-H " \
+                                        "coherence, %d hour(s)%s" \
+                                        % (sel, 100 * sel_meta["fraction"], SEL.SCORE_BAND_S[0],
+                                           SEL.SCORE_BAND_S[1], sel_meta["n_hours"],
+                                           (" drawn at random under seed %d as the control"
+                                            % sel_meta["seed"]) if sel_meta["random"] else "")
+                        ev_rem = []
+                        if kind == "remote":
+                            ev_rem = [(float(pd.Timestamp(a).timestamp()),
+                                       float(pd.Timestamp(b).timestamp()))
+                                      for a, b in (info.get("remote_events") or [])]
+                        keep, stats = TR.build_keep(t0, local, fs, ev_site, ev_rem, ev_e,
+                                                    remote_mask=(None if rmask is None else rmask[:n]),
+                                                    extra_mask=pass_mask, extra_name=pass_name)
+                        floor = TR.floor_dropped_frac(keep, fs)
+                        h5 = scratch / ("%s_%s_%dhz%s.h5" % (site, kind, int(rate),
+                                                             ("_%s" % sel) if tag else ""))
+                        rid = REF.reference_station_id(kind, info,
+                                                       (sv.cfg.get("observatory") or {}).get("code", ""))
+                        ref_row = None
+                        if kind == "remote":
+                            try:
+                                ref_row = sv.site(info["remote"])
+                            except KeyError:
+                                ref_row = None
+                        _p, segs = mth5_build.write_h5(
+                            h5, site, local, (None if rh is None else (rid, rh)), t0, fs,
+                            sv.cfg["name"], site_row, keep=keep, reference_row=ref_row)
+                        raw = scratch / ("raw_%s_%dhz%s.edi" % (kind, int(rate),
+                                                                ("_%s" % sel) if tag else ""))
+                        aurora_run.run_pass(h5, site, (rid or None), rate, params_name, raw)
+                        bs = aurora_run.bands_for(rate)
+                        plines = EDI.reference_lines(kind, info)
+                        plines += EDI.mask_lines(stats, len(segs), floor)
+                        plines += EDI.sign_lines(applied, undecided)
+                        plines += ["h_rotation_deg=%s" % ang,
+                                   "sample_rate_hz=%g" % fs,
+                                   "parameter_set=%s (%s)" % (params_name,
+                                                              ", ".join("%s=%s" % kv for kv in
+                                                                        aurora_run.AURORA_PARAMS[params_name].items())),
+                                   "band_file=%s, %d levels, window %d samples"
+                                   % (bs.file.name, bs.levels, bs.window),
+                                   "engine=Aurora %s" % aurora.__version__,
+                                   "cache=%s built %s; notch: %s; signs in the cache: %s; frame in the "
+                                   "cache: %s"
+                                   % (sidecar.get("builder"), sidecar.get("built_utc"),
+                                      sidecar.get("notch_applied", "none"),
+                                      sidecar.get("signs_applied", "none"),
+                                      sidecar.get("frame_applied", "none"))]
+                        if int(rate) == 10:
+                            plines.append("caveat_10hz=%s" % RATE.caveat(RATE.read_record(work)))
+                        _o, missed, xml, xml_err = EDI.finish_edi(
+                            raw, edi_out, site_row, dec_row, sv.cfg, kind, info, plines,
+                            (t0, t0 + n / fs), ang, "Aurora", aurora.__version__,
+                            remote_ids=([rid] if rid else []), rate=fs)
+                        raw.unlink(missing_ok=True)
+                        left = mth5_build.remove(h5)
+                        if left:
+                            say("   %s" % left)
+                        res, peak = rss_mb()
+                        members = ";".join("%s:%s" % (m.get("name"), m.get("weight"))
+                                           for m in (info.get("members") or [])
+                                           if m.get("role") != "refused")
+                        row.update(remote=rid or None, members=members or None, n_runs=len(segs),
+                                   mask_dropped_frac=round(stats["mask_dropped_frac"], 5),
+                                   floor_dropped_frac=round(float(floor), 5),
+                                   seconds=round(time.time() - t_start, 1), peak_rss_mb=round(peak, 1),
+                                   status="made", xml=(str(xml) if xml else None),
+                                   error=(None if not xml_err else "xml: %s" % xml_err))
+                        mask_all[key] = dict(stats, runs=len(segs),
+                                             floor_dropped_frac=round(float(floor), 5))
+                        products.append(dict(kind=kind, rate_hz=float(rate), params=params_name,
+                                             selection=(sel or WHOLE), selection_detail=sel_meta,
+                                             edi=str(edi_out), xml=(str(xml) if xml else None),
+                                             seconds=row["seconds"], peak_rss_mb=row["peak_rss_mb"],
+                                             n_runs=len(segs), tipper=EDI.has_tipper(edi_out),
+                                             metadata_missed=missed[:5], xml_error=xml_err))
+                        say("   %-18s made in %5.1f s, %d runs, mask drops %.2f %%, peak %.0f MB%s"
+                            % (label, row["seconds"], len(segs), 100 * stats["mask_dropped_frac"], peak,
+                               "" if not xml_err else "; the XML was not written (%s)" % xml_err))
+                    except Exception as exc:
+                        row.update(status="FAILED", error="%s: %s" % (type(exc).__name__, str(exc)[:400]),
+                                   seconds=round(time.time() - t_start, 1))
+                        say("   %-18s FAILED: %s" % (label, row["error"]))
+                        say(traceback.format_exc(limit=10))
+                    rows.append(row)
+                ref_held.clear()
             del local
         undec = [c for c in undecided]
         pool_file = work / "references" / ("%dhz" % int(rates[0])) / "pool.json"
@@ -300,9 +398,11 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
                    aurora_run.bands_for(rates[0]), params_name,
                    aurora_run.AURORA_PARAMS[params_name], rates[0], run_name, stamp, products, mask_all,
                    sidecar, "Aurora", aurora.__version__,
-                   extra_caveats=PROV.caveats(site_row, applied, undec, ref_info_all, max(rates)),
+                   extra_caveats=PROV.caveats(site_row, applied, undec, ref_info_all, max(rates),
+                                              work_root=work),
                    pool=pool, rot_segments=FR.parse_regimes(dec_row.get("rot_regimes")),
-                   rot_drop=FR.parse_regimes(dec_row.get("rot_drop")))
+                   rot_drop=FR.parse_regimes(dec_row.get("rot_drop")),
+                   selection=SEL.read_selection(work, site) if sels != [""] else {})
     finally:
         log.close()
         shutil.rmtree(scratch, ignore_errors=True)
@@ -317,15 +417,23 @@ def main(argv=None) -> int:
     ap.add_argument("--site", required=True)
     ap.add_argument("--run", default="first", help="the run name; the folder is <run>_<stamp>")
     ap.add_argument("--stamp", default="", help="the launch time in UTC as YYYYmmdd_HHMM, shared by a run")
-    ap.add_argument("--kinds", nargs="+", default=list(KINDS), choices=list(KINDS))
+    ap.add_argument("--kinds", nargs="+", default=[k for k in KINDS if k not in REFUSED_KINDS],
+                    choices=list(KINDS))
     ap.add_argument("--rates", nargs="+", type=int, default=[1])
     ap.add_argument("--params", default=aurora_run.DEFAULT_PARAMS, choices=sorted(aurora_run.AURORA_PARAMS))
     ap.add_argument("--work-root", default="", help="override survey.yaml work_root")
+    ap.add_argument("--selections", nargs="+", default=[],
+                    help="the hour selections each kind is run on: f05 f10 f25 r25; none = the whole record")
     ap.add_argument("--redo", action="store_true", help="remake a product whose EDI is already on disk")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
+    refused = [k for k in a.kinds if k in REFUSED_KINDS]
+    if refused:
+        print("\n".join(REFUSED_KINDS[k] for k in refused))
+        return 2
     rows = one_site(a.survey, a.site, a.run, a.kinds, a.rates, a.params, stamp=(a.stamp or None),
-                    redo=a.redo, work_root=(a.work_root or None), verbose=not a.quiet)
+                    redo=a.redo, work_root=(a.work_root or None), verbose=not a.quiet,
+                    selections=a.selections)
     failed = [r for r in rows if r["status"] == "FAILED"]
     print(json.dumps(dict(site=a.site, made=sum(r["status"] == "made" for r in rows),
                           exists=sum(r["status"] == "exists" for r in rows), failed=len(failed))))

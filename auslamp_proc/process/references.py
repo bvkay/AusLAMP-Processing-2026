@@ -32,13 +32,27 @@ member's median coherence with the FLEET at 100-1000 s and never its coherence w
 (Ben's rule, 2026-09-06): whether a reference is a good measurement of the regional field is a
 question about the reference and the field. Members below STACK_CUTOFF = 0.5 are excluded, the best
 STACK_MAX = 8 are kept, and a stack with fewer than STACK_MIN = 2 members is refused -- a one-member stack is
-a remote site renamed (STACK_MIN_MEMBERS, qld_p1_remotes_v2.py:115). Each member is demeaned over its own
-finite samples and a sample where a member is NaN does not add to that member's weight there, so the mean is
-over whoever is sound and the weights renormalise per sample. Where no member is sound the stack is zero and
-the mask is False: a zero reference contributes nothing to either the cross- or the auto-spectrum, so those
-windows drop out of the estimate instead of biasing it.
+a remote site renamed (STACK_MIN_MEMBERS, qld_p1_remotes_v2.py:115). A sample where a member is NaN does not
+add to that member's weight there, so the mean is over whoever is sound and the weights renormalise per
+sample. Where no member is sound the stack is zero and the mask is False: a zero reference contributes
+nothing to either the cross- or the auto-spectrum, so those windows drop out of the estimate instead of
+biasing it.
 
-The store is <work_root>/references/<rate>hz/<kind>_<site>.npz (t0, Hx, Hy, mask, coverage) beside
+A member passes four steps between its cache and the sum, in this order (Ben's ruling, 2026-09-17). Its
+transient chunks are NaN; then EDGE_S = 120 s inside every record end and every gap end is NaN, because
+the samples either side of a break carry the logger's settling, which runs at 37x the record's own rate of
+steps above 2 nT for the first 60 s and under 2x by the second; then it is shifted by its own lag with the
+Lanczos delay of align.shift, which is local and so does not spread a spike; then member_screen bridges the
+spikes that are its own and not the fleet's; then level_match sets it on the fleet's own level over
+LEVEL_WIN_S = 3600 s, which is what a per-record demeaning cannot do, because a member's own mean is
+exactly the quantity that stepped the composite whenever the member set changed.
+
+The stack and its members are measured on the same statistic, steps above STEP_NT = 2.0 nT per million
+samples, and the sidecar carries the stack's rate beside both the raw and the screened member medians: a
+stack rougher than the median of its own screened members has done the opposite of what averaging is for.
+
+The store is <work_root>/references/<rate>hz/<kind>_<site>.npz (t0, Hx, Hy, mask, coverage, and for the two
+stack kinds bridged_Hx and bridged_Hy, the spans the spike screen bridged) beside
 <kind>_<site>.json (members, weights, lags, roles, refusals, frame, built_at), with pool.json,
 fleet_weights.json, fleet_pairs.json and candidates_<site>.json for the tables the workbook prints. A 10 Hz
 store re-reads the 1 Hz specification -- the same pool, the same remote, the same members, weights and lags --
@@ -49,6 +63,9 @@ on the 10 Hz grid after the gap-edge screen.
 from __future__ import annotations
 
 import json
+import os
+import time
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -65,7 +82,22 @@ MIN_OVERLAP_DAYS = 20.0
 STACK_CUTOFF = 0.5
 STACK_MAX = 8
 STACK_MIN = 2
-GAP_EDGE_S = 1.0                      # widened either side of every gap above 1 Hz
+GAP_EDGE_S = 1.0                      # widened either side of every gap above 1 Hz, the remote path
+EDGE_S = 120.0                        # NaN inside every record end and gap end, the member path, every rate
+SCREEN_K = 30.0                       # the multiple of the MAD a member's first difference may depart by
+SCREEN_FLOOR_NT = 3.0                 # and the floor under that threshold, in nT
+SCREEN_MIN_MEMBERS = 2                # members that have to be finite at a sample for the screen to run
+SCREEN_PAD = (2, 3)                   # samples flagged before and after a flagged sample
+SCREEN_MAX_SPAN_S = 12.0              # a flagged span longer than this is NaN rather than bridged
+STEP_NT = 2.0                         # a sample-to-sample step this large is not the field on a quiet day
+LEVEL_WIN_S = 3600.0                  # the window a member's offset from the fleet level is taken over
+LEVEL_BLOCK_S = 60.0                  # the block each median of that offset is taken over first
+LEVEL_BLOCK_MIN_FRAC = 1.0 / 3.0      # of a block that has to be finite for the block to count
+LEVEL_MIN_FRAC = 0.1                  # of the window's blocks that have to be finite for an offset
+LEVEL_MIN_MEMBERS = 2                 # members that have to be finite for the fleet level to be taken
+LEVEL_PASSES = 2                      # 1 is the block median alone; 2 puts a block mean first
+REPLACE_TRIES = 10                    # times a store file is offered to os.replace before giving up
+REPLACE_WAIT_S = 30.0                 # waited between those tries while another process holds the old file
 H = ("Hx", "Hy")
 KINDS_WITH_STORE = ("remote", "stack", "obs", "stack_obs")
 
@@ -76,6 +108,31 @@ class NoMembers(RuntimeError):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _replace(src, dst, tries=REPLACE_TRIES, wait_s=REPLACE_WAIT_S) -> None:
+    """Move `src` over `dst`, waiting where another process still holds the old file open.
+
+    A reader that has the old file mapped makes the move fail on Windows with PermissionError, and a
+    workbook pass may be reading the store while it is rebuilt. The wait is the whole remedy: a store file is
+    never truncated in place, so a reader either sees the old file whole or the new one whole.
+    """
+    for k in range(int(tries)):
+        try:
+            os.replace(str(src), str(dst))
+            return
+        except PermissionError:
+            if k == int(tries) - 1:
+                raise
+            time.sleep(float(wait_s))
+
+
+def _write_json(path, obj) -> None:
+    """Serialise `obj` beside `path` and move it over, so a reader never sees half a sidecar."""
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=1, default=str), encoding="utf-8")
+    _replace(tmp, path)
 
 
 def _iso(t) -> str:
@@ -108,6 +165,322 @@ def gap_edge_screen(x, fs, edge_s=GAP_EDGE_S) -> np.ndarray:
     for a, b in zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1)):
         v[max(0, a - k):min(len(v), b + k)] = np.nan
     return v
+
+
+def edge_screen(x, fs, edge_s=EDGE_S) -> np.ndarray:
+    """NaN `edge_s` seconds inside every finite run: both record ends and both sides of every gap.
+
+    The samples either side of a break carry the logger's settling, which is a step of thousands of nT at a
+    PR6-24 and is not the field: Q45 (Queensland Phase 3) opens at 16,804 nT, reaches 33,214 nT and settles
+    at 29,234 nT over about 10 s, and carries 24 steps above 50 nT. The alignment shift then spreads such a
+    sample over its neighbours, so it is removed before the shift and not after.
+
+    The screen runs on the stack member path only, at every rate, and takes what is inside a run rather than
+    widening what is outside it, which is what gap_edge_screen does above 1 Hz on the remote path.
+    """
+    v = np.asarray(x, float).copy()
+    k = int(round(float(edge_s) * float(fs)))
+    if k < 1:
+        return v
+    bad = ~np.isfinite(v)
+    d = np.diff(np.concatenate(([1], bad.view(np.int8), [1])))
+    for a, b in zip(np.flatnonzero(d == -1), np.flatnonzero(d == 1)):
+        v[a:min(b, a + k)] = np.nan
+        v[max(a, b - k):b] = np.nan
+    return v
+
+
+def steps_per_million(x, step_nt=STEP_NT) -> float:
+    """How many of a channel's sample-to-sample steps exceed `step_nt`, per million steps.
+
+    Taken over the finite samples in order, so a step across a gap counts: the statistic is measured the
+    same way on a member and on the stack built from it, and a screen that leaves holes is charged for them.
+    """
+    v = np.asarray(x, float)
+    d = np.diff(v[np.isfinite(v)])
+    return 1e6 * float((np.abs(d) > float(step_nt)).sum()) / max(1, len(d))
+
+
+def member_screen(members: dict, fs, k=SCREEN_K, floor_nt=SCREEN_FLOOR_NT,
+                  min_members=SCREEN_MIN_MEMBERS, pad=SCREEN_PAD, max_span_s=SCREEN_MAX_SPAN_S) -> tuple:
+    """One channel of every stack member with each member's own spikes bridged over, and the counts.
+
+    D_i is a member's first difference. Two rules, on the number of members finite at the sample:
+
+        three or more   med is the median over them of D; a sample is flagged where |D_i - med| exceeds
+                        max(k x MAD(D_i - med), floor_nt). A spike the fleet shares is the field: the median
+                        carries it and the departure is what is measured.
+        exactly two     the median of two first differences does not name the culprit, so a sample is
+                        flagged where |D_i| exceeds max(k x MAD(D_i), floor_nt) AND the other member's |D_j|
+                        at that sample is under floor_nt / 2. Where both exceed the floor neither is
+                        flagged, because a step both members take is the field.
+        fewer than two, or fewer than `min_members`      nothing is flagged.
+
+    The flagged span, pad[0] samples before it to pad[1] after and merged with its neighbours, is replaced by
+    a straight line between the finite samples either side of the span inside that member, where the span is
+    at most max_span_s seconds and both of those samples are finite, and is NaN otherwise.
+
+    A line and not a hole. A member that goes NaN over a span drops out of the weighted mean there, which
+    costs more than the spike did: Q60N reads 4,093 steps above 2 nT per million samples with holes, 1,068
+    with the spikes left in, and 338 with the line.
+
+    The counts are per member: the samples flagged by each rule, the spans bridged and left NaN, each rule's
+    MAD and threshold in nT and which limb set it, and the bridged spans as [start, end] index pairs.
+    """
+    names = list(members)
+    n = len(members[names[0]])
+    d_all = np.vstack([np.diff(np.asarray(members[d], float), prepend=np.nan) for d in names])
+    fin_all = np.isfinite(d_all)
+    nfin = fin_all.sum(axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)       # a sample no member is finite at
+        med = np.nanmedian(d_all, axis=0)
+    med[nfin < max(3, int(min_members))] = np.nan
+    pair = (nfin == 2) if int(min_members) <= 2 else np.zeros(n, bool)
+    abs_sum = np.where(fin_all, np.abs(d_all), 0.0).sum(axis=0) if pair.any() else None
+    span_max = max(1, int(round(float(max_span_s) * float(fs))))
+    out, counts = {}, {}
+    for i, name in enumerate(names):
+        r = d_all[i] - med
+        fin = np.isfinite(r)
+        mad = 1.4826 * float(np.median(np.abs(r[fin] - np.median(r[fin])))) if fin.any() else np.nan
+        thr = max(float(k) * mad, float(floor_nt)) if np.isfinite(mad) else float(floor_nt)
+        hit = fin & (np.abs(r) > thr)
+        d_i, fin_i = d_all[i], fin_all[i]
+        ad = np.abs(d_i)
+        mad_p = (1.4826 * float(np.median(np.abs(d_i[fin_i] - np.median(d_i[fin_i]))))
+                 if fin_i.any() else np.nan)
+        thr_p = max(float(k) * mad_p, float(floor_nt)) if np.isfinite(mad_p) else float(floor_nt)
+        if abs_sum is None:
+            hit_p = np.zeros(n, bool)
+        else:
+            hit_p = pair & fin_i & (ad > thr_p) & ((abs_sum - np.where(fin_i, ad, 0.0)) < 0.5 * floor_nt)
+        idx = np.flatnonzero(hit | hit_p)
+        x = np.asarray(members[name], float).copy()
+        flag = np.zeros(n, bool)
+        for j in idx:
+            flag[max(0, j - pad[0]):j + pad[1] + 1] = True
+        dd = np.diff(np.concatenate(([0], flag.view(np.int8), [0])))
+        spans, holes = [], 0
+        for a, b in zip(np.flatnonzero(dd == 1), np.flatnonzero(dd == -1)):
+            if a >= 1 and b < n and (b - a) <= span_max and np.isfinite(x[a - 1]) and np.isfinite(x[b]):
+                x[a:b] = np.linspace(x[a - 1], x[b], b - a + 2)[1:-1]
+                spans.append([int(a), int(b)])
+            else:
+                x[a:b] = np.nan
+                holes += 1
+        out[name] = x
+        counts[name] = dict(flagged=int(len(idx)), flagged_pair=int(np.count_nonzero(hit_p)),
+                            bridged=len(spans), nan_spans=int(holes),
+                            mad_nt=(None if not np.isfinite(mad) else round(float(mad), 4)),
+                            threshold_nt=round(float(thr), 4),
+                            threshold_from=("the %g nT floor" % floor_nt
+                                            if not np.isfinite(mad) or float(k) * mad <= float(floor_nt)
+                                            else "%g x MAD" % k),
+                            pair_mad_nt=(None if not np.isfinite(mad_p) else round(float(mad_p), 4)),
+                            pair_threshold_nt=round(float(thr_p), 4),
+                            pair_threshold_from=("the %g nT floor" % floor_nt
+                                                 if not np.isfinite(mad_p) or
+                                                 float(k) * mad_p <= float(floor_nt) else "%g x MAD" % k),
+                            spans=spans)
+    return out, counts
+
+
+def level_match(members: dict, fs, win_s=LEVEL_WIN_S, min_frac=LEVEL_MIN_FRAC,
+                min_members=LEVEL_MIN_MEMBERS, block_s=LEVEL_BLOCK_S, passes=LEVEL_PASSES) -> tuple:
+    """One channel of every stack member with its slow offset from the fleet removed, and each offset's rms.
+
+    m(t) is the median across the members finite at t, taken where at least `min_members` are (with two, the
+    median of a pair is their mean). The offset o_i of x_i - m is taken over blocks: the median of each
+    `block_s` = 60 s block, NaN where fewer than a third of the block is finite; then a centred running
+    statistic over win_s / block_s = 60 of those blocks, needing `min_frac` of that many finite; then linear
+    interpolation of the block series back to the sample grid, which carries the offset across gaps and
+    holds it constant beyond its ends. The member enters the weighted mean as x_i - o_i, less one constant
+    common to every member, which is the mean of m over its finite samples: a constant every member shares
+    cannot step the level, and it leaves the composite near zero so the store's convention of zero where no
+    member is sound stays meaningful.
+
+    Medians and not a mean over samples. A sample mean is the wrong estimator for an offset in the presence
+    of excursions: the recorder's settling that survives the edge screen enters a 3,600 s mean at its own
+    area over 3,600, which measured 13-22 nT on Hx over a plateau ending exactly at half the window (Ben's
+    ruling, 2026-09-17). A median of 60 s blocks discards an excursion shorter than 30 s outright. Blocks and
+    not samples because a running statistic over 53,000 blocks is cheap where one over 3 million samples is
+    not.
+
+    Two passes: the first takes the running MEAN of the blocks, which puts the members on a common level, and
+    the second the running MEDIAN, which is robust on a target that no longer steps. Both are needed because
+    m steps by up to 2,788 nT whenever the member set changes, a median follows such a step where a mean
+    smooths it, and a single median pass therefore lays 285-406 steps above 2 nT per million into each member
+    against 6-27 before it. `passes` = 1 is the median pass alone.
+
+    This is what removes the slow site-specific difference -- DC, drift, Sq amplitude -- that stepped the
+    stack's level whenever a member dropped in or out; it changes the stack's content only at periods above
+    about win_s and only by the smoothed difference between the weighted mean and the median of the
+    coherent members. A member is not demeaned over its own record afterwards: the offset does that job, and
+    a per-record mean is exactly the quantity that made the level step.
+
+    A member the fleet never overlaps has no offset to measure and falls back to its own mean, which is the
+    only estimate of its level there is; it is reported with the others by its rms.
+
+    Returns ({member: array}, {member: the offset's rms in nT}, the members' established level). The level is
+    the fleet median of the matched members, less the same common constant, and is what the observatory is
+    matched against one-sidedly in build_stack_obs.
+    """
+    names = list(members)
+    n = len(members[names[0]])
+    stack = np.vstack([np.asarray(members[d], float) for d in names])
+    off = np.zeros_like(stack)
+    block = max(1, int(round(float(block_s) * float(fs))))
+    nwin = max(1, int(round(float(win_s) / float(block_s))))
+    need = max(1, int(round(float(min_frac) * nwin)))
+    base = 0.0
+    npass = max(1, int(passes))
+    for k in range(npass):
+        m = _fleet_level(stack, min_members)
+        if k == 0:
+            base = float(np.nanmean(m)) if np.isfinite(m).any() else 0.0
+        smooth = npass > 1 and k == 0
+        for i in range(len(names)):
+            b = _block_median(stack[i] - m, block)
+            got = _running_mean(b, nwin, need) if smooth else _running_median(b, nwin, need)
+            if np.isfinite(got).any():
+                o = _blocks_to_samples(got, n, block)
+            else:
+                g = np.isfinite(stack[i])
+                o = np.full(n, float(stack[i][g].mean()) - base if g.any() else 0.0)
+            stack[i] -= o
+            off[i] += o
+        del m
+    out = {name: stack[i] - base for i, name in enumerate(names)}
+    rms = {name: round(float(np.sqrt(np.mean(off[i] ** 2))), 3) for i, name in enumerate(names)}
+    level = (_fleet_level(stack, min_members) - base).astype(np.float32)
+    return out, rms, level
+
+
+def one_sided_offset(x, level, fs, win_s=LEVEL_WIN_S, min_frac=LEVEL_MIN_FRAC, block_s=LEVEL_BLOCK_S,
+                     passes=LEVEL_PASSES) -> np.ndarray:
+    """The offset of one record from a level that is already established, by level_match's own estimator.
+
+    `level` is the members' matched fleet median and is not recomputed: the record being matched does not
+    enter it, so a record whose own level sits thousands of nT away cannot drag what it is matched against.
+    The offset is taken over the samples where both are finite, carried across the record's gaps and held
+    beyond its ends by the same interpolation from block centres.
+
+    This is how the observatory enters the stack + observatory. It is matched and not demeaned over its own
+    record, because a per-record mean is what stepped the composite every time the archive's mask opened or
+    closed -- 42 to 70 times over a Queensland window, which put stack + observatory at 74-207 steps above
+    2 nT per million against a stack at 9.5-43.5 (2026-09-17).
+    """
+    x = np.asarray(x, float)
+    n = len(x)
+    block = max(1, int(round(float(block_s) * float(fs))))
+    nwin = max(1, int(round(float(win_s) / float(block_s))))
+    need = max(1, int(round(float(min_frac) * nwin)))
+    resid = x - np.asarray(level, float)
+    out = np.zeros(n)
+    npass = max(1, int(passes))
+    for k in range(npass):
+        b = _block_median(resid, block)
+        got = _running_mean(b, nwin, need) if (npass > 1 and k == 0) else _running_median(b, nwin, need)
+        if not np.isfinite(got).any():
+            break
+        step = _blocks_to_samples(got, n, block)
+        out += step
+        resid -= step
+    return out
+
+
+def _fleet_level(stack, min_members=LEVEL_MIN_MEMBERS) -> np.ndarray:
+    """The median across the members finite at each sample, NaN where fewer than min_members are."""
+    nfin = np.isfinite(stack).sum(axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)       # a sample no member is finite at
+        m = np.nanmedian(stack, axis=0)
+    m[nfin < int(min_members)] = np.nan
+    return m
+
+
+def _block_median(y, block, min_frac=LEVEL_BLOCK_MIN_FRAC) -> np.ndarray:
+    """The median of each `block` samples of y, NaN where fewer than `min_frac` of the block is finite.
+
+    The last block is padded with NaN and is judged on the same count as a whole one, so a tail shorter than
+    a third of a block does not carry a block of its own.
+    """
+    y = np.asarray(y, float)
+    n = len(y)
+    nb = int(np.ceil(n / block)) if n else 0
+    if not nb:
+        return np.zeros(0)
+    pad = nb * block - n
+    v = (np.concatenate([y, np.full(pad, np.nan)]) if pad else y).reshape(nb, block)
+    cnt = np.isfinite(v).sum(axis=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)       # a block with nothing finite in it
+        med = np.nanmedian(v, axis=1)
+    med[cnt < max(1, int(round(float(min_frac) * block)))] = np.nan
+    return med
+
+
+def _running_median(b, w, need) -> np.ndarray:
+    """The centred running median of the block series b over w blocks, NaN where fewer than `need` finite.
+
+    Only whole windows are taken, so the first and last w // 2 blocks are NaN and the interpolation back to
+    the sample grid holds the nearest measured value over them. A truncated window is what biased the sample
+    mean this replaces, so none is offered here.
+    """
+    b = np.asarray(b, float)
+    nb = len(b)
+    out = np.full(nb, np.nan)
+    if nb < w:
+        g = np.isfinite(b)
+        if g.sum() >= int(need):
+            out[:] = float(np.median(b[g]))
+        return out
+    sw = np.lib.stride_tricks.sliding_window_view(b, w)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        med = np.nanmedian(sw, axis=1)
+    med[np.isfinite(sw).sum(axis=1) < int(need)] = np.nan
+    out[w // 2:w // 2 + len(med)] = med
+    return out
+
+
+def _running_mean(b, w, need) -> np.ndarray:
+    """The centred running mean of the block series b over w blocks, NaN where fewer than `need` finite.
+
+    The first pass of the level match, where the target still steps by hundreds of nT and a median would
+    follow the step rather than smooth it. The block medians beneath it have already taken out the
+    excursions a mean over samples would have been dragged by.
+    """
+    b = np.asarray(b, float)
+    nb = len(b)
+    out = np.full(nb, np.nan)
+    if nb < w:
+        g = np.isfinite(b)
+        if g.sum() >= int(need):
+            out[:] = float(np.mean(b[g]))
+        return out
+    sw = np.lib.stride_tricks.sliding_window_view(b, w)
+    good = np.isfinite(sw)
+    cnt = good.sum(axis=1)
+    with np.errstate(invalid="ignore"):
+        got = np.where(good, sw, 0.0).sum(axis=1) / np.maximum(cnt, 1)
+    got[cnt < int(need)] = np.nan
+    out[w // 2:w // 2 + len(got)] = got
+    return out
+
+
+def _blocks_to_samples(b, n, block) -> np.ndarray:
+    """The block series on the sample grid, linear between block centres and held beyond the finite ones.
+
+    Zero throughout where nothing is finite: a member the fleet never overlaps has no offset to measure.
+    """
+    b = np.asarray(b, float)
+    g = np.isfinite(b)
+    if not g.any():
+        return np.zeros(n)
+    centres = np.arange(len(b), dtype=float) * block + 0.5 * (block - 1)
+    return np.interp(np.arange(n, dtype=float), centres[g], b[g])
 
 
 class Store:
@@ -280,32 +653,45 @@ class Store:
             u = own_days
         return float(min(self.min_overlap_days, 0.75 * min(u, own_days)))
 
-    def _on_grid(self, site: str, t0, n, drop_events=True, lag_s=None) -> dict:
+    def _on_grid(self, site: str, t0, n, drop_events=True, lag_s=None, steps_before=None) -> dict:
         """A member's rotated H on the target grid; NaN where it has nothing to say.
 
-        `drop_events` NaNs the member's own transient chunks, which is what a stack member needs. A remote
-        site is passed through whole instead, because the single-reference pass cuts local and remote
-        together on the union of the two masks at processing time and NaNing here would hide that cut.
+        `drop_events` NaNs the member's own transient chunks and then screens EDGE_S = 120 s inside every
+        record end and every gap end, which is what a stack member needs: the samples either side of a break
+        carry the logger's settling and the shift below would spread them. A remote site is passed through
+        whole instead, because the single-reference pass cuts local and remote together on the union of the
+        two masks at processing time and NaNing here would hide that cut.
+
+        The order is fixed: the events, then the edge screen, then the shift. The edge screen has to come
+        before the shift because the shift reaches LANCZOS_A samples either side of what it is given.
+
+        `steps_before`, where a dict is given, is filled with each channel's steps per million before the
+        edge screen and the shift. That is the member as it stands, and the number the stack is judged
+        against.
         """
         td, hd, _a, nd = self.rotated(site)
         out = {c: np.full(int(n), np.nan) for c in H}
         fs = self.fs
         lo, hi = max(t0, td), min(t0 + n / fs, td + nd / fs)
-        if hi <= lo:
-            return out
-        i0 = int(round((lo - t0) * fs))
-        j0 = int(round((lo - td) * fs))
-        L = max(0, min(int(round((hi - lo) * fs)), int(n) - i0, nd - j0))
-        if L == 0:
-            return out
-        for c in H:
-            out[c][i0:i0 + L] = hd[c][j0:j0 + L]
+        i0 = j0 = L = 0
+        if hi > lo:
+            i0 = int(round((lo - t0) * fs))
+            j0 = int(round((lo - td) * fs))
+            L = max(0, min(int(round((hi - lo) * fs)), int(n) - i0, nd - j0))
+        if L:
+            for c in H:
+                out[c][i0:i0 + L] = hd[c][j0:j0 + L]
+        if drop_events:
+            if L:
+                keep = TR.keep_mask(td, nd, fs, self.events(site))
+                for c in H:
+                    out[c][i0:i0 + L][~keep[j0:j0 + L]] = np.nan
+            if steps_before is not None:
+                steps_before.update({c: steps_per_million(out[c]) for c in H})
+            for c in H:
+                out[c] = edge_screen(out[c], fs)
         if lag_s is not None and np.isfinite(lag_s) and lag_s != 0.0:
             out = {c: align.shift(out[c], float(lag_s), fs) for c in H}
-        if drop_events:
-            keep = TR.keep_mask(td, nd, fs, self.events(site))
-            for c in H:
-                out[c][i0:i0 + L][~keep[j0:j0 + L]] = np.nan
         return out
 
     def pair_coherence(self, a: str, b: str, band=COH.PAIR_BAND, nperseg=COH.PAIR_NPERSEG,
@@ -384,9 +770,9 @@ class Store:
         if cached:
             self._scores[target] = t
             self.dir.mkdir(parents=True, exist_ok=True)
-            (self.dir / ("candidates_%s.json" % target)).write_text(
-                json.dumps(dict(target=target, band_s=[20, 200], built_at=_now(),
-                                rows=t.to_dict("records")), indent=1, default=str), encoding="utf-8")
+            _write_json(self.dir / ("candidates_%s.json" % target),
+                        dict(target=target, band_s=[20, 200], built_at=_now(),
+                             rows=t.to_dict("records")))
         return t
 
     # ------------------------------------------------------------ the remote site
@@ -459,8 +845,8 @@ class Store:
                           % (a, b, pairs["%s:%s" % (a, b)]["coh"], r["chunks"]), flush=True)
         weights = COH.fleet_weight_table(pairs, pool)
         self.dir.mkdir(parents=True, exist_ok=True)
-        fw.write_text(json.dumps(weights, indent=1), encoding="utf-8")
-        fp.write_text(json.dumps(pairs, indent=1), encoding="utf-8")
+        _write_json(fw, weights)
+        _write_json(fp, pairs)
         self._fleet = (weights, pairs)
         return self._fleet
 
@@ -520,31 +906,93 @@ class Store:
         return kept, lags, refused, notes
 
     def accumulate(self, target: str, weights: dict, lags: dict) -> tuple:
-        """(t0, n, num, den, count) of the weighted member sum, one read per member."""
+        """(t0, n, num, den, count, screen, spans, levels) of the weighted member sum, one read per member.
+
+        `screen` is the spike screen's record for the sidecar, `spans` the spans it bridged, merged over the
+        members, for the npz -- at 1 Hz a stack carries up to 33,000 of them and they belong beside the
+        arrays rather than in a sidecar a reader opens -- and `levels` the members' established level per
+        channel, which build_stack_obs matches the observatory against.
+
+        The members are held together rather than summed one at a time, because the two steps between the
+        shift and the sum are both comparisons between them: the spike screen, without which a member's own
+        logger spike enters the stack at its weight over the sum of the weights (Q38 carries 1,152 such
+        steps per million samples of its own), and the level match, without which the composite's level
+        steps every time a member drops in or out.
+        """
         t0, n = self.window(target)
+        arrays, before = {}, {}
+        for d in weights:
+            b = {}
+            arrays[d] = self._on_grid(d, t0, n, drop_events=True, lag_s=(lags or {}).get(d),
+                                      steps_before=b)
+            before[d] = b
+        screened, counts, offsets, levels = {}, {}, {}, {}
+        for c in H:
+            got, cn = member_screen({d: arrays[d].pop(c) for d in arrays}, self.fs)
+            got, rms, level = level_match(got, self.fs)
+            screened[c] = got
+            offsets[c] = rms
+            levels[c] = level          # what the observatory is matched against in build_stack_obs
+            for d, v in cn.items():
+                counts.setdefault(d, {})[c] = v
+        del arrays
         num = {c: np.zeros(n) for c in H}
         den = {c: np.zeros(n) for c in H}
         cnt = np.zeros(n, np.int16)
         for d, w in weights.items():
-            g = self._on_grid(d, t0, n, drop_events=True, lag_s=(lags or {}).get(d))
             for c in H:
-                x = np.asarray(g[c], float)
+                x = screened[c][d]
                 m = np.isfinite(x)
-                if m.any():
-                    x = x.copy()
-                    x[m] -= x[m].mean()
                 num[c][m] += w * x[m]
                 den[c][m] += w
-            cnt += np.isfinite(g["Hx"])
-            del g
-        return t0, n, num, den, cnt
+            cnt += np.isfinite(screened["Hx"][d])
+        screen = dict(
+            rule="a member sample whose first difference departs from the median over members by more than "
+                 "max(%g x MAD, %g nT) is flagged -- where exactly two members are finite, where |D| passes "
+                 "that bar and the other member's is under %g nT -- and the span %d samples before it to %d "
+                 "after, merged with its neighbours, is bridged by a straight line where the span is at "
+                 "most %g s. Each member is then set on the fleet's own level, by the running median "
+                 "over %g s of the medians of its %g s blocks."
+                 % (SCREEN_K, SCREEN_FLOOR_NT, 0.5 * SCREEN_FLOOR_NT, SCREEN_PAD[0], SCREEN_PAD[1],
+                    SCREEN_MAX_SPAN_S, LEVEL_WIN_S, LEVEL_BLOCK_S),
+            k=SCREEN_K, floor_nt=SCREEN_FLOOR_NT, min_members=SCREEN_MIN_MEMBERS,
+            pad_samples=list(SCREEN_PAD), max_span_s=SCREEN_MAX_SPAN_S, edge_s=EDGE_S, step_nt=STEP_NT,
+            level_win_s=LEVEL_WIN_S, level_block_s=LEVEL_BLOCK_S, level_min_frac=LEVEL_MIN_FRAC,
+            level_min_members=LEVEL_MIN_MEMBERS, level_passes=LEVEL_PASSES,
+            level_pass_statistic=(["running mean of the blocks", "running median of the blocks"]
+                                  if LEVEL_PASSES > 1 else ["running median of the blocks"]),
+            members={d: {c: dict({k: v for k, v in counts[d][c].items() if k != "spans"},
+                                 offset_rms_nt=offsets[c][d],
+                                 steps_per_million_before=round(before[d].get(c, float("nan")), 1),
+                                 steps_per_million_after=round(steps_per_million(screened[c][d]), 1))
+                         for c in H} for d in weights},
+            steps_per_million=dict(
+                members_median_raw={
+                    c: round(float(np.median([before[d].get(c, float("nan")) for d in weights])), 1)
+                    for c in H},
+                members_median_screened={
+                    c: round(float(np.median([steps_per_million(screened[c][d]) for d in weights])), 1)
+                    for c in H}))
+        spans = {"bridged_%s" % c: _merge_spans([counts[d][c]["spans"] for d in weights]) for c in H}
+        return t0, n, num, den, cnt, screen, spans, levels
 
     @staticmethod
-    def finish(num, den) -> tuple:
-        """(H, coverage per channel, mask): zero and mask False where no member is sound."""
-        h = {c: np.where(den[c] > 0, num[c] / np.maximum(den[c], 1e-12), 0.0) for c in H}
-        cov = {c: round(float((den[c] > 0).mean()), 4) for c in H}
-        mask = (den["Hx"] > 0) & (den["Hy"] > 0)
+    def finish(num, den, thin=None) -> tuple:
+        """(H, coverage per channel, mask): zero and mask False where no member is sound, and where `thin`
+        says fewer than STACK_MIN SITE members are.
+
+        `thin` is the per-sample form of the floor the member list is judged on, and it counts site members
+        in both stack kinds: a sample carried by one of them is a remote site renamed, and one of them with
+        the observatory is a remote site with an observatory. A zero reference contributes nothing to either
+        spectrum where it is masked out.
+        """
+        ok = {c: den[c] > 0 for c in H}
+        if thin is not None:
+            t = np.asarray(thin, bool)
+            ok = {c: ok[c] & ~t for c in H}
+        h = {c: np.where(ok[c], num[c] / np.maximum(den[c], 1e-12), 0.0) for c in H}
+        cov = {c: round(float(ok[c].mean()), 4) for c in H}
+        mask = ok["Hx"] & ok["Hy"]
         return h, cov, mask
 
     # ---------------------------------------------------------- the observatory
@@ -618,8 +1066,7 @@ class Store:
             del o
         w = round(float(np.median(vals)), 4) if vals else None
         self.dir.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(dict(weight=w, pairs=pairs, code=code, band_s=[100, 1000],
-                                     built_at=_now()), indent=1), encoding="utf-8")
+        _write_json(p, dict(weight=w, pairs=pairs, code=code, band_s=[100, 1000], built_at=_now()))
         return w, pairs
 
     # ----------------------------------------------------------------- the store
@@ -627,18 +1074,26 @@ class Store:
     def path(self, kind: str, site: str) -> Path:
         return self.dir / ("%s_%s.npz" % (kind, site))
 
-    def _write(self, kind, site, t0, h, mask, info) -> tuple:
-        """Write the npz and its sidecar, and return (path, the sidecar as written)."""
+    def _write(self, kind, site, t0, h, mask, info, extra=None) -> tuple:
+        """Write the npz and its sidecar, and return (path, the sidecar as written).
+
+        `extra` is any further array the kind carries; the kinds that pass none write the same six arrays
+        they always have.
+        """
         p = self.path(kind, site)
         p.parent.mkdir(parents=True, exist_ok=True)
         cov = float(np.asarray(mask, bool).mean())
-        np.savez(p, t0=np.array([int(t0)], np.int64), fs=np.array([float(self.fs)]),
-                 Hx=np.asarray(h["Hx"], np.float32), Hy=np.asarray(h["Hy"], np.float32),
-                 mask=np.asarray(mask, bool), coverage=np.array([cov]))
+        arrays = dict(t0=np.array([int(t0)], np.int64), fs=np.array([float(self.fs)]),
+                      Hx=np.asarray(h["Hx"], np.float32), Hy=np.asarray(h["Hy"], np.float32),
+                      mask=np.asarray(mask, bool), coverage=np.array([cov]))
+        arrays.update(extra or {})
+        tmp = p.with_suffix(".tmp.npz")
+        np.savez(tmp, **arrays)
+        _replace(tmp, p)
         info = dict(info)
         info.update(kind=kind, target=site, rate_hz=self.fs, npz=p.name, t0=int(t0),
                     n=int(len(h["Hx"])), coverage=round(cov, 4), built_at=_now())
-        p.with_suffix(".json").write_text(json.dumps(info, indent=1, default=str), encoding="utf-8")
+        _write_json(p.with_suffix(".json"), info)
         return p, info
 
     def build_remote(self, target: str, choice=None) -> tuple:
@@ -687,17 +1142,22 @@ class Store:
                             % (target, len(weights), n_min,
                                " | ".join("%s: %s" % kv for kv in sorted(refused.items())) or
                                "(no candidate scored)"))
-        t0, n, num, den, cnt = self.accumulate(target, weights, lags) if acc is None else acc
-        h, cov, mask = self.finish(num, den)
+        t0, n, num, den, cnt, screen, spans, _levels = (self.accumulate(target, weights, lags)
+                                                        if acc is None else acc)
+        thin = np.asarray(cnt) < n_min
+        h, cov, mask = self.finish(num, den, thin=thin)
         info = dict(weights=weights, lags=lags, refusals=refused, alignment_notes=notes,
+                    member_floor=_floor_rows(thin, n_min),
                     members=_member_rows(weights, lags, refused, notes),
                     weight_rule=COH.WEIGHT_RULE, weight_band_s=[100, 1000], align_band_s=[5, 20],
                     cutoff=cutoff, n_max=n_max, n_min=n_min,
                     coverage_by_channel=cov, member_count=_count_profile(cnt, len(weights)),
+                    screen=_with_stack_steps(screen, h, mask),
                     frame="mean-horizontal-field per member (process.frame.rotate_to_mean_field)",
-                    note="members demeaned over their own finite samples and time-aligned to the target "
-                         "before averaging; zero and mask False where no member is sound")
-        return self._write("stack", target, t0, h, mask, info)
+                    note="members edge-screened, time-aligned to the target, spike-screened against each "
+                         "other and set on the fleet's own level before averaging; zero and mask False "
+                         "where no member is sound")
+        return self._write("stack", target, t0, h, mask, info, extra=spans)
 
     def build_obs(self, target: str, code=None) -> tuple:
         code = code or (self.cfg.get("observatory") or {}).get("code", "")
@@ -728,24 +1188,36 @@ class Store:
                             % (target, len(weights), n_min,
                                " | ".join("%s: %s" % kv for kv in sorted(refused.items())) or
                                "(no candidate scored)"))
-        t0, n, num0, den0, cnt = self.accumulate(target, weights, lags) if acc is None else acc
+        t0, n, num0, den0, cnt, screen, spans, levels = (self.accumulate(target, weights, lags)
+                                                         if acc is None else acc)
         num = {c: num0[c].copy() for c in H}
         den = {c: den0[c].copy() for c in H}
         w_obs, _pairs = self.observatory_weight(code)
         o, omask, ang = self.observatory_member(code, t0, n)
+        obs_rows = {}
         if w_obs is not None and np.isfinite(w_obs) and w_obs > 0:
             for c in H:
-                x = np.asarray(o[c], float)
-                m = np.isfinite(x) & omask
-                if m.any():
-                    x = x.copy()
-                    x[m] -= x[m].mean()
+                x = np.where(np.isfinite(o[c]) & omask, np.asarray(o[c], float), np.nan)
+                # matched one-sided against the members' established level, which it never enters
+                off = one_sided_offset(x, levels[c], self.fs)
+                x = x - off
+                m = np.isfinite(x)
+                obs_rows[c] = dict(
+                    offset_rms_nt=round(float(np.sqrt(np.mean(off ** 2))), 3),
+                    mask_edges=int(np.abs(np.diff(np.asarray(omask, bool).astype(np.int8))).sum()),
+                    steps_per_million_before=round(steps_per_million(
+                        np.where(np.isfinite(o[c]) & omask, np.asarray(o[c], float), np.nan)), 1),
+                    steps_per_million_after=round(steps_per_million(x), 1))
                 num[c][m] += w_obs * x[m]
                 den[c][m] += w_obs
-        h, cov, mask = self.finish(num, den)
+        # the floor counts SITE members only, per sample as per list: one site member and the observatory is
+        # a remote site and an observatory, not a stack and one (Ben's ruling, 2026-09-17)
+        thin = np.asarray(cnt) < n_min
+        h, cov, mask = self.finish(num, den, thin=thin)
         allw = dict(weights)
         allw[code] = w_obs
         info = dict(weights=allw, lags=dict(lags, **{code: 0.0}), refusals=refused,
+                    member_floor=_floor_rows(thin, n_min),
                     alignment_notes=dict(notes, **{code: "never shifted"}),
                     members=_member_rows(weights, lags, refused, notes, obs=code, w_obs=w_obs),
                     observatory=code, observatory_weight=w_obs, observatory_angle_deg=ang,
@@ -753,10 +1225,13 @@ class Store:
                     weight_rule=COH.WEIGHT_RULE, weight_band_s=[100, 1000], align_band_s=[5, 20],
                     cutoff=cutoff, n_max=n_max, n_min=n_min,
                     coverage_by_channel=cov, member_count=_count_profile(cnt, len(weights)),
+                    screen=_with_stack_steps(dict(screen, observatory={code: obs_rows}), h, mask),
                     frame="mean-horizontal-field per member (process.frame.rotate_to_mean_field)",
-                    note="the observatory enters as one more member at its own fleet weight and is never "
-                         "shifted; zero and mask False where no member is sound")
-        return self._write("stack_obs", target, t0, h, mask, info)
+                    note="the observatory enters as one more member at its own fleet weight, is never "
+                         "shifted and is not spike-screened, and is set on the members' established level "
+                         "one-sidedly, which it never enters; zero and mask False where fewer than n_min "
+                         "SITE members are sound, whatever the observatory holds there")
+        return self._write("stack_obs", target, t0, h, mask, info, extra=spans)
 
     def build_site(self, target: str, kinds=KINDS_WITH_STORE, force=False, verbose=False) -> dict:
         """Every asked-for reference for one target, with one member-scoring pass and one member read pass."""
@@ -863,6 +1338,48 @@ def branch_rule(target, cands, n_considered, n_short, own_days, floor, coh_min=C
                        "coherence %s, and decisions.csv names no remote; %s" % (why12, coh_min, desc(b)))
 
 
+def _floor_rows(thin, n_min) -> dict:
+    """What the per-sample member floor cost: how many samples carried fewer than n_min SITE members."""
+    t = np.asarray(thin, bool)
+    return dict(n_min=int(n_min), counts="site members only", samples_below=int(t.sum()),
+                frac_below=round(float(t.mean()), 5) if len(t) else 0.0,
+                note="a sample carried by fewer than n_min site members is zero and its mask False, on the "
+                     "same rule the member list is judged on: a one-member stack is a remote site renamed, "
+                     "and one site member with the observatory is a remote site with an observatory")
+
+
+def _merge_spans(per_member: list) -> np.ndarray:
+    """Every member's bridged spans on one channel as one sorted (k, 2) int32 array, overlaps merged.
+
+    The union and not one row per member: the figure marks where the screen fired, and at this density the
+    marks of two members at the same second are one mark.
+    """
+    flat = [s for spans in per_member for s in spans]
+    if not flat:
+        return np.zeros((0, 2), np.int32)
+    flat.sort()
+    out = [list(flat[0])]
+    for a, b in flat[1:]:
+        if a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return np.asarray(out, np.int32)
+
+
+def _with_stack_steps(screen: dict, h: dict, mask) -> dict:
+    """The screen record with the finished stack's own steps per million added beside the members' median.
+
+    The two numbers the stack is judged on sit in one place, so the check reads them and recomputes nothing.
+    """
+    out = dict(screen)
+    steps = dict(out.get("steps_per_million") or {})
+    m = np.asarray(mask, bool)
+    steps["stack"] = {c: round(steps_per_million(np.where(m, h[c], np.nan)), 1) for c in H}
+    out["steps_per_million"] = steps
+    return out
+
+
 def _member_rows(weights, lags, refusals, notes, obs=None, w_obs=None) -> list:
     rows = [dict(name=d, weight=w, lag_s=(lags or {}).get(d), role="member",
                  note=(notes or {}).get(d)) for d, w in weights.items()]
@@ -900,9 +1417,9 @@ def build_store(survey, sites=None, rate=1, kinds=KINDS_WITH_STORE, force=False,
     st = store if store is not None else Store(survey, sites, rate)
     st.dir.mkdir(parents=True, exist_ok=True)
     pool, table = st.clean_pool()
-    (st.dir / "pool.json").write_text(json.dumps(dict(
+    _write_json(st.dir / "pool.json", dict(
         pool=pool, rate_hz=st.fs, thresholds=TR.params(st.cfg), built_at=_now(),
-        rows=table.to_dict("records")), indent=1, default=str), encoding="utf-8")
+        rows=table.to_dict("records")))
     out = {}
     for s in (sites if sites is not None else st.sites):
         if verbose:
@@ -948,7 +1465,7 @@ def _build_from_spec(st: Store, spec: Store, target: str, kinds, force) -> dict:
                 builder = st.build_stack if kind == "stack" else st.build_stack_obs
                 _q, info = builder(target, members=members)
             info["specification_from"] = "%g Hz store" % spec.fs
-            p.with_suffix(".json").write_text(json.dumps(info, indent=1, default=str), encoding="utf-8")
+            _write_json(p.with_suffix(".json"), info)
             out[kind] = info
         except Exception as exc:
             out[kind] = dict(error="%s: %s" % (type(exc).__name__, str(exc)[:400]))
@@ -969,6 +1486,20 @@ def load_reference(kind: str, site: str, rate, work_root) -> tuple:
     z.close()
     info = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
     return t0, h, mask, info
+
+
+def bridged_spans(kind: str, site: str, rate, work_root, channel="Hx") -> np.ndarray:
+    """The spans the member spike screen bridged on one channel, as [start, end] pairs on the reference's
+    own grid, merged over the members. An empty (0, 2) array where the store carries none.
+    """
+    p = Path(work_root) / "references" / ("%dhz" % int(rate)) / ("%s_%s.npz" % (kind, site))
+    if not p.exists():
+        return np.zeros((0, 2), np.int32)
+    z = np.load(p, allow_pickle=False)
+    key = "bridged_%s" % channel
+    got = np.asarray(z[key], np.int32) if key in z.files else np.zeros((0, 2), np.int32)
+    z.close()
+    return got.reshape(-1, 2)
 
 
 def reference_station_id(kind: str, info: dict, survey_code="") -> str:

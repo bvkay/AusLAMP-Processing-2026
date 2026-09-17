@@ -1476,11 +1476,21 @@ RUN = "first"                 # the run name; every site of one run lands in <si
 SITES = "all"                 # "all" | "largest" (the register's largest group) | a group name | ["Q49", "Q50"]
 MAX_SITES = 0                 # 0 = every chosen site; a cap keeps an example short and names what it kept
 WORK_ROOT = None              # None = survey.yaml work_root; every reference and product lands under it
-KINDS = ["single", "remote", "stack", "obs", "stack_obs"]    # the code keys of the five reference kinds
-RATES = [1]                   # [1] or [10]; a 10 Hz pass is one lane at 22-37 GB and 7-15 min a product
+SHOW = "first"                # the site every site figure is drawn for: "first" of the chosen set, or a name
+KINDS = ["remote", "stack", "obs", "stack_obs"]              # the code keys of the four reference kinds
+RATES = [1, 10]               # 1 is the whole record; 10 runs on the hour selection below, never the whole one
 PARAMS = "kaiser20_75"        # the Aurora parameter set: kaiser20_50 | dpss4_75 | kaiser20_w512
-LANES = 3                     # concurrent single-site subprocesses; 1 at 10 Hz, where a pass peaks at 37 GB
+LANES = 3                     # concurrent single-site subprocesses at 1 Hz, where a pass peaks at 2.5-4.8 GB
 REDO = False                  # True remakes a product whose EDI is already on disk
+'''
+
+WB03_SELECT = '''# ---- the 10 Hz selection: which hours the short end is estimated on ----
+KINDS10 = ["remote", "stack"]             # the kinds at 10 Hz; the observatory is not one of them
+SITES10 = "all"               # the sites the 10 Hz lane runs over: "all" | "show" (SHOW alone) | ["Q49"]
+SELECT10 = [0.05, 0.10, 0.25]  # the best fractions of the scored hours, keyed f05, f10, f25; [] = whole record
+SEED = 20260916               # the draw the random control of the same size is made under, keyed r25
+RUN10 = "sel10"               # the run name the selected 10 Hz products land in, <site>/<RUN10>_<stamp>/
+LANES10 = 2                   # concurrent lanes at 10 Hz; a selected pass peaks at 3-10 GB, a whole one at 37
 '''
 
 WB03_RULES = '''# ---- the rule thresholds: a change here changes which reference every product was built on ----
@@ -1494,7 +1504,8 @@ EVENT_FRAC_MAX = 0.02         # clean: at most this fraction of the 600 s chunks
 BASELINE_MAX = 10             # clean: at most this multiple of the survey median baseline
 '''
 
-WB03_SETUP = '''import os
+WB03_SETUP = '''import json
+import os
 import sys
 import time
 import warnings
@@ -1510,10 +1521,12 @@ import matplotlib.pyplot as plt
 from IPython.display import Image, display
 
 import auslamp_proc
-from auslamp_proc import survey as SV, geo, observatory
+from auslamp_proc import products as PR, survey as SV, geo, observatory
 from auslamp_proc.raw import cache
+from auslamp_proc.figures import process as FIGP
 from auslamp_proc.process import KIND_WORD, aurora_run, edi as EDI, frame as FR, mth5_build
-from auslamp_proc.process import provenance as PROV, references as REF, transients as TR
+from auslamp_proc.process import provenance as PROV, rate as RATE, references as REF, selection as SEL
+from auslamp_proc.process import transients as TR
 
 # aurora and mth5 re-arm loguru when they are first imported, which would put tens of thousands of INFO
 # lines into this workbook. Import them, then drop the sinks. The "Window is longer than the time series"
@@ -1547,6 +1560,41 @@ OUT = WORK / "survey"
 OUT.mkdir(parents=True, exist_ok=True)
 WRITTEN = []
 
+RATES1 = [r for r in RATES if int(r) == 1]      # the whole-record lane
+RATES10 = [r for r in RATES if int(r) == 10]    # the selection lane; a 10 Hz pass is never the whole record
+SHOW = CHOSEN[0] if str(SHOW).lower() == "first" else str(SHOW)
+if SHOW not in CHOSEN:
+    SHOW = CHOSEN[0]
+# the sites the 10 Hz lane is asked for, known from the parameters alone so the reference store builds for
+# them and not for every chosen site; which of them carry a selected hour is settled in that section
+ASK10 = (CHOSEN if str(SITES10).lower() == "all"
+         else ([SHOW] if str(SITES10).lower() == "show" else [s for s in SITES10 if s in CHOSEN]))
+
+def site_dir(s):
+    d = WORK / s
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+def show(path):
+    """Record a figure in WRITTEN and draw it inline. One call per figure."""
+    WRITTEN.append(Path(path))
+    display(Image(filename=str(path)))
+
+def quiet_window(arrays, fs=1.0, hours=6.0, skip_days=1.0):
+    """The first sample of the quietest whole window of `hours`: every series finite and the target's own
+    per-minute Hx spread the smallest. A window is scored on the record as it is, so `quiet` is the field's
+    own quiet and not a judgement about the site."""
+    w = int(round(hours * 3600 * fs))
+    n = min(len(v) for v in arrays)
+    best, best_v = None, np.inf
+    for i in range(int(skip_days * 86400 * fs), max(0, n - w + 1), w):
+        if not all(np.isfinite(v[i:i + w]).all() for v in arrays):
+            continue
+        s = float(np.std(np.asarray(arrays[0][i:i + w], float)))
+        if s < best_v:
+            best, best_v = i, s
+    return best
+
 # the pool thresholds are survey.yaml values; the parameter cell above governs this run of the workbook
 sv.cfg.setdefault("pool", {})
 sv.cfg["pool"]["event_frac_max"] = EVENT_FRAC_MAX
@@ -1578,7 +1626,12 @@ print("pool from    %d of the %d sites in sites.csv, the ones with a 1 Hz cache 
 if NO_CACHE:
     print("no cache     %s -- run workbook 02 over them to bring them into the pool" % " ".join(NO_CACHE))
 print("kinds        %s" % ", ".join("%s (%s)" % (KIND_WORD[k], k) for k in KINDS))
-print("rates        %s Hz, parameter set %s, %d lane(s)" % (", ".join(str(r) for r in RATES), PARAMS, LANES))
+print("rates        %s Hz, parameter set %s, %d lane(s) at 1 Hz"
+      % (", ".join(str(r) for r in RATES), PARAMS, LANES))
+print("10 Hz        %s over %s, %d lane(s), seed %d"
+      % (", ".join("%.0f %%" % (100 * f) for f in SELECT10) or "the whole record",
+         ", ".join(KINDS10), LANES10, SEED))
+print("figures      the site figures are drawn for %s" % SHOW)
 print("run          %s_%s  ->  <work_root>/<site>/  (%s)"
       % (RUN, STAMP, "resumed: the folders of this run name already exist" if _stamps else "a new run"))
 print("engine       Aurora %s, mth5 %s" % (aurora.__version__, __import__("mth5").__version__))
@@ -1593,16 +1646,18 @@ This workbook turns each site's cache into transfer functions. It applies the si
 against, writes one MTH5 per product with one run per kept stretch, runs Aurora, and writes an EDI and an
 XML with the provenance of what was done.
 
-Five kinds are built, and they are not alternatives to choose between here: every one of them is made, and
+Four kinds are built, and they are not alternatives to choose between here: every one of them is made, and
 which of them becomes the product of record is workbook 06's question.
 
 | word | what it is | code key | what it is for |
 |---|---|---|---|
-| single station | the site's own H and E | `single` | the control that says what a reference buys; biased down wherever the site's H noise is coherent with itself |
 | remote site | one other site's H | `remote` | cancels the noise that is uncorrelated between the two sites; costs the variance of one more record |
 | fleet stack | a coherence-weighted mean of several sites' H | `stack` | averages down each member's own noise, and needs the members aligned first |
 | observatory | an INTERMAGNET one-second record | `obs` | far and quiet, and reaches the long periods |
 | stack + observatory | the stack with the observatory as a member | `stack_obs` | the stack's short end with the observatory's long end |
+
+The single station is not a kind of this package: noise in H biases it low and its error bars carry no sign
+of that bias.
 
 The frame is fixed and stated in every file: the horizontal magnetic pair of each site is turned so its mean
 Hy is zero, which takes out the fluxgate's hand-compass misalignment, and the IGRF declination is recorded
@@ -1612,16 +1667,23 @@ The record is never cut. A mask that removes a transient is applied by giving Au
 stretch of at least 3,600 s: cutting and concatenating puts a step at every join, and a step common to E, H
 and the reference is coherent between them, so a robust regression fits it rather than down-weighting it.
 
-Six checks state their failure criterion in bold above the cell and print a verdict below it. A check that
-scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported FAILED and is
+Eight checks state their failure criterion in bold above the cell and print a verdict below it. A check that
+scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported as FAIL and is
 not revised afterwards.
 
-At 10 Hz Aurora reads about 8 per cent low at 4-32 s against its own 1 Hz product (AusLAMP Victoria,
-2026-09-11). The 10 Hz products are made and each carries that sentence in its own file; they are not
-spliced here, which is workbook 06's work."""),
+Every step shows what it did as a figure beside the table that decided it, so a parameter can be changed for
+a re-run on what the figure shows rather than on the numbers alone; each figure's caption names the
+parameters that move it and what moving them does.
+
+The 1 Hz pass is the whole record. The 10 Hz pass is not: it runs on a selection of the most coherent hours,
+each selection with a random selection of the same size as its control. What the 10 Hz row reads against
+the 1 Hz row is measured on this survey's own whole-record 10 Hz products over 4-32 s, printed in the last
+section and written into every 10 Hz file. The 10 Hz products are not spliced onto the 1 Hz ones here, which
+is workbook 06's work."""),
 
 ("code", WB03_PARAMS),
 ("code", WB03_RULES),
+("code", WB03_SELECT),
 
 ("md", r"""## The survey, the sites and the run
 
@@ -1664,9 +1726,9 @@ print("%d sites name a remote in decisions.csv, %d leave it to the rule"
 print("%d sites name their own stack members; the rest take the clean pool of their overlap group"
       % int((~tab.stack_members.str.lower().isin(["decide", "", "nan"])).sum()))
 print()
-print("the five kinds, as words and as the code keys that appear in file names")
-print(pd.DataFrame([dict(word=KIND_WORD[k], key=k) for k in REF.KINDS_WITH_STORE +
-                    ("single",)]).to_string(index=False))
+print("the four kinds, as words and as the code keys that appear in file names")
+print(pd.DataFrame([dict(word=KIND_WORD[k], key=k)
+                    for k in REF.KINDS_WITH_STORE]).to_string(index=False))
 '''),
 
 ("md", r"""## The frame
@@ -1734,6 +1796,27 @@ else:
              pd.to_numeric(fr.declination_deg, errors="coerce").max()))
 '''),
 
+("md", r"""What the turn did, for one site and for the survey. In the hodogram the two clouds have the same
+shape and the same extent and differ by a rotation about the origin, because the turn is rigid; the turned
+cloud's mean vector lies along the Hx axis, which is what a mean Hy of zero means. A cloud that changed shape
+would be a scaling or a sign, not a rotation.
+
+In the bars beside it the rotation angle and the IGRF declination are different quantities: a site whose
+angle is near its declination laid the fluxgate near geographic north, and a site whose angle is far from it
+did not. Neither number is evidence about the other."""),
+
+("code", '''z = np.load(WORK / "cache_1hz" / ("%s.npz" % SHOW), allow_pickle=False)
+h0 = {c: np.asarray(z[c], float) for c in ("Hx", "Hy")}
+z.close()
+d = sv.decision(SHOW)
+h0, _a, _u = FR.apply_signs(h0, d)
+h1, ang_show = FR.rotate_to_mean_field({c: h0[c].copy() for c in h0},
+                                       regimes=FR.parse_regimes(d.get("rot_regimes")),
+                                       drop=FR.parse_regimes(d.get("rot_drop")), fs=1.0)
+show(FIGP.frame_hodogram(h0, h1, ang_show, SHOW, fr, site_dir(SHOW) / "03_frame.png", fs=1.0))
+del h0, h1
+'''),
+
 ("md", r"""## The clean pool
 
 A site may reference another only if its own magnetic record is fit to. The tail scan walks each rotated
@@ -1750,11 +1833,9 @@ The baseline test catches the other failure: a site that never spikes because it
 denominator is one median over every site with a scan, so the level is a property of the instrument and the
 band rather than of whoever was deployed alongside.
 
-The band is 20-200 s and not the 2-20 s the campaign scan reads at 10 Hz. A 1 Hz cache is decimated from
-10 Hz, so its 2-20 s band sits on the anti-alias filter's roll-off and reads each unit's own noise floor:
-over these 23 fluxgates the 2-20 s chunk medians span five decades, where the 20-200 s medians hold inside a
-factor of 10 at 22 of the 23. A baseline that is not comparable between sites cannot be judged against a
-survey median.
+The band is 20-200 s. On a 1 Hz cache the 2-20 s band sits on the anti-alias filter's roll-off and reads each
+unit's own noise floor: over these 23 fluxgates the 2-20 s chunk medians span five decades, where the
+20-200 s medians hold inside a factor of 10 at 22 of the 23.
 
     clean = event fraction <= EVENT_FRAC_MAX and baseline <= BASELINE_MAX x the survey median
 
@@ -1805,6 +1886,15 @@ else:
              len(pool), EVENT_FRAC_MAX, BASELINE_MAX, len(pool_table) - len(pool)))
 '''),
 
+("md", r"""The two limbs of the pool rule as bars. Look for how far an excluded site sits from its line: a site
+just over EVENT_FRAC_MAX is a different case from one an order of magnitude over, and the baseline panel is
+logarithmic because the baselines span decades. A site carrying both letters failed both limbs; a site
+carrying one is inside the other."""),
+
+("code", '''show(FIGP.pool_bars(scan_t, OUT / "03_pool.png", event_frac_max=EVENT_FRAC_MAX,
+                    baseline_max=BASELINE_MAX, survey=sv.cfg["name"]))
+'''),
+
 ("md", r"""## The remote site
 
 Every candidate in the target's own overlap group is scored: the distance in km, the usable overlap in days,
@@ -1826,9 +1916,8 @@ The choice is then the five-branch rule, and the branch is recorded in the produ
 4. coh >= COH_MIN but not clean -- the fewest events
 5. none of the above -- the nearest by km
 
-Where `decisions.csv` names a remote, that site is used and the rule's own choice is printed beside it. The
-two agreeing is a reading and not a criterion: the campaign chose its remotes on a deployment sheet and a
-different coherence estimator, and this rule is an independent computation.
+Where `decisions.csv` names a remote, that site is used and the rule's own choice is printed beside it as a
+reading.
 
 **This check fails if any chosen remote has no overlap with its target or is not in the target's overlap
 group.**"""),
@@ -1891,13 +1980,30 @@ else:
              int((rem.source == "decisions.csv").sum()), int((rem.source != "decisions.csv").sum())))
 '''),
 
+("md", r"""The candidates of one site as a scatter, and the branch taken over the whole set. Look at where the
+candidates sit relative to the two coherence lines and the overlap line: a site whose candidates all sit below
+COH_MIN took branch 3 or 5 and its remote is the best of a weak field, not a good reference. A site with
+several candidates above COH_MIN and to the right of the overlap line had a real choice, and the rule took the
+nearest of them.
+
+The branch histogram says the same thing about the survey: branch 1 everywhere means the array was dense
+enough that the rule never had to relax anything."""),
+
+("code", '''branch_counts = rem.rule_branch.value_counts().sort_index().to_dict()
+named_show = str(sv.decision(SHOW).get("remote_site", "")).strip()
+named_show = named_show if named_show.lower() not in ("decide", "", "nan", "none") else None
+show(FIGP.remote_scatter(cand_tables[SHOW], ST.remote_site(SHOW, scores=cand_tables[SHOW]), SHOW,
+                         site_dir(SHOW) / "03_remote.png", branches=branch_counts, coh_min=COH_MIN,
+                         coh_relax=COH_RELAX, named=named_show))
+'''),
+
 ("md", r"""## The fleet stack
 
-A member's weight is its median coherence with the FLEET at 100-1000 s, and never its coherence with the
-target. Whether a reference is a good measurement of the regional field is a question about the reference
-and the field; weighting a member by how well it agrees with the target puts the target's own noise into
-its reference (Ben's rule, 2026-09-06). The fleet table below is one median per member over its pairs with
-the rest of the pool, and it is the same table for every target.
+A member's weight is its median coherence with the fleet at 100-1000 s, and never its coherence with the
+target: whether a reference is a good measurement of the regional field is a question about the reference
+and the field, and weighting a member by its agreement with the target puts the target's own noise into its
+reference. The fleet table below is one median per member over its pairs with the rest of the pool, and it
+is the same table for every target.
 
 Members below STACK_CUTOFF are refused, the best STACK_MAX are kept, and a stack with fewer than STACK_MIN
 members is refused outright: a one-member stack is a remote site renamed.
@@ -1907,10 +2013,38 @@ two-day windows spread across the record, and it is accepted only where it is on
 1.0 s: no single shift fixes a free-running clock. A member whose lag cannot be measured or is not one
 constant is kept at lag 0 with the reason recorded, because these are GPS-disciplined loggers.
 
-Each member is then demeaned over its own finite samples, and a sample where a member is NaN does not add to
-that member's weight there, so the mean is over whoever is sound and the weights renormalise per sample.
-Where no member is sound the stack is zero and its mask is False: a zero reference contributes nothing to
-either the cross- or the auto-spectrum, so those windows drop out of the estimate instead of biasing it.
+A member passes four steps between its cache and the sum, in this order. Its own transient chunks are NaN.
+Then `references.EDGE_S` = 120 s inside every record end and every gap end is NaN, at every rate: the
+samples either side of a break carry the logger's settling, thousands of nT at a PR6-24, and over the two
+Queensland phases a member's first minute runs at 37 times the record's own rate of steps above 2 nT and the
+last minute of a run at 3.5 times. Then the lag is applied as a Lanczos-windowed sinc of `align.LANCZOS_A`
+= 16 taps either side, which is local: one impulsive sample stays where it is, a NaN reaches only 32
+samples, and the error against an analytic sine shifted 0.37 s is 0.3 per cent of the amplitude at 2.3 s,
+the shortest period the 1 Hz band file estimates.
+
+Then `references.member_screen` compares the members with each other. Where three or more are finite, a
+sample whose first difference departs from the median over them by more than max(`SCREEN_K` = 30 x MAD,
+`SCREEN_FLOOR_NT` = 3.0 nT) is flagged; a spike the whole fleet sees is the field, is carried by the median,
+and is not flagged. Where exactly two are finite the median of two first differences does not name the
+culprit, so a sample is flagged where one member's own first difference passes that bar and the other's is
+under 1.5 nT, and where both pass it neither is flagged. The flagged span, from two samples before to three
+after and merged with its neighbours, is bridged by a straight line inside that member where the span is at
+most 12 s. The line and not a hole: a member that goes NaN drops out of the weighted mean over that span.
+
+Then `references.level_match` sets each member on the fleet's own level: its offset from the median of the
+members finite at each sample is taken in two robust steps -- the median of each `LEVEL_BLOCK_S` = 60 s
+block, then the running median of 60 of those blocks, `LEVEL_WIN_S` = 3600 s -- interpolated back to the
+sample grid and subtracted, so a member entering or leaving the sum does not step the level. Medians and not
+a mean, because a mean is dragged by whatever excursion sits at a run edge. The match changes the stack's
+content only at periods above about 3600 s, and only by the difference between the weighted mean and the
+median of the coherent members. Each member's offset rms is written to the sidecar.
+
+A sample where a member is NaN does not add to that member's weight there, so the mean is over whoever is
+sound and the weights renormalise per sample. A sample carried by fewer than `STACK_MIN` members is zero and
+its mask False, on the same rule the member list is judged on: one member is a member renamed, per sample as
+per list, and the count of samples so masked is in the sidecar. Where no member is sound the stack is zero
+and its mask is False as well: a zero reference contributes nothing to either the cross- or the
+auto-spectrum, so those windows drop out of the estimate instead of biasing it.
 
 **This check fails if any stack carries a member weighted by its coherence with the TARGET rather than the
 fleet, or a member outside the pool.** The first limb is scored by recomputing one site's weights from the
@@ -1990,6 +2124,139 @@ else:
              scored, len(sk), len(pool)))
 '''),
 
+("md", r"""The weights and what they produce. On the left, look at how far the kept members stand above
+STACK_CUTOFF: a stack whose members all sit just over the line is a stack of marginal references, and raising
+the cutoff would refuse it outright. The lag written on each bar is what the alignment measured; on
+GPS-disciplined loggers these are fractions of a second and a member whose lag could not be measured is kept
+at zero with the reason in the table above.
+
+On the right, the stack is drawn over the target and two of its members through six hours of one quiet day,
+every trace demeaned, with a mark under the traces wherever the spike screen bridged a member sample. The
+stack follows the same field as the target; how much rougher or smoother it is than its members is a number
+and not a matter for the eye, and the check below scores it."""),
+
+("code", '''t0s, n_s = ST.window(SHOW)
+_t, h_show, _ang, _n = ST.rotated(SHOW)
+kept_show = stacks[SHOW][0]
+lags_show = stacks[SHOW][1]
+members_drawn = list(kept_show)[:2]
+try:
+    _rt, rh_stack, _rm, stack_info = REF.load_reference("stack", SHOW, RATES1[0], WORK)
+except FileNotFoundError:
+    rh_stack, stack_info = None, {}
+grids = [np.asarray(h_show["Hx"], float)]
+labels = ["%s (the target)" % SHOW]
+colours = ["C3"]
+for m in members_drawn:
+    grids.append(np.asarray(ST._on_grid(m, t0s, n_s, drop_events=True,
+                                        lag_s=lags_show.get(m))["Hx"], float))
+    labels.append("%s (member, weight %.2f)" % (m, kept_show[m]))
+    colours.append("C0" if len(colours) == 1 else "C1")
+if rh_stack is not None:
+    grids.append(np.asarray(rh_stack["Hx"], float))
+    labels.append("the stack")
+    colours.append("C2")
+i0 = quiet_window(grids, fs=float(RATES1[0]), hours=6.0)
+w = int(6 * 3600 * RATES1[0])
+series = ([] if i0 is None else [(lb, g[i0:i0 + w], c) for lb, g, c in zip(labels, grids, colours)])
+# the marks under the traces are the spans the spike screen bridged, read from the store's own npz and cut
+# to the drawn window; Hx is the channel drawn, so Hx is the channel marked
+scr_show = stack_info.get("screen") or {}
+bridged = ([] if i0 is None else
+           [(max(int(a) - i0, 0), min(int(b) - i0, w))
+            for a, b in REF.bridged_spans("stack", SHOW, RATES1[0], WORK, "Hx")
+            if int(b) > i0 and int(a) < i0 + w])
+show(FIGP.stack_weights(kept_show, stacks[SHOW][2], lags_show, SHOW,
+                        site_dir(SHOW) / "03_stack.png", series=series,
+                        t_start=(None if i0 is None else t0s + i0 / RATES1[0]),
+                        cutoff=STACK_CUTOFF, n_max=STACK_MAX, n_min=STACK_MIN, fs=float(RATES1[0]),
+                        bridged=bridged, steps=(scr_show.get("steps_per_million") or {}),
+                        screen_k=REF.SCREEN_K, screen_floor_nt=REF.SCREEN_FLOOR_NT, edge_s=REF.EDGE_S,
+                        step_nt=REF.STEP_NT, level_win_s=REF.LEVEL_WIN_S))
+del grids, rh_stack
+'''),
+
+("md", r"""**This check fails if any stack channel's rate of steps > 2 nT per million samples exceeds the
+median rate of its screened members.** A step of more than `references.STEP_NT` = 2.0 nT from one sample to
+the next is not the field on a quiet day at these periods: it is a logger spike or a settling sample at the
+edge of a record. The rate is counted over each channel's finite samples in order, the same way on a member
+and on the stack built from it, so a screen that leaves holes is charged for them.
+
+The yardstick is the members as they enter the sum, screened and set on the fleet's level, and not as they
+came off the logger. A stack is a combination of what goes into it and has to be at least as clean as its
+median input; the raw member rate moves with whatever the neighbours' own noise happens to be and measures
+the wrong thing. Both medians are in the sidecar, raw and screened, beside the stack's own rate, and this
+cell reads them and recomputes nothing.
+
+Both stack kinds are scored on the same yardstick. The stack + observatory is a combination of the same site
+members with one more, and the observatory is set on the members' established level one-sidedly -- it never
+enters the median it is matched against -- so its composite answers to the site members' median as the fleet
+stack does."""),
+
+("code", '''# the numbers come from each sidecar; nothing here recomputes a reference
+step_rows = []
+for s in CHOSEN:
+    for kind in ("stack", "stack_obs"):
+        p = ST.path(kind, s).with_suffix(".json")
+        if not p.exists():
+            continue
+        scr = json.loads(p.read_text(encoding="utf-8")).get("screen") or {}
+        sp = scr.get("steps_per_million") or {}
+        mem = scr.get("members") or {}
+        obs = scr.get("observatory") or {}
+        for c in ("Hx", "Hy"):
+            a = (sp.get("stack") or {}).get(c)
+            b = (sp.get("members_median_screened") or {}).get(c)
+            if a is None or b is None:
+                continue
+            per = [v.get(c) or {} for v in mem.values()]
+            off = [float(v.get("offset_rms_nt") or 0.0) for v in per]
+            off += [float((v.get(c) or {}).get("offset_rms_nt") or 0.0) for v in obs.values()]
+            step_rows.append(dict(site=s, kind=kind, channel=c, stack_steps=float(a),
+                                  members_screened=float(b),
+                                  members_raw=(sp.get("members_median_raw") or {}).get(c),
+                                  margin=round(float(b) - float(a), 1),
+                                  flagged=sum(int(v.get("flagged") or 0) for v in per),
+                                  bridged=sum(int(v.get("bridged") or 0) for v in per),
+                                  nan_spans=sum(int(v.get("nan_spans") or 0) for v in per),
+                                  offset_rms_nt=round(max(off or [0.0]), 2),
+                                  on_floor=sum(1 for v in per
+                                               if "floor" in str(v.get("threshold_from")))))
+sp_tab = pd.DataFrame(step_rows)
+if len(sp_tab):
+    print("steps above %g nT per million samples: each stack kind against the median of its screened site "
+          "members, with the raw median beside it and what the screen and the level match did" % REF.STEP_NT)
+    print(sp_tab.to_string(index=False))
+    print()
+    print("on_floor counts the members whose threshold was set by SCREEN_FLOOR_NT = %g nT rather than by "
+          "SCREEN_K = %g x MAD; offset_rms_nt is the largest offset the level match removed, the "
+          "observatory's included where the kind carries one" % (REF.SCREEN_FLOOR_NT, REF.SCREEN_K))
+print()
+rough = sp_tab[sp_tab.stack_steps > sp_tab.members_screened] if len(sp_tab) else sp_tab
+if not len(sp_tab):
+    print("VERDICT: UNJUDGED -- no stack sidecar carries the statistic, so nothing was scored; the store "
+          "section below writes the sidecars and this cell reads them on a re-run")
+elif len(rough):
+    worst = rough.loc[rough.margin.idxmin()]
+    print("VERDICT: FAIL -- %d of %d stack-channel(s) are rougher than the median of their own screened "
+          "members. The worst is %s %s %s at %.0f steps above %g nT per million samples against a screened "
+          "members' median of %.0f; the others are %s"
+          % (len(rough), len(sp_tab), worst.site, worst.kind, worst.channel, worst.stack_steps,
+             REF.STEP_NT, worst.members_screened,
+             ", ".join("%s %s %s (%.0f vs %.0f)" % (r.site, r.kind, r.channel, r.stack_steps,
+                                                    r.members_screened)
+                       for r in rough.drop(index=worst.name).itertuples()) or "none"))
+else:
+    worst = sp_tab.loc[sp_tab.margin.idxmin()]
+    print("VERDICT: PASS -- all %d stack-channel(s) over %d site(s) and %d kind(s) are at least as smooth "
+          "as the median of their own screened members. The narrowest margin is %s %s %s at %.0f steps "
+          "above %g nT per million samples against a screened members' median of %.0f, and over the whole "
+          "set the screen flagged %d sample(s), bridged %d span(s) and left %d NaN"
+          % (len(sp_tab), sp_tab.site.nunique(), sp_tab.kind.nunique(), worst.site, worst.kind,
+             worst.channel, worst.stack_steps, REF.STEP_NT, worst.members_screened,
+             int(sp_tab.flagged.sum()), int(sp_tab.bridged.sum()), int(sp_tab.nan_spans.sum())))
+'''),
+
 ("md", r"""## The observatory
 
 The INTERMAGNET one-second record of the survey's own observatory, read out of the archive over each site's
@@ -2032,6 +2299,29 @@ print(pd.DataFrame([dict(site=s, members=" ".join(list(stacks[s][0]) + ([OBS] if
                          n=len(stacks[s][0]) + (1 if w_obs else 0)) for s in CHOSEN]).to_string(index=False))
 '''),
 
+("md", r"""The reading as a figure. On the left, look at whether the coherence falls with distance: over a few
+hundred kilometres at 100-1000 s it barely does, which is why an observatory works at the long end at all. On
+the right the two Hx records are drawn over each other through the same six hours; the large excursions are
+shared and the small ones are not, and that is the division of labour the observatory kind rests on."""),
+
+("code", '''try:
+    _ot, oh, _om, _oi = REF.load_reference("obs", SHOW, RATES1[0], WORK)
+except FileNotFoundError:
+    oh = None
+obs_series = []
+w = int(6 * 3600 * RATES1[0])
+if oh is not None:
+    pair = [np.asarray(h_show["Hx"], float), np.asarray(oh["Hx"], float)]
+    j0 = quiet_window(pair, fs=float(RATES1[0]), hours=6.0)
+    if j0 is not None:
+        obs_series = [("%s Hx" % SHOW, pair[0][j0:j0 + w], "C3"),
+                      ("%s Hx" % OBS, pair[1][j0:j0 + w], "C0")]
+show(FIGP.observatory_bars(ob, OUT / "03_observatory.png", series=obs_series,
+                           t_start=(None if not obs_series else t0s + j0 / RATES1[0]),
+                           code=OBS, site=SHOW, fs=float(RATES1[0])))
+del oh
+'''),
+
 ("md", r"""## The references written to the store
 
 Every reference is written once per rate to `<work_root>/references/<rate>hz/<kind>_<site>.npz`, with a
@@ -2049,8 +2339,11 @@ for rate in RATES:
     if rate != 1:
         spec = store(1)                     # <- the 10 Hz store takes its decisions from the 1 Hz one
     t = time.time()
-    kinds = tuple(k for k in KINDS if k in REF.KINDS_WITH_STORE)
-    got = REF.build_store(sv, CHOSEN, rate=rate, kinds=kinds, verbose=False, spec_store=spec, store=st)
+    # the observatory is not one of the 10 Hz kinds, so no observatory reference is built on that grid, and
+    # a 10 Hz reference is built only for the sites the 10 Hz lane is asked for
+    kinds = tuple(k for k in (KINDS if int(rate) == 1 else KINDS10) if k in REF.KINDS_WITH_STORE)
+    for_sites = CHOSEN if int(rate) == 1 else ASK10
+    got = REF.build_store(sv, for_sites, rate=rate, kinds=kinds, verbose=False, spec_store=spec, store=st)
     built[rate] = got
     print("%d Hz: %d sites, %d references, %.1f s" % (rate, len(got),
                                                       sum(len(v) for v in got.values()), time.time() - t))
@@ -2136,6 +2429,27 @@ print()
 print(mk.to_string(index=False))
 '''),
 
+("md", r"""The mask over the record of one site. Look at where the masked spans fall and at the row of runs
+underneath: a run is green where the stretch is at least MIN_SEGMENT_S and became one Aurora run, and red
+where the floor threw it away. Two events an hour apart cost the hour between them as well as themselves, and
+a record carrying many short events loses far more than the sum of the events. That second loss is what the
+red bars show and it is the reason to look at the figure rather than at the kept fraction alone."""),
+
+("code", '''t0m, arrm, _meta = cache.load(SHOW, WORK, RATES1[0])
+dm = sv.decision(SHOW)
+arrm, _a, _u = FR.apply_signs(arrm, dm)
+arrm, _ang = FR.rotate_to_mean_field(arrm, regimes=FR.parse_regimes(dm.get("rot_regimes")),
+                                     drop=FR.parse_regimes(dm.get("rot_drop")), fs=float(RATES1[0]))
+ev_show = TR.site_events(SHOW, ALL_SITES, WORK, sv.cfg)
+ee_show = TR.e_events(SHOW, WORK, sv.cfg)
+keep_show, _st = TR.build_keep(t0m, {c: arrm[c] for c in mth5_build.LOCAL_CHANNELS},
+                               float(RATES1[0]), ev_show, (), ee_show)
+show(FIGP.mask_record(t0m, arrm, keep_show, site_dir(SHOW) / "03_mask.png", site=SHOW,
+                      spans=[("H transient", "C3", ev_show), ("E burst", "C1", ee_show)],
+                      fs=float(RATES1[0]), min_segment_s=TR.MIN_SEGMENT_S))
+del arrm, keep_show
+'''),
+
 ("md", r"""## The MTH5
 
 One site and one kind, written and read back. The MTH5 is what Aurora reads: the local station with its five
@@ -2176,7 +2490,7 @@ _p, segs = mth5_build.write_h5(h5, probe_site, local, (None if rh is None else (
                                reference_row=(sv.site(info["remote"]) if probe_kind == "remote" else None))
 print("%s %s: %s written in %.1f s, %.1f MB" % (probe_site, probe_kind, h5.name, time.time() - t,
                                                 h5.stat().st_size / 2 ** 20))
-print("   stations  %s and %s" % (probe_site, rid or "none (single station)"))
+print("   stations  %s and %s" % (probe_site, rid or "none"))
 print("   mask      keeps %.2f %% of %d samples; %d runs of at least %g s; the hour floor loses %.2f %% more"
       % (100 * stats["kept_frac"], stats["n"], len(segs), TR.MIN_SEGMENT_S,
          100 * TR.floor_dropped_frac(keep, float(rate))))
@@ -2212,10 +2526,9 @@ else:
 One subprocess per site, `LANES` of them at a time, each running
 `python -m auslamp_proc.process.run` over that site's kinds and rates. A lane pins its BLAS threads to three:
 a lane that takes every core makes three lanes slower than one, and the memory a pass peaks at is per lane.
-Measured over the 115 products of AusLAMP Queensland Phase 1 on 2026-09-16, whose records run 12-62 days, a
-1 Hz pass peaks at 2.5-4.8 GB and takes 140-912 s; the 15 products of the 10 Hz pass over the same records
-peak at 22-37 GB and take 420-912 s. That is why `LANES` is 3 at 1 Hz and 1 at 10 Hz: three 10 Hz lanes
-would want more than 100 GB.
+Over AusLAMP Queensland Phase 1, whose records run 12-62 days, a 1 Hz pass peaks at 2.5-4.8 GB and takes
+140-900 s; a whole-record 10 Hz pass peaks at 22-37 GB, which is why the 10 Hz kinds run on hour selections
+(a few GB each) and `LANES` is 3 at 1 Hz.
 
 The CLI is resumable by design. With `REDO` False a product whose EDI is already on disk is left alone and
 reported as `exists`, so a run stopped part way is finished by re-running this cell. A product that fails is
@@ -2235,10 +2548,13 @@ import concurrent.futures as cf
 ENV = dict(os.environ)
 ENV.update(OMP_NUM_THREADS="3", MKL_NUM_THREADS="3", OPENBLAS_NUM_THREADS="3")   # <- 3 threads a lane
 
-def one_site(site):
+def lane(site, run_name, stamp, kinds, rates, selections=()):
+    """One subprocess over one site. The 1 Hz lane and the 10 Hz selection lane both run through this."""
     cmd = [sys.executable, "-m", "auslamp_proc.process.run", "--survey", SURVEY, "--site", site,
-           "--run", RUN, "--stamp", STAMP, "--params", PARAMS, "--quiet",
-           "--kinds"] + list(KINDS) + ["--rates"] + [str(r) for r in RATES]
+           "--run", run_name, "--stamp", stamp, "--params", PARAMS, "--quiet",
+           "--kinds"] + list(kinds) + ["--rates"] + [str(r) for r in rates]
+    if selections:
+        cmd += ["--selections"] + list(selections)
     if REDO:
         cmd.append("--redo")
     if WORK_ROOT:
@@ -2248,9 +2564,12 @@ def one_site(site):
     return site, r.returncode, round(time.time() - t, 1), (r.stdout or "").strip()[-300:], \\
         (r.stderr or "").strip()[-400:]
 
+def one_site(site):
+    return lane(site, RUN, STAMP, KINDS, RATES1)
+
 t_run = time.time()
 print("%d site(s) in %d lane(s), %d kind(s) at %s Hz -> %s_%s"
-      % (len(CHOSEN), LANES, len(KINDS), ", ".join(str(r) for r in RATES), RUN, STAMP), flush=True)
+      % (len(CHOSEN), LANES, len(KINDS), ", ".join(str(r) for r in RATES1), RUN, STAMP), flush=True)
 done = 0
 with cf.ThreadPoolExecutor(max_workers=LANES) as ex:
     for site, rc, secs, out, err in ex.map(one_site, CHOSEN):
@@ -2263,10 +2582,13 @@ print("wall time %.1f min over %d sites in %d lanes; a resumed run finds its pro
       "the time to check them, not the time they cost" % (wall / 60.0, len(CHOSEN), LANES))
 
 ledger = pd.read_csv(WORK / "survey" / "runs.csv")
-led = ledger[(ledger["stamp"].astype(str) == STAMP) & (ledger.site.isin(CHOSEN))].copy()
-# runs.csv is append-only, so re-running this workbook adds an `exists` row beside the `made` row of the
-# same product. The row that says what a product cost is the one written when it was made, so that row
-# wins and one row per product is kept.
+led = ledger[(ledger["run"].astype(str) == RUN) & (ledger["stamp"].astype(str) == STAMP)
+             & (ledger.site.isin(CHOSEN)) & (ledger.kind.isin(KINDS))].copy()
+# runs.csv is append-only and a kind this package no longer builds keeps its old rows, so the ledger is read
+# through KINDS: a row for a kind that is not built is not a product of this run and is not counted, drawn
+# or tabled. It is append-only in the other direction too, so re-running this workbook adds an `exists` row
+# beside the `made` row of the same product. The row that says what a product cost is the one written when
+# it was made, so that row wins and one row per product is kept.
 led["_made"] = (led.status == "made").astype(int)
 led = (led.sort_values(["site", "kind", "rate_hz", "_made"])
        .drop_duplicates(["site", "kind", "rate_hz"], keep="last").drop(columns="_made"))
@@ -2280,7 +2602,7 @@ print(led.groupby("kind").agg(products=("status", "size"), made=("status", lambd
                               seconds=("seconds", "median"),
                               peak_rss_mb=("peak_rss_mb", "max")).to_string())
 
-want = [(s, k, float(r)) for s in CHOSEN for k in KINDS for r in RATES]
+want = [(s, k, float(r)) for s in CHOSEN for k in KINDS for r in RATES1]
 have = {(r.site, r.kind, float(r.rate_hz)): r for r in led.itertuples()}
 missing = [w for w in want if w not in have]
 failed = led[led.status == "FAILED"]
@@ -2320,15 +2642,24 @@ else:
              len(CHOSEN), wall / 60.0, led.seconds.sum() / 60.0, led.peak_rss_mb.max()))
 '''),
 
+("md", r"""What the run cost. Look at the length of each site's bar relative to the others: a site with a long
+record and few masked intervals costs the most, and a site whose mask leaves many short runs can cost more
+than a longer record because Aurora is handed more runs. The colours say which kind is expensive -- a stack
+reads eight members off disk where a remote site reads one -- and the peak beside each site is the
+memory one lane held, which is what LANES has to be chosen against."""),
+
+("code", '''show(FIGP.run_timeline(led, OUT / "03_run.png", lanes=LANES, survey=sv.cfg["name"]))
+'''),
+
 ("md", r"""## A first look
 
 One line per site and kind at 100-1000 s: the two apparent resistivities, the two phases and the tipper
-magnitude, read straight out of the EDI. Under it, the single station against the remote site as a ratio at
-10-100 s and at 100-1000 s, which is what the reference bought at each end.
+magnitude, read straight out of the EDI. Under it, the remote site against the fleet stack as a ratio at
+10-100 s and at 100-1000 s, which is what each reference of the two carries at each end.
 
-This is a reading and not a check. A single station biased down by H noise coherent with itself shows as a
-ratio below one; a remote that shares the target's noise shows as a ratio near one where the single station
-is known to be biased. The full figures, every product on one page, are workbook 04's."""),
+This is a reading and not a check. Two kinds that agree over a band are two measurements of the same field
+made against different references; a band where they part is a band to look at in workbook 04, whose figures
+carry every product of a site on one page."""),
 
 ("code", '''from mt_metadata.transfer_functions.core import TF
 
@@ -2378,7 +2709,7 @@ first = pd.DataFrame(look_rows)
 print("the reading at 100-1000 s, per site and kind")
 print(first.to_string(index=False))
 
-if "single" in KINDS and "remote" in KINDS:
+if "remote" in KINDS and "stack" in KINDS:
     piv = first.pivot_table(index="site", columns="kind",
                             values=["rho_xy", "rho_yx", "rho_xy_10_100", "rho_yx_10_100"])
     ratio_rows = []
@@ -2387,21 +2718,409 @@ if "single" in KINDS and "remote" in KINDS:
         for col, label in (("rho_xy_10_100", "xy 10-100 s"), ("rho_yx_10_100", "yx 10-100 s"),
                            ("rho_xy", "xy 100-1000 s"), ("rho_yx", "yx 100-1000 s")):
             try:
-                a = piv.loc[s, (col, "single")]
-                b = piv.loc[s, (col, "remote")]
+                a = piv.loc[s, (col, "remote")]
+                b = piv.loc[s, (col, "stack")]
                 row[label] = round(float(a / b), 3) if np.isfinite(a) and np.isfinite(b) and b else np.nan
             except KeyError:
                 row[label] = np.nan
         ratio_rows.append(row)
     print()
-    print("single station over remote site, as a ratio of apparent resistivity")
+    print("remote site over fleet stack, as a ratio of apparent resistivity")
     print(pd.DataFrame(ratio_rows).to_string(index=False))
+'''),
+
+("md", r"""The same reading as curves: every kind of the shown site drawn over the others. Look for where the
+kinds separate. They usually agree at the short end, where every reference sees the same field, and part
+company at the long end, where the observatory reaches furthest and a stack of near members does not. Where
+two kinds sit on each other over a band, the band is measured; where they do not, workbook 04's page for the
+site is the place to look."""),
+
+("code", '''PERIOD_RANGE = (1.0, 20000.0)   # <- the periods the panels draw; the 1 Hz row reaches about 20,000 s
+
+curves = []
+for r in led[led.site == SHOW].itertuples():
+    p_ = Path(str(r.edi))
+    if not p_.exists():
+        continue
+    try:
+        curves.append(("%s %g Hz" % (KIND_WORD[r.kind], r.rate_hz), PR.read_tf(p_),
+                       "C%d" % list(KINDS).index(r.kind), "--" if float(r.rate_hz) > 1 else "-"))
+    except Exception as exc:
+        print("   %s: %s" % (p_.name, exc))
+show(FIGP.first_look(curves, SHOW, site_dir(SHOW) / "03_first_look.png", period_range=PERIOD_RANGE))
+'''),
+
+("md", r"""## The 10 Hz selection
+
+A 10 Hz pass is run on a keep mask of the most coherent hours and never on the whole record. The 10 Hz
+product is the short end, below the 16 s join, and no deep level is delivered from it,
+so scattered hours cost it nothing: a single Aurora window at the deepest level of the 1 Hz band file is
+65,536 s, which no selection of hours could hold, while the 10 Hz band file's own levels sit inside an hour.
+
+Each whole UTC hour is scored on the squared coherence of the two impedance pairs, Ex with Hy and Ey with Hx,
+over 1-30 s with a Welch segment of 2,048 samples at 10 Hz and the segment mean removed, as the median over
+the band. The two pairs are averaged, and a pair whose electric line is `dead` on that UTC day in workbook
+02's `elines` table is left out; an hour holding a non-finite sample scores nothing and is not a candidate.
+The series is written to `<work_root>/<site>/hour_scores_10hz.csv`.
+
+`SELECT10` names the fractions taken: the best 5, 10 and 25 per cent of the scored hours, keyed `f05`, `f10`
+and `f25`. Beside them a random 25 per cent of the same size is drawn from the same pool under `SEED` and
+keyed `r25`, and it is the control: a selection that does not beat its random control bought nothing, and
+only the top rows were chosen on the score. The choosing is workbook 05's `select_hours`, so a selection and
+its control differ in nothing but how the hours are picked.
+
+A kept hour is 3,600 s, which at 10 Hz is 36,000 samples and exactly the run floor, so an isolated kept hour
+survives as one Aurora run and adjacent kept hours merge into one longer run. A kept hour the transient mask
+or a gap cuts into falls under the floor and is dropped, which each product's `floor_dropped_frac` reports."""),
+
+("code", '''sel_all, NO_CACHE10 = {}, [s for s in CHOSEN if not cached(s, 10)]
+for s in [x for x in CHOSEN if x not in NO_CACHE10]:
+    t = time.time()
+    sel_all[s] = SEL.build(sv, s, rate=10, fractions=SELECT10, seed=SEED)
+    print("%-9s %5.1f s  %s" % (s, time.time() - t,
+                                " ".join("%s %d h" % (k, v["n_hours"])
+                                         for k, v in sorted(sel_all[s].items()))), flush=True)
+TAGS10 = [SEL.key_for(f) for f in SELECT10] + ([SEL.key_for(SEL.RANDOM_FRACTION, True)] if SELECT10 else [])
+sel_table = SEL.summary_rows(WORK, sorted(sel_all), keys=TAGS10)
+print()
+print(sel_table.to_string(index=False))
+print()
+print("the score is the median 1-30 s squared coherence of Ex-Hy and Ey-Hx over each whole UTC hour, Welch "
+      "at %d samples; a kept hour is 3600 s = 36000 samples at 10 Hz, which is the run floor"
+      % SEL.nperseg_for(10))
+if NO_CACHE10:
+    print("no 10 Hz cache at %s -- run workbook 02 at 10 Hz over them to bring them into this lane"
+          % " ".join(NO_CACHE10))
+empty = sorted({r.site for r in sel_table.itertuples() if r.hours_kept == 0})
+if empty:
+    print("no hour was selected at %s; those sites carry no 10 Hz product and are not requested below"
+          % ", ".join(empty))
+'''),
+
+("md", r"""### The run at 10 Hz
+
+One subprocess per site again, `LANES10` of them, each running the two kinds over the four selections: 8
+products a site. The observatory is not a kind at 10 Hz. A 5 per cent selection of a 60-day record is about
+3 days of 10 Hz and peaks at a few GB where a whole-record pass peaks at 22-37 GB, which is why `LANES10` can
+be more than one.
+
+The names carry the selection between the rate and the parameter set,
+`<site>_<kind>_10hz_<sel>_<params>.edi`, the ledger gains a `selection` column, the EDI carries a
+`selection=` line, and `provenance.json` carries the fraction, the hours kept, the seed and the score
+threshold. The 1 Hz names and the 1 Hz path are unchanged.
+
+A workbook run whose `RATES` holds no 10 Hz asks for no product here. The hours are still scored and
+selected above, because the score is a property of the record, and the check below scores them."""),
+
+("code", '''CHOSEN10 = [s for s in ASK10 if s in sel_all                # the asked-for sites that carry a selected hour
+            and max((v["n_hours"] for v in sel_all[s].values()), default=0) > 0]
+_s10 = sorted({p.name.split("_", 1)[1] for s in CHOSEN for p in (WORK / s).glob(RUN10 + "_*")
+               if p.is_dir()})
+STAMP10 = _s10[-1] if _s10 else datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+l10 = pd.DataFrame(columns=["site", "kind", "rate_hz", "selection", "n_runs", "mask_dropped_frac",
+                            "floor_dropped_frac", "seconds", "peak_rss_mb", "status", "error", "edi"])
+wall10 = 0.0
+if not RATES10 or not CHOSEN10:
+    print("RATES = %s and %d site(s) carry a selected hour, so no 10 Hz product is asked for here; the "
+          "selections above stand for a run whose RATES holds 10" % (RATES, len(CHOSEN10)))
+else:
+    t_10 = time.time()
+    print("%d site(s) in %d lane(s), %d kind(s) over %d selection(s) at 10 Hz -> %s_%s"
+          % (len(CHOSEN10), LANES10, len(KINDS10), max(1, len(TAGS10)), RUN10, STAMP10), flush=True)
+    done = 0
+    with cf.ThreadPoolExecutor(max_workers=LANES10) as ex:
+        for site, rc, secs, out, err in ex.map(
+                lambda s: lane(s, RUN10, STAMP10, KINDS10, RATES10, TAGS10), CHOSEN10):
+            done += 1
+            print("%2d/%2d %-9s exit %d %7.1f s  %s%s" % (done, len(CHOSEN10), site, rc, secs, out,
+                                                          ("  || " + err) if rc else ""), flush=True)
+    wall10 = time.time() - t_10
+    print()
+    print("wall time %.1f min over %d sites in %d lanes" % (wall10 / 60.0, len(CHOSEN10), LANES10))
+
+    ledger10 = pd.read_csv(WORK / "survey" / "runs.csv")
+    l10 = ledger10[(ledger10["run"].astype(str) == RUN10) & (ledger10["stamp"].astype(str) == STAMP10)
+                   & (ledger10.site.isin(CHOSEN10)) & (ledger10.kind.isin(KINDS10))].copy()
+    l10["selection"] = l10.selection.astype(str)
+    l10["_made"] = (l10.status == "made").astype(int)
+    l10 = (l10.sort_values(["site", "kind", "selection", "_made"])
+           .drop_duplicates(["site", "kind", "rate_hz", "selection"], keep="last").drop(columns="_made"))
+    print()
+    print(l10[["site", "kind", "rate_hz", "selection", "n_runs", "mask_dropped_frac",
+               "floor_dropped_frac", "seconds", "peak_rss_mb", "status", "error"]].to_string(index=False))
+    print()
+    print("per selection")
+    print(l10.groupby("selection").agg(products=("status", "size"),
+                                       made=("status", lambda v: int((v == "made").sum())),
+                                       failed=("status", lambda v: int((v == "FAILED").sum())),
+                                       runs=("n_runs", "median"), seconds=("seconds", "median"),
+                                       peak_rss_mb=("peak_rss_mb", "max")).to_string())
+'''),
+
+("md", r"""### What the 10 Hz row reads against the 1 Hz row
+
+The departure a 10 Hz product carries against its own 1 Hz product is a property of this survey's instrument,
+cache and band file, so it is measured here and not quoted from elsewhere. It is measured on the
+whole-record 10 Hz products, because those
+are the only ones that differ from the 1 Hz row in rate alone; a selection of hours differs in which hours it
+holds as well. The 1 Hz row is interpolated in log period and log rho onto the 10 Hz periods inside 4-32 s,
+and a 10 Hz period the 1 Hz row does not reach is dropped rather than compared against its end point. The
+sentence this cell prints is the one every 10 Hz file of this survey carries.
+
+Under it, the same ratio for each selection product, which is a reading and not a check. A site whose
+selections all depart by the same amount is not departing because of the choosing: the ranked selections and
+the random control would not agree on a bias the choosing made. Workbook 06's rate gate is what refuses such
+a site, on the site's own numbers."""),
+
+("code", '''RATE_KIND = "remote"            # <- the kind the rate is measured on; the product of record's own kind
+pairs, one_hz = [], {}
+for s in CHOSEN:
+    a = led.edi[(led.site == s) & (led.kind == RATE_KIND) & (led.rate_hz == 1.0)]
+    if not len(a) or not Path(str(a.iloc[0])).exists():
+        continue
+    one_hz[s] = PR.read_tf(Path(str(a.iloc[0])))
+    for d in sorted((WORK / s).glob("*_*")):
+        p = d / ("%s_%s_10hz_%s.edi" % (s, RATE_KIND, PARAMS))      # the whole record carries no tag
+        if p.exists():
+            pairs.append((s, PR.read_tf(p), one_hz[s]))
+            break
+rate_rec = RATE.measure(pairs, RATE_KIND)
+RATE.write_record(WORK, rate_rec)
+print("the whole-record 10 Hz %s products of %d site(s), over %g-%g s"
+      % (RATE_KIND, rate_rec["n_sites"], rate_rec["band_s"][0], rate_rec["band_s"][1]))
+print(pd.DataFrame([dict(site=k, xy_pct=(None if v["xy"] is None else round(100 * (v["xy"] - 1), 1)),
+                         yx_pct=(None if v["yx"] is None else round(100 * (v["yx"] - 1), 1)))
+                    for k, v in sorted(rate_rec["per_site"].items())]).to_string(index=False))
+print()
+print("caveat_10hz=%s" % RATE.caveat(rate_rec))
+
+# A product written before this survey was measured carries the sentence of its own day, and remaking a
+# whole-record 10 Hz pass to change a sentence costs 22-38 GB and an hour a site. The one header line is
+# rewritten in place instead: on the file's bytes, verified after the write to differ from the original in
+# that line and nothing else, and recorded in the run folder's provenance.
+CAVEAT = RATE.caveat(rate_rec)                  # <- the sentence every 10 Hz product of this survey carries
+rw = RATE.rewrite_products(WORK, CAVEAT)
+for d in sorted({Path(r["path"]).parent for r in rw if r["changed"]}):
+    RATE.record_rewrite(d, [r for r in rw if Path(r["path"]).parent == d])
+done_rw = [r for r in rw if r["changed"]]
+already = [r for r in rw if not r["changed"] and "already carries" in r["reason"]]
+refused = [r for r in rw if not r["changed"] and "already carries" not in r["reason"]]
+print()
+print("the caveat line, rewritten in place: %d file(s) changed, %d already carried it, %d refused"
+      % (len(done_rw), len(already), len(refused)))
+for r in refused[:8]:
+    print("   refused %-58s %s" % (Path(r["path"]).name, r["reason"]))
+if done_rw:
+    print("   the sentence they carried before: %s" % sorted({r["old"] for r in done_rw})[0][:150])
+
+sel_dep = []
+for s in sorted(sel_all):
+    if s not in one_hz:
+        continue
+    for tag in TAGS10:
+        for k in KINDS10:
+            p = WORK / s / ("%s_%s" % (RUN10, STAMP10)) / ("%s_%s_10hz_%s_%s.edi" % (s, k, tag, PARAMS))
+            if not p.exists():
+                continue
+            d = RATE.departure(PR.read_tf(p), one_hz[s]) if k == RATE_KIND else None
+            if d is None:
+                continue
+            sel_dep.append(dict(site=s, kind=k, selection=tag,
+                                xy_pct=round(100 * (d["xy"] - 1), 1) if np.isfinite(d["xy"]) else None,
+                                yx_pct=round(100 * (d["yx"] - 1), 1) if np.isfinite(d["yx"]) else None))
+dep = pd.DataFrame(sel_dep)
+if len(dep):
+    print()
+    print("each %s selection product against the same site's 1 Hz product, per cent over %g-%g s"
+          % (RATE_KIND, rate_rec["band_s"][0], rate_rec["band_s"][1]))
+    print(dep.pivot_table(index="site", columns="selection",
+                          values=["xy_pct", "yx_pct"]).round(1).to_string())
+    wide = dep.groupby("site").agg(worst=("xy_pct", lambda v: max(abs(x) for x in v if x is not None)),
+                                   n=("selection", "size"))
+    far = wide[wide.worst > 20]
+    print()
+    print("sites whose every selection departs by more than 20 per cent on one component: %s"
+          % (", ".join("%s (worst %.0f %%, %d selection(s))" % (r.Index, r.worst, r.n)
+                       for r in far.itertuples()) or "none"))
+'''),
+
+("md", r"""**This check fails if a selected hour does not begin on a whole UTC hour, is not exactly 3,600 s
+or falls outside the record it was selected from, if a ranked selection and its random control do not keep the
+same number of hours, if the ranked thresholds do not fall as the fraction rises, if any requested 10 Hz
+selection product is missing or FAILED, carries the wrong selection in its ledger row, or does not name that
+selection in its own EDI, if any 10 Hz product carries a caveat other than the survey's measured sentence,
+if any ledger row claiming a product names a file that is not on disk, or if any ledger row belongs to a run
+folder that is not on disk.**
+
+The file limb is `made` and `exists` rows only. A `FAILED` row names the product its pass set out to write
+and did not, which is the record that the attempt was made and what broke it; it is counted and named in the
+cell so it is not hidden, and it is not a row claiming a product. The run-folder limb is every row whatever
+its status: a run folder that is not on disk left no product, no log and no provenance, so a row pointing
+into one describes nothing at all.
+
+The first three limbs are scored against the cache each selection was made from -- its own `t0` and sample
+count, read off the npz -- and not against the selection file's own statement of itself. The product limbs are
+scored over every site with at least one selected hour, times `KINDS10`, times the tags; a workbook run whose
+`RATES` holds no 10 Hz asks for no product and those limbs score nothing, which the verdict says. The EDI limb
+reads the `selection=` line out of each written file, which is an observable independent of the ledger row
+beside it: the ledger is what the run said it did and the file is what it wrote. The caveat limb reads every
+10 Hz product on disk, not only the ones this run asked for, because a product written before the survey's
+departure was measured carries the sentence of its own day until the rewrite reaches it."""),
+
+("code", '''def span10(site):
+    """(t0, the number of samples) of one site's 10 Hz cache, read off the npz header alone."""
+    z = np.load(WORK / "cache_10hz" / ("%s.npz" % site), allow_pickle=False)
+    t0z, nz = int(z["t0"][0]), int(len(z["Hx"]))
+    z.close()
+    return t0z, nz
+
+bad_hour, bad_count, bad_order, n_hours_scored = [], [], [], 0
+for s in sorted(sel_all):
+    t0h, nh = span10(s)
+    t_end = t0h + nh / 10.0
+    thr = []
+    for tag in TAGS10:
+        item = sel_all[s].get(tag) or {}
+        for ta, tb in item.get("hours", []):
+            n_hours_scored += 1
+            if ta % 3600 or (tb - ta) != 3600 or ta < t0h or tb > t_end:
+                bad_hour.append("%s %s %d-%d" % (s, tag, ta, tb))
+        if not tag.startswith("r") and item.get("threshold") is not None:
+            thr.append((item["fraction"], float(item["threshold"])))
+        if tag.startswith("r"):
+            ranked = sel_all[s].get(SEL.key_for(SEL.RANDOM_FRACTION)) or {}
+            if ranked and ranked.get("n_hours") != item.get("n_hours"):
+                bad_count.append("%s %s %d h against %s %d h"
+                                 % (s, SEL.key_for(SEL.RANDOM_FRACTION), ranked.get("n_hours"), tag,
+                                    item.get("n_hours")))
+    thr.sort()
+    if any(b[1] > a[1] for a, b in zip(thr, thr[1:])):
+        bad_order.append("%s %s" % (s, " ".join("%.0f%%:%.3f" % (100 * f, v) for f, v in thr)))
+
+want10 = [(s, k, t) for s in CHOSEN10 for k in KINDS10 for t in TAGS10
+          if sel_all[s].get(t, {}).get("n_hours", 0) > 0] if RATES10 else []
+have10 = {(r.site, r.kind, str(r.selection)): r for r in l10.itertuples()}
+missing10, no_line, wrong_row = [], [], []
+for w in want10:
+    r = have10.get(w)
+    if r is None or str(r.status) == "FAILED":
+        missing10.append(w)
+        continue
+    p_ = Path(str(r.edi))
+    if not p_.exists():
+        missing10.append(w)
+        continue
+    if str(r.selection) != w[2]:
+        wrong_row.append("%s %s %s -> %s" % (w[0], w[1], w[2], r.selection))
+    said = EDI.read_parameter(p_, "selection")
+    if not said.startswith(w[2]):
+        no_line.append("%s %s %s: %s" % (w[0], w[1], w[2], said[:60] or "no selection= line"))
+no_control = sorted({s for s, k, t in want10 if not t.startswith("r")
+                     and (s, k, SEL.key_for(SEL.RANDOM_FRACTION, True)) not in have10})
+# every 10 Hz product on disk, not only the ones this run asked for: one written before the survey was
+# measured carries the sentence of its own day until the rewrite above reaches it
+ten = sorted(WORK.glob("*/*/*_10hz_*.edi"))
+n_ten = len(ten)
+stale_caveat = [p.name for p in ten if not RATE.carries_caveat(p, CAVEAT)]
+# the whole ledger against the disk: a row that says a product was made or is on disk has to name a file
+# that is there. A FAILED row names the product its pass set out to write and did not, so it is counted and
+# named rather than scored.
+whole_led = pd.read_csv(WORK / "survey" / "runs.csv")
+claims = whole_led[whole_led.status.isin(["made", "exists"])]
+orphan_rows = ["%s %s %s %s %g Hz %s" % (r.site, r.run, r.stamp, r.kind, r.rate_hz, r.selection)
+               for r in claims.itertuples() if not Path(str(r.edi)).exists()]
+failed_rows = int((whole_led.status == "FAILED").sum())
+# the second clause, on every row whatever its status: a row belongs to a run, and a run that is not on
+# disk left no product, no log and no provenance, so its rows describe nothing
+homeless_rows = sorted({"%s %s_%s" % (r.site, r.run, r.stamp) for r in whole_led.itertuples()
+                        if not (WORK / str(r.site) / ("%s_%s" % (r.run, r.stamp))).is_dir()})
+failed10 = l10[l10.status == "FAILED"] if len(l10) else l10
+cost10 = l10[l10.seconds.notna()] if len(l10) else l10
+print()
+print("%d selected hour(s) over %d site(s) scored against their own cache; %d product(s) requested; %d "
+      "10 Hz product(s) on disk scored on their caveat; %d ledger row(s) claiming a product scored against "
+      "the disk and all %d scored on their run folder, beside %d FAILED row(s) that claim no product"
+      % (n_hours_scored, len(sel_all), len(want10), n_ten, len(claims), len(whole_led), failed_rows))
+if not n_hours_scored:
+    print("VERDICT: UNJUDGED -- no hour was selected at any site, so nothing was scored")
+elif bad_hour or bad_count or bad_order or missing10 or len(failed10) or no_line or wrong_row \
+        or no_control or stale_caveat or orphan_rows or homeless_rows:
+    print("VERDICT: FAIL -- %d selected hour(s) are not a whole UTC hour of 3600 s inside their record (%s); "
+          "%d site(s) draw a control of a different size (%s); %d site(s) order their thresholds wrongly "
+          "(%s); %d of %d requested products are missing (%s); %d are FAILED (%s); %d carry no matching "
+          "selection= line in the EDI (%s); %d carry the wrong selection in the ledger row (%s); %d site(s) "
+          "carry a ranked selection with no random control (%s); %d of %d 10 Hz product(s) on disk carry a "
+          "caveat that is not the survey's measured sentence (%s); %d of %d ledger row(s) claiming a "
+          "product name a file that is not on disk (%s); %d run folder(s) the ledger has rows for are not "
+          "on disk (%s)"
+          % (len(bad_hour), "; ".join(bad_hour[:6]) or "none",
+             len(bad_count), "; ".join(bad_count[:4]) or "none",
+             len(bad_order), "; ".join(bad_order[:4]) or "none",
+             len(missing10), len(want10), "; ".join("%s %s %s" % m for m in missing10[:8]) or "none",
+             len(failed10), "; ".join("%s %s %s: %s" % (r.site, r.kind, r.selection, str(r.error)[:70])
+                                      for r in failed10.itertuples()) or "none",
+             len(no_line), "; ".join(no_line[:6]) or "none",
+             len(wrong_row), "; ".join(wrong_row[:6]) or "none",
+             len(no_control), ", ".join(no_control[:8]) or "none",
+             len(stale_caveat), n_ten, "; ".join(stale_caveat[:6]) or "none",
+             len(orphan_rows), len(claims), "; ".join(orphan_rows[:6]) or "none",
+             len(homeless_rows), "; ".join(homeless_rows[:6]) or "none"))
+else:
+    print("VERDICT: PASS -- all %d selected hour(s) over %d site(s) are whole 3600 s UTC hours inside their "
+          "own record, every control keeps the same number of hours as its ranked selection, every site's "
+          "thresholds fall as the fraction rises, every one of the %d 10 Hz products on disk carries the "
+          "survey's own measured caveat, all %d ledger rows claiming a product name a file that is there, "
+          "and every one of the %d rows belongs to a run folder that is on disk; %s"
+          % (n_hours_scored, len(sel_all), n_ten, len(claims), len(whole_led),
+             ("no 10 Hz product was requested (RATES = %s), so no product was scored" % RATES)
+             if not want10 else
+             ("all %d requested products over %d site(s), %d kind(s) and the tags %s exist and none is "
+              "FAILED, every one names its selection in its ledger row and in its own EDI, every ranked "
+              "selection has its random control beside it, and the %d of them whose cost the ledger "
+              "records hold %d to %d Aurora run(s) each, took %.1f to %.1f s and peaked at %.1f GB in one "
+              "lane"
+              % (len(want10), len(CHOSEN10), len(KINDS10), ", ".join(TAGS10), len(cost10),
+                 int(cost10.n_runs.min()), int(cost10.n_runs.max()), cost10.seconds.min(),
+                 cost10.seconds.max(), cost10.peak_rss_mb.max() / 1024.0))))
+'''),
+
+("md", r"""The selection and what it produced. In the upper panel the score runs over the record with the
+selections drawn above it as rows of spans, each named at the right: look at whether the chosen hours cluster
+in a few active days or scatter through the record, and at how far the `f05` threshold stands above the `f25`
+one. The top row, `r25`, is the random control and costs exactly the same number of hours as `f25`.
+
+In the lower panels the four selections are drawn dashed against the 1 Hz product of the same kind, solid.
+Look first at the short end, below the marked join, which is the only part of the 10 Hz product a splice would
+ever use, and at whether the ranked selections sit closer to the 1 Hz curve than the random control does. Over
+4-32 s the 10 Hz row departs from the 1 Hz row by the rate's own figure, printed in the section above,
+whatever the selection, so an offset in that band is the rate and not the choosing."""),
+
+("code", '''KIND10_SHOW = "remote" if "remote" in KINDS10 else KINDS10[0]   # <- the kind the selections are drawn for
+sel_curves = []
+base = led.edi[(led.site == SHOW) & (led.kind == KIND10_SHOW) & (led.rate_hz == 1.0)]
+if len(base) and Path(str(base.iloc[0])).exists():
+    sel_curves.append(("1 Hz %s" % KIND_WORD[KIND10_SHOW], PR.read_tf(Path(str(base.iloc[0]))), "k", "-"))
+for j, tag in enumerate(TAGS10):
+    row = l10[(l10.site == SHOW) & (l10.kind == KIND10_SHOW) & (l10.selection == tag)]
+    if not len(row) or not Path(str(row.edi.iloc[0])).exists():
+        continue
+    sel_curves.append(("10 Hz %s" % tag, PR.read_tf(Path(str(row.edi.iloc[0]))),
+                       "0.45" if tag.startswith("r") else "C%d" % j, "--"))
+why10 = ("the 10 Hz pass was not run for this site: RATES holds no 10 Hz" if not RATES10 else
+         ("the 10 Hz pass was not run for this site: SITES10 = %r does not name it" % SITES10
+          if SHOW not in CHOSEN10 else
+          "the 10 Hz pass was run for this site but wrote no product of this kind"))
+show(FIGP.hour_selection(SEL.site_scores(sv, SHOW), sel_all[SHOW], sel_curves, SHOW,
+                         site_dir(SHOW) / "03_selection_10hz.png",
+                         join_s=float((sv.cfg.get("bands") or {}).get("splice_join_s", 16)),
+                         band_s=SEL.SCORE_BAND_S, seed=SEED, no_ten_hz=why10))
 '''),
 
 ("md", r"""## What was written"""),
 
 ("code", '''rows = []
 run_dirs = [WORK / s / ("%s_%s" % (RUN, STAMP)) for s in CHOSEN]
+run_dirs += [WORK / s / ("%s_%s" % (RUN10, STAMP10)) for s in CHOSEN]
 for d in run_dirs:
     for p in sorted(d.glob("*")):
         if p.is_file():
@@ -2411,6 +3130,11 @@ for rate in RATES:
         rows.append(dict(file=str(p), kb=round(p.stat().st_size / 1024, 1)))
 for p in sorted(TR.tails_dir(WORK).glob("*.npz")):
     rows.append(dict(file=str(p), kb=round(p.stat().st_size / 1024, 1)))
+for s in CHOSEN:
+    for name in (SEL.SCORES_NAME, SEL.SELECTION_NAME):
+        p = WORK / s / name
+        if p.exists():
+            rows.append(dict(file=str(p), kb=round(p.stat().st_size / 1024, 1)))
 for p in list(WRITTEN) + [WORK / "survey" / "runs.csv"]:
     if Path(p).exists():
         rows.append(dict(file=str(p), kb=round(Path(p).stat().st_size / 1024, 1)))
@@ -2419,6 +3143,10 @@ print("%d files, %.1f MB" % (len(files), files.kb.sum() / 1024))
 print(files.head(60).to_string(index=False))
 if len(files) > 60:
     print("   ... and %d more" % (len(files) - 60))
+print()
+print("the %d figure(s) this workbook drew" % len(WRITTEN))
+for p in WRITTEN:
+    print("   %-64s %8.1f KB" % (str(p), Path(p).stat().st_size / 1024))
 print()
 d = run_dirs[0]
 print("the run folder of %s" % CHOSEN[0])
@@ -2434,6 +3162,14 @@ if one:
     print(one[0].name)
     for ln in keep_lines[:30]:
         print("   %s" % ln[:160])
+print()
+print("the selection line of one 10 Hz product")
+sel_one = sorted((WORK / SHOW / ("%s_%s" % (RUN10, STAMP10))).glob("*.edi"))
+if sel_one:
+    print(sel_one[0].name)
+    for ln in sel_one[0].read_text(encoding="utf-8", errors="ignore").splitlines():
+        if ln.strip().startswith(("selection=", "runs=", "caveat_10hz=")):
+            print("   %s" % ln.strip()[:200])
 '''),
 ]
 

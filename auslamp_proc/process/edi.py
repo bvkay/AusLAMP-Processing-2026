@@ -29,8 +29,11 @@ from pathlib import Path
 
 import numpy as np
 
-TEN_HZ_CAVEAT = ("Aurora at 10 Hz reads about 8 per cent low at 4-32 s against its own 1 Hz product "
-                 "(AusLAMP Victoria, 2026-09-11); not spliced")
+# A caveat has to be true of the survey it sits in (Ben's ruling, 2026-09-17), so no number measured on
+# another survey is written here. process.rate.caveat builds the sentence from the survey's own measurement
+# where it has one, and this is what stands where it has none.
+TEN_HZ_CAVEAT = ("the departure of this survey's 10 Hz row from its own 1 Hz row has not been measured, "
+                 "because the survey carries no whole-record 10 Hz product to measure it on; not spliced")
 # what mt_metadata accepts in an id, and so in the survey name the EMTFXML writer builds one from
 XML_ID_BAD = re.compile(r"[^A-Za-z0-9_\- ]")
 AZIMUTH = {"ex": 0.0, "ey": 90.0, "hx": 0.0, "hy": 90.0, "hz": 0.0}
@@ -252,6 +255,24 @@ def finish_edi(edi_in, out, site_row, decision_row, cfg, kind, info, params_line
     except Exception as exc:
         xml_out, xml_error = None, "%s: %s" % (type(exc).__name__, str(exc)[:200])
     return out, missed, xml_out, xml_error
+
+
+def read_parameter(edi_path, key) -> str:
+    """The value of one processing_parameters line of a written EDI, or "".
+
+    The writer emits the line under its full dotted name, `transfer_function.processing_parameters.<key>=`,
+    so a reader that expects the line to begin with the key alone finds nothing and says the product does
+    not carry it. The key is matched where it sits, after the last dot or at the start of the line.
+    """
+    want = str(key)
+    for line in Path(edi_path).read_text(encoding="utf-8", errors="ignore").splitlines():
+        s = line.strip()
+        if "=" not in s:
+            continue
+        name, _, value = s.partition("=")
+        if name.rpartition(".")[2] == want:
+            return value.strip()
+    return ""
 
 
 def has_tipper(edi_path) -> bool:

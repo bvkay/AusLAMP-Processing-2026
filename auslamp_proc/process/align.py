@@ -21,6 +21,14 @@ observatory is kept unshifted with the reason recorded. On GPS-disciplined logge
 windows means the pair is kept at lag 0. Where the 2-day window yields fewer than two windows the batch's
 survey.yaml `floors.align_fallback_s` (12 h) is tried instead and the sidecar says which window was used.
 
+The delay itself is applied by shift() as an integer roll and a Lanczos-windowed sinc of LANCZOS_A = 16 taps
+either side. The interpolation is local, so an impulsive sample is not spread and a NaN reaches only the
+2 x LANCZOS_A samples around it.
+
+The settling inside 120 s of a run edge biased the 5-20 s cross-correlation: with references.EDGE_S at 120 s
+rather than 30 s, Q49's eight member lags read +0.00 to +0.12 s where they had read +0.15 to +0.35 s
+(2026-09-17).
+
 @author: ben kay (ben@auscope.org.au)
 """
 from __future__ import annotations
@@ -37,6 +45,7 @@ MIN_CORR = 0.35
 MAX_SPREAD_S = 1.0
 MIN_LONG_CORR = 0.5
 OBS_MAX_SPREAD_S = 5.0
+LANCZOS_A = 16                        # taps either side of the fractional delay
 H = ("Hx", "Hy")
 
 
@@ -122,35 +131,57 @@ def lag(target_h: dict, member_h: dict, fs, band=SHORT_BAND, maxlag_s=MAXLAG_S, 
                 n_windows=len(per_win), n_offered=len(starts), win_s=float(win_s))
 
 
-def shift(arr, lag_s, fs, min_run=None):
+def shift(arr, lag_s, fs):
     """`arr` advanced by lag_s seconds: out[i] = arr[i + lag_s * fs], so a member shifted by its own lag
     against the target lines up with it.
 
-    The fractional part is a Fourier phase ramp, which needs a continuous stretch, so each run of finite
-    samples is shifted on its own and the NaNs come back where they went in. Each run is demeaned and
-    reflection-padded, so the circular wrap lands on the reflection; what is left is an edge error confined
-    to about |lag_s| samples at each end of each run. A run too short to pad is set to NaN rather than left
-    unaligned: an unshifted fragment inside a shifted record is a silent error.
+    The integer part is a roll with NaN fill and the fractional part a Lanczos-windowed sinc of
+    LANCZOS_A = 16 taps either side. The interpolation is local: an impulsive sample stays where it is and a
+    NaN reaches only the 2 x LANCZOS_A samples around it. A Fourier phase ramp over a finite run does
+    neither -- it spreads one impulsive sample into a sinc train decaying as 1/n over the whole run, and Q45
+    (Queensland Phase 3), whose record opens with the logger settling from 16,804 to 33,214 to 29,234 nT
+    over about 10 s, goes from 78 to 4,384 steps above 2 nT per million samples under its 0.172 s shift.
+
+    The rms error against an analytic sine shifted 0.37 s is 0.3 per cent of the amplitude at a 2.3 s period
+    and 0.09 per cent at 2.5 s, and falls with period; 2.3 s is the shortest band the 1 Hz parameter set
+    estimates. There is no run segmentation, no reflection padding and no minimum run.
     """
-    from .transients import segments
     if isinstance(arr, dict):
-        return {k: shift(v, lag_s, fs, min_run) for k, v in arr.items()}
+        return {k: shift(v, lag_s, fs) for k, v in arr.items()}
     x = np.asarray(arr, float)
     if not np.isfinite(lag_s) or lag_s == 0.0:
         return x.copy()
-    d = float(lag_s) * fs
-    pad = int(max(16, 8 * abs(d)))
-    need = min_run if min_run is not None else 2 * pad
-    out = np.full(x.shape, np.nan)
-    for a, L in segments(np.isfinite(x), 1):
-        if L < need:
+    n = len(x)
+    d = float(lag_s) * float(fs)
+    k = int(np.floor(d))
+    f = d - k
+    y = np.full(n, np.nan)
+    if 0 <= k < n:
+        y[:n - k] = x[k:]
+    elif -n < k < 0:
+        y[-k:] = x[:n + k]
+    if f == 0.0:
+        return y
+    a = int(LANCZOS_A)
+    taps = np.arange(-a + 1, a + 1)
+    t = taps - f
+    w = np.sinc(t) * np.sinc(t / a)
+    w /= w.sum()
+    good = np.isfinite(y)
+    yf = np.where(good, y, 0.0)
+    out = np.zeros(n)
+    bad = np.zeros(n, bool)
+    for tap, wt in zip(taps, w):
+        lo, hi = (0, n - tap) if tap >= 0 else (-tap, n)
+        if hi <= lo:
+            bad[:] = True
             continue
-        seg = x[a:a + L]
-        m = seg.mean()
-        p = np.pad(seg - m, pad, mode="reflect")
-        f = np.fft.rfftfreq(len(p), 1.0 / fs)
-        y = np.fft.irfft(np.fft.rfft(p) * np.exp(2j * np.pi * f * (d / fs)), len(p))
-        out[a:a + L] = y[pad:pad + L] + m
+        src = slice(tap, n) if tap >= 0 else slice(0, n + tap)
+        out[lo:hi] += wt * yf[src]
+        bad[lo:hi] |= ~good[src]
+        bad[:lo] = True
+        bad[hi:] = True
+    out[bad] = np.nan
     return out
 
 

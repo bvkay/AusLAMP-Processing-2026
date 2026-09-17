@@ -26,8 +26,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def caveats(site_row, applied_signs, undecided_signs, references: dict, rate, extra=()) -> list:
-    """One line per open input. Empty only where nothing is open."""
+def caveats(site_row, applied_signs, undecided_signs, references: dict, rate, extra=(),
+            work_root=None) -> list:
+    """One line per open input. Empty only where nothing is open.
+
+    `work_root` is where the survey's own measured 10 Hz departure is read from; without one the 10 Hz line
+    says the departure has not been measured rather than quoting a figure from another survey.
+    """
     out = []
     if undecided_signs:
         out.append("signs undecided at %s: used as +1 and recorded" % ", ".join(sorted(undecided_signs)))
@@ -46,16 +51,21 @@ def caveats(site_row, applied_signs, undecided_signs, references: dict, rate, ex
         for m, note in sorted((info.get("alignment_notes") or {}).items()):
             out.append("%s reference member %s: %s" % (kind, m, str(note)[:200]))
     if int(rate) == 10:
-        from .edi import TEN_HZ_CAVEAT
-        out.append(TEN_HZ_CAVEAT)
+        from . import rate as RATE
+        out.append(RATE.caveat(RATE.read_record(work_root) if work_root else None))
     out += [str(x) for x in extra]
     return out
 
 
 def write(path, survey_cfg, site_row, decision_row, references, bands, params_name, params, rate,
           run_name, stamp, products, mask_stats, cache_sidecar, engine, engine_version, extra_caveats=(),
-          pool=None, rot_segments=(), rot_drop=(), weight_rule="fleet"):
-    """Write provenance.json into a run folder and return the dict it holds."""
+          pool=None, rot_segments=(), rot_drop=(), weight_rule="fleet", selection=None):
+    """Write provenance.json into a run folder and return the dict it holds.
+
+    `selection` is the hour selection record of process.selection where the run was made on one: the band and
+    the Welch segment the hours were scored on, and per tag the fraction, the seed, the score threshold and
+    the hours kept. It is empty for a whole-record run.
+    """
     path = Path(path)
     d = dict(
         built_at=_now(),
@@ -83,6 +93,7 @@ def write(path, survey_cfg, site_row, decision_row, references, bands, params_na
                    decimation_factors=bands.decimation_factors),
         parameter_set=dict(name=params_name, **{k: v for k, v in params.items()}),
         mask=mask_stats,
+        selection=selection or {},
         products=products,
         cache=dict(builder=cache_sidecar.get("builder"), built_utc=cache_sidecar.get("built_utc"),
                    notch=cache_sidecar.get("notch_applied", "none"),
