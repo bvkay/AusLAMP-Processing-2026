@@ -1,30 +1,40 @@
-"""The shared centre electrode, and the north-minus-east diagonal that cancels it.
+"""The shared centre electrode, and the arm diagonal that cancels it at any pair of arm lengths.
 
-The EDL L layout is three electrodes: a shared centre C and two arms, so Ex = (V_N - V_C)/L and
-Ey = (V_E - V_C)/L and a noisy centre puts one voltage on both lines. With the lines physically signed the
-model is
+The EDL L layout is three electrodes: a shared centre C, a north arm of length L_N and an east arm of length
+L_E, so Ex = (V_N - V_C)/L_N and Ey = (V_E - V_C)/L_E. A noisy centre puts ONE VOLTAGE on both lines, and
+because the two lines divide that voltage by different lengths it does not arrive as the same FIELD on both.
+With the lines physically signed and a centre voltage n,
 
-    Ex = Ex_true + c,   Ey = Ey_true + s c,    s = +1 for arms N+E or S+W, -1 for one arm reversed,
+    Ex = Ex_true + c,   Ey = Ey_true + s c (L_N / L_E),   c = -n / L_N,
 
-and the E signs predict s: the convention (Ex -1, Ey -1) is N+E, each departure to +1 reverses an arm, so
-s = +1 for an even number of departures and -1 for an odd one. An undecided sign is never filled by
-convention: the site is UNJUDGED on the sign prediction.
+with s = +1 for arms N+E or S+W and -1 where one arm is reversed. The E signs predict s: the convention
+(Ex -1, Ey -1) is N+E, each departure to +1 reverses an arm, so s = +1 for an even number of departures and
+-1 for an odd one. An undecided sign is never filled by convention: the site is UNJUDGED on the prediction.
 
-The residual test (ported from vic_centre_test.day_stats :80-99, criteria :6-24). On the days of highest
-Ex-Ey coherence, at 20-200 s, the part of each line explained by (Hx, Hy) is removed per frequency bin from
-the cross-spectra and the residuals are read: the model holds when the residual coherence is at least 0.9 and
-the complex gain g = S_ry,rx / S_rx,rx has |g| in 0.85-1.18, and sign(Re g) is the observed s. The clean
-diagonal is the one whose multiple coherence with (Hx, Hy) is the higher. The three criteria:
+The residual test (ported from vic_centre_test.day_stats :80-99, criteria :6-24, with the lengths carried
+through -- Ben and Fable, 2026-09-17; the frozen tool is Victoria's, where every arm is 50 m and the lengths
+cancel). On the days of highest Ex-Ey coherence, at 20-200 s, the part of each line explained by (Hx, Hy) is
+removed per frequency bin from the cross-spectra and the residuals are read. The complex gain
+g = S_ry,rx / S_rx,rx is then s L_N / L_E, so the model holds where the residual coherence is at least 0.9
+AND |g| divided by the EXPECTED L_N / L_E lies in 0.85-1.18; sign(Re g) is still the observed s. The lengths
+come from sites.csv dipole_n_m and dipole_e_m, and an assume: cell is used and named. The clean diagonal is
+the one whose multiple coherence with (Hx, Hy) is the higher. The three criteria:
 
     A  where the model holds and both E signs are decided, the prediction must agree with the observed sign
-    B  a CONTROL site whose source Ex-Ey coherence is under 0.35 on every scored day must NOT hold the model
+    B  a CONTROL that cannot share a centre must NOT hold the model
     C  the remedy applies only where the model holds and the clean diagonal by H is the observed one
 
-The remedy (ported from vic_ne_cache :6-13 and vic_ne_rotate :6-21). V_N - V_E = L (Ex - Ey) is the voltage
-across the diagonal of length L sqrt 2, so E_x' = (Ex - Ey)/sqrt 2 is the field along the north-west diagonal
-and E_y' = (Ex + Ey)/sqrt 2 along the north-east one, carrying the centre doubled. The pair is E in the frame
-turned by -45 deg, so a pass on the variant cache gives R Z; turning the H columns as well gives
-Z' = (R Z) R^T and T' = T R^T. The x' row is the clean one and the y' row is kept for the record.
+The remedy (ported from vic_ne_cache :6-13 and vic_ne_rotate :6-21, generalised to unequal arms). The
+voltage between the two ARM electrodes carries no centre at any lengths:
+
+    V_N - V_E = L_N Ex - L_E Ey,   d = sqrt(L_N^2 + L_E^2),   E_d = (L_N Ex - L_E Ey) / d,
+
+which is the field along the unit vector (L_N, -L_E)/d in (north, east), that is at
+theta = atan2(-L_E, L_N) from north. The orthogonal row E_v = (L_E Ex + L_N Ey) / d carries the centre and is
+kept for the record. Equal arms give theta = -45 deg and the pair reduces to (Ex - Ey)/sqrt 2 and
+(Ex + Ey)/sqrt 2 exactly. The pair is E in the frame turned by theta, so a pass on the variant cache gives
+R(theta) Z; turning the H columns as well gives Z' = (R Z) R^T and T' = T R^T at THAT theta. The x' row is
+the clean one and the y' row is kept for the record.
 
 The turn-back is checked on three invariants of a column-only turn: the elements to 1e-6 relative (an EDI
 carries seven significant digits), |det Z' - det Z| <= 1e-5 ||Z||^2 scaled by the norm because the relative
@@ -49,15 +59,78 @@ NPERSEG = 4096
 BAND_S = (20.0, 200.0)
 CENTRE_DAYS = 3
 RESID_COH_MIN = 0.9
-GAIN_LO, GAIN_HI = 0.85, 1.18
+GAIN_LO, GAIN_HI = 0.85, 1.18   # the bounds on |g| divided by the expected L_N / L_E
 CONTROL_EX_EY_MAX = 0.35        # a control site's source Ex-Ey coherence on every scored day
 SQ2 = float(np.sqrt(2.0))
-THETA_NE = -45.0
+THETA_NE = -45.0                # the equal-arm diagonal; diagonal_angle gives the site's own
 
 # the tolerances of the turn-back, vic_ne_rotate.py:12-21
 ELEMENT_RTOL = 1e-6
 DET_SCALED_TOL = 1e-5
 FROBENIUS_RTOL = 1e-6
+
+
+def arm_lengths(sv, site) -> dict:
+    """(L_N, L_E) from sites.csv dipole_n_m and dipole_e_m, with the source of each named.
+
+    An `assume:<value>` cell is used and flagged, as everywhere else in the package: the expected gain and
+    the diagonal's direction both scale with these numbers, so a product built on an assumed arm carries the
+    assumption into its provenance.
+    """
+    from ..raw.cache import dipole_value
+    row = sv.site(site)
+    ln, ln_kind = dipole_value(row.get("dipole_n_m", ""))
+    le, le_kind = dipole_value(row.get("dipole_e_m", ""))
+    ok = bool(np.isfinite(ln) and np.isfinite(le) and ln > 0 and le > 0)
+    return dict(L_N=float(ln), L_E=float(le), known=ok,
+                assumed=sorted(c for c, k in (("Ex", ln_kind), ("Ey", le_kind)) if k == "assume"),
+                source=str(row.get("dipole_source", "")),
+                note=("L_N %.3g m, L_E %.3g m (%s)" % (ln, le, row.get("dipole_source", "no source"))
+                      if ok else "the arm lengths are not in sites.csv"))
+
+
+def expected_gain(L_N, L_E) -> float:
+    """|g| the shared-centre model predicts for the residual test: L_N / L_E.
+
+    One centre voltage divided by two different arm lengths is two different fields, so the residuals of a
+    real shared centre come out in the ratio of the lengths and not at one.
+    """
+    if not (np.isfinite(L_N) and np.isfinite(L_E)) or L_E == 0:
+        return float("nan")
+    return float(L_N) / float(L_E)
+
+
+def diagonal_angle(L_N, L_E) -> float:
+    """theta in degrees of the arm diagonal from north: atan2(-L_E, L_N). Equal arms give -45 deg."""
+    if not (np.isfinite(L_N) and np.isfinite(L_E)):
+        return float("nan")
+    return float(np.degrees(np.arctan2(-float(L_E), float(L_N))))
+
+
+def diagonal_length(L_N, L_E) -> float:
+    """d = sqrt(L_N^2 + L_E^2), the separation of the two arm electrodes."""
+    return float(np.hypot(float(L_N), float(L_E)))
+
+
+def _arm_fields(arms: dict, g_expected: float) -> dict:
+    """The arm columns every centre result carries, so a reader can see what the gain was judged against."""
+    return dict(L_N=arms["L_N"], L_E=arms["L_E"], arms_known=arms["known"],
+                arms_assumed=" ".join(arms["assumed"]), arm_source=arms["source"][:120],
+                gain_expected=g_expected,
+                theta_deg=diagonal_angle(arms["L_N"], arms["L_E"]),
+                diagonal_m=diagonal_length(arms["L_N"], arms["L_E"]))
+
+
+def diagonals(ex, ey, L_N, L_E):
+    """(E_d, E_v): the field along the arm diagonal and along its orthogonal, at any pair of lengths.
+
+    E_d = (L_N Ex - L_E Ey) / d is the voltage between the two arm electrodes over their separation and
+    carries no centre; E_v = (L_E Ex + L_N Ey) / d carries it. The pair is R(theta) applied to (Ex, Ey).
+    """
+    d = diagonal_length(L_N, L_E)
+    ex = np.asarray(ex, float)
+    ey = np.asarray(ey, float)
+    return (float(L_N) * ex - float(L_E) * ey) / d, (float(L_E) * ex + float(L_N) * ey) / d
 
 
 def _cross(ch, nperseg=NPERSEG, fs=1.0):
@@ -72,12 +145,15 @@ def _cross(ch, nperseg=NPERSEG, fs=1.0):
     return f, S
 
 
-def day_stats(ex, ey, hx, hy, band_s=BAND_S, nperseg=NPERSEG, fs=1.0) -> dict:
+def day_stats(ex, ey, hx, hy, band_s=BAND_S, nperseg=NPERSEG, fs=1.0, L_N=1.0, L_E=1.0) -> dict:
     """The residual coherence, the complex gain and the two diagonals' H coherence over one piece.
 
     S_r1,r2 = S_12 - S_1h Shh^-1 S_h2 is the cross-spectrum of the residuals after the H-explained part is
-    removed; the model's observable is their coherence and the gain g = S_ry,rx / S_rx,rx. Ported from
-    vic_centre_test.day_stats (:80-99).
+    removed; the model's observable is their coherence and the gain g = S_ry,rx / S_rx,rx, which a real
+    shared centre puts at s L_N / L_E. Ported from vic_centre_test.day_stats (:80-99), with the arm lengths
+    carried into the two diagonals: the clean one is ex - (L_E/L_N) ey and the one that keeps the centre is
+    ex + (L_N/L_E) ey, which at equal arms are ex - ey and ex + ey. A multiple coherence does not change
+    when its combination is scaled, so only the ratio of the lengths enters.
     """
     f, S = _cross(dict(ex=ex, ey=ey, hx=hx, hy=hy), nperseg, fs)
     sel = (f > 1.0 / band_s[1]) & (f < 1.0 / band_s[0])
@@ -113,7 +189,11 @@ def day_stats(ex, ey, hx, hy, band_s=BAND_S, nperseg=NPERSEG, fs=1.0) -> dict:
         She = she("ex") + w * she("ey")
         return float(np.median(np.einsum("ni,nij,nj->n", Seh, Sinv, She).real / See))
 
-    return dict(coh_r=coh_r, gain=gain, s_obs=s_obs, mcoh_diff=mcoh(-1.0), mcoh_sum=mcoh(1.0),
+    ln, le = float(L_N), float(L_E)
+    w_diff = -le / ln if ln else -1.0
+    w_sum = ln / le if le else 1.0
+    return dict(coh_r=coh_r, gain=gain, s_obs=s_obs, mcoh_diff=mcoh(w_diff), mcoh_sum=mcoh(w_sum),
+                w_diff=float(w_diff), w_sum=float(w_sum),
                 coh_ExEy=float(np.median(np.abs(S[("ex", "ey")][sel]) ** 2
                                          / (S[("ex", "ex")][sel].real * S[("ey", "ey")][sel].real))))
 
@@ -140,12 +220,15 @@ def residual_test(sv, site, days=CENTRE_DAYS, elines=None, band_s=BAND_S, nperse
                   rate=1) -> dict:
     """The shared-centre model at one site, on the `days` days of highest Ex-Ey coherence.
 
-    Returns the medians over those days, whether the model holds, the predicted and observed signs, the two
-    diagonals' H coherence, whether the site qualifies as a control (source Ex-Ey coherence under 0.35 on
-    every scored day) and whether the remedy applies.
+    Returns the medians over those days, the arm lengths and the gain they predict, whether the model holds,
+    the predicted and observed signs, the two diagonals' H coherence, whether the site qualifies as a control
+    (source Ex-Ey coherence under 0.35 on every scored day) and whether the remedy applies.
     """
     if elines is None:
         elines = read_elines(sv, site)
+    arms = arm_lengths(sv, site)
+    ln, le = (arms["L_N"], arms["L_E"]) if arms["known"] else (1.0, 1.0)
+    g_expected = expected_gain(ln, le)
     b, a = highpass(float(rate), 3000.0)
     t0, arr = load_raw(sv, site, rate, ("Ex", "Ey", "Hx", "Hy"))
     dec = None
@@ -166,7 +249,7 @@ def residual_test(sv, site, days=CENTRE_DAYS, elines=None, band_s=BAND_S, nperse
         p = {k: prepare(arr[k][i0:i1], b, a) for k in ("Ex", "Ey", "Hx", "Hy")}
         if any(v is None for v in p.values()):
             continue
-        st = day_stats(p["Ex"], p["Ey"], p["Hx"], p["Hy"], band_s, nperseg, float(rate))
+        st = day_stats(p["Ex"], p["Ey"], p["Hx"], p["Hy"], band_s, nperseg, float(rate), ln, le)
         if not st:
             continue
         st["day"], st["src"] = r.day, float(r.coh_Ex_Ey)
@@ -174,21 +257,24 @@ def residual_test(sv, site, days=CENTRE_DAYS, elines=None, band_s=BAND_S, nperse
         used.append(r.day)
     if not stats:
         return dict(site=site, judged=False, days="", reason="no usable day",
-                    s_pred=s_pred, sign_undecided=" ".join(undecided))
+                    s_pred=s_pred, sign_undecided=" ".join(undecided), **_arm_fields(arms, g_expected))
     med = {k: float(np.median([d[k] for d in stats]))
            for k in ("coh_r", "gain", "mcoh_diff", "mcoh_sum", "coh_ExEy", "src")}
     s_obs = float(np.sign(np.sum([d["s_obs"] for d in stats]))) or 1.0
-    model = bool(med["coh_r"] >= RESID_COH_MIN and GAIN_LO <= med["gain"] <= GAIN_HI)
+    ratio = med["gain"] / g_expected if np.isfinite(g_expected) and g_expected else np.nan
+    model = bool(med["coh_r"] >= RESID_COH_MIN and np.isfinite(ratio)
+                 and GAIN_LO <= ratio <= GAIN_HI)
     control = bool(max(d["src"] for d in stats) < CONTROL_EX_EY_MAX)
     clean_obs = "diff" if s_obs > 0 else "sum"
     clean_pred = "" if undecided else ("diff" if s_pred > 0 else "sum")
     clean_H = "diff" if med["mcoh_diff"] > med["mcoh_sum"] else "sum"
     return dict(site=site, judged=True, days=" ".join(used), n_days=len(stats),
                 src_coh=med["src"], resid_coh=med["coh_r"], resid_gain=med["gain"],
+                gain_ratio=float(ratio) if np.isfinite(ratio) else np.nan,
                 s_pred=s_pred, s_obs=s_obs, sign_undecided=" ".join(undecided),
                 a_judged=bool(not undecided and model),
                 mcoh_diff=med["mcoh_diff"], mcoh_sum=med["mcoh_sum"],
-                model_holds=model, control=control,
+                model_holds=model, control=control, **_arm_fields(arms, g_expected),
                 clean_pred=clean_pred, clean_obs=clean_obs, clean_by_H=clean_H,
                 sign_agrees=(None if undecided or not model else bool(s_obs == s_pred)),
                 remedy_applicable=bool(model and clean_H == clean_obs))
@@ -207,7 +293,9 @@ def built_control(sv, site, neighbour=None, days=CENTRE_DAYS, elines=None, band_
     The site's own Ex is paired with the nearest sound site's Ey, both read against the site's own (Hx, Hy)
     over the same days, and the residual test is run on that pair. Two electrodes tens of kilometres apart
     have no common voltage, so the model must NOT hold: a residual coherence at or above 0.9 with a gain
-    inside 0.85-1.18 there would mean the test finds a shared centre wherever it looks.
+    within 0.85-1.18 of the site's own expected L_N / L_E there would mean the test finds a shared centre
+    wherever it looks. The control is judged against the site's own expected gain, because the question it
+    answers is whether THIS site's test can fire on a pair that cannot have a shared centre.
 
     This is the control the section is judged on (Ben, after the Q53N run of 2026-09-17). A site whose own
     Ex-Ey coherence stays under 0.35 on every day need not exist in a survey -- a one-dimensional earth
@@ -217,6 +305,9 @@ def built_control(sv, site, neighbour=None, days=CENTRE_DAYS, elines=None, band_
     """
     if elines is None:
         elines = read_elines(sv, site)
+    arms = arm_lengths(sv, site)
+    ln, le = (arms["L_N"], arms["L_E"]) if arms["known"] else (1.0, 1.0)
+    g_expected = expected_gain(ln, le)
     pool = [s for s in (members if members is not None else list(sv.sites.site)) if s != site]
     if neighbour is None:
         from .masks import distance_km
@@ -248,7 +339,7 @@ def built_control(sv, site, neighbour=None, days=CENTRE_DAYS, elines=None, band_
         p["Ey"] = prepare(other["Ey"][j0:j1], b, a)
         if any(v is None for v in p.values()):
             continue
-        st = day_stats(p["Ex"], p["Ey"], p["Hx"], p["Hy"], band_s, nperseg, float(rate))
+        st = day_stats(p["Ex"], p["Ey"], p["Hx"], p["Hy"], band_s, nperseg, float(rate), ln, le)
         if not st:
             continue
         st["day"] = r.day
@@ -256,14 +347,20 @@ def built_control(sv, site, neighbour=None, days=CENTRE_DAYS, elines=None, band_
         used.append(r.day)
     if not stats:
         return dict(site=site, judged=False, model_holds=None, neighbour=neighbour,
-                    reason="no day carries both the site's Ex and %s's Ey" % neighbour)
+                    reason="no day carries both the site's Ex and %s's Ey" % neighbour,
+                    **_arm_fields(arms, g_expected))
     med = {k: float(np.median([d[k] for d in stats]))
            for k in ("coh_r", "gain", "mcoh_diff", "mcoh_sum", "coh_ExEy")}
-    holds = bool(med["coh_r"] >= RESID_COH_MIN and GAIN_LO <= med["gain"] <= GAIN_HI)
+    # the control is judged by the SITE's own expected gain, because the question it answers is whether this
+    # site's test can fire on a pair that cannot have a shared centre
+    ratio = med["gain"] / g_expected if np.isfinite(g_expected) and g_expected else np.nan
+    holds = bool(med["coh_r"] >= RESID_COH_MIN and np.isfinite(ratio) and GAIN_LO <= ratio <= GAIN_HI)
     return dict(site="%s Ex + %s Ey" % (site, neighbour), neighbour=neighbour, judged=True,
                 days=" ".join(used), n_days=len(stats), src_coh=med["coh_ExEy"],
-                resid_coh=med["coh_r"], resid_gain=med["gain"], mcoh_diff=med["mcoh_diff"],
-                mcoh_sum=med["mcoh_sum"], model_holds=holds,
+                resid_coh=med["coh_r"], resid_gain=med["gain"],
+                gain_ratio=float(ratio) if np.isfinite(ratio) else np.nan,
+                mcoh_diff=med["mcoh_diff"], mcoh_sum=med["mcoh_sum"], model_holds=holds,
+                **_arm_fields(arms, g_expected),
                 reason="the site's own Ex against %s's Ey, both on the site's own H over the same days: "
                        "two electrodes that cannot share a centre" % neighbour)
 
@@ -303,21 +400,31 @@ def control_site(sv, site, members=None) -> dict:
 # ---------------------------------------------------------------- the variant cache
 
 def ne_variant(sv, site, rate=1, force=False) -> dict:
-    """Write cache_<rate>hz_ne/<site>.npz: the same H and t0, Ex and Ey replaced by the two diagonals.
+    """Write cache_<rate>hz_ne/<site>.npz: the same H and t0, Ex and Ey replaced by the two arm diagonals.
 
-    Ex' = (Ex - Ey)/sqrt 2 is the north-west diagonal, free of the shared centre; Ey' = (Ex + Ey)/sqrt 2 is
-    the north-east one, carrying it doubled. The difference is taken on the PHYSICALLY SIGNED lines -- the
-    decisions.csv sign of each line is applied first -- because the model Ex = Ex_true + c, Ey = Ey_true + s c
-    is stated for signed lines; the sidecar records that, and a pass on this cache does not sign E again.
-    The check is on the algebra alone: the written Ex' equals (Ex - Ey)/sqrt 2 of the signed source at every
-    finite sample. The coherence part of the frozen check is superseded -- the coherence between the two
-    diagonals does not say which one is clean.
+    Ex' = (L_N Ex - L_E Ey) / d is the voltage between the two arm electrodes over their separation
+    d = sqrt(L_N^2 + L_E^2), free of the shared centre at any pair of lengths; Ey' = (L_E Ex + L_N Ey) / d is
+    the orthogonal row and carries the centre. The pair is E turned by theta = atan2(-L_E, L_N), which at
+    equal arms is -45 deg and reduces to (Ex - Ey)/sqrt 2 and (Ex + Ey)/sqrt 2 exactly.
+
+    The combination is taken on the PHYSICALLY SIGNED lines -- the decisions.csv sign of each is applied
+    first -- because the model Ex = Ex_true + c, Ey = Ey_true + s c L_N/L_E is stated for signed lines; the
+    sidecar records that, and a pass on this cache does not sign E again. The check is on the algebra alone:
+    the written Ex' equals (L_N Ex - L_E Ey)/d of the signed source at every finite sample. The coherence
+    part of the frozen check is superseded -- the coherence between the two diagonals does not say which one
+    is clean.
     """
     work = Path(sv.cfg["work_root"])
     src = work / ("cache_%dhz" % int(rate)) / ("%s.npz" % site)
     out_dir = work / ("cache_%dhz_ne" % int(rate))
     out_dir.mkdir(parents=True, exist_ok=True)
     dst = out_dir / ("%s.npz" % site)
+    arms = arm_lengths(sv, site)
+    if not arms["known"]:
+        return dict(site=site, path=str(dst), written=False, exact=None, **_arm_fields(arms, np.nan),
+                    reason="the arm lengths are not in sites.csv, so the diagonal has no direction")
+    ln, le = arms["L_N"], arms["L_E"]
+    theta, dsep = diagonal_angle(ln, le), diagonal_length(ln, le)
     try:
         drow = sv.decision(site)
     except KeyError:
@@ -328,37 +435,66 @@ def ne_variant(sv, site, rate=1, force=False) -> dict:
     d = {k: z[k] for k in z.files}
     z.close()
     ex, ey = np.asarray(d["Ex"], float) * s_ex, np.asarray(d["Ey"], float) * s_ey
-    exp, eyp = (ex - ey) / SQ2, (ex + ey) / SQ2
-    d["Ex"] = exp.astype(np.float32)
-    d["Ey"] = eyp.astype(np.float32)
-    d["signs_applied"] = np.array(["Ex %+d, Ey %+d applied before the difference" % (s_ex, s_ey)])
-    d["reason_x"] = np.array(["Ex' = (Ex - Ey)/sqrt(2): the north-minus-east voltage over the diagonal of "
-                              "length L sqrt 2, free of the shared centre electrode"])
-    d["reason_y"] = np.array(["Ey' = (Ex + Ey)/sqrt(2): the north-plus-east sum along the north-east "
-                              "diagonal, carrying the centre electrode's noise doubled"])
-    d["ne_frame"] = np.array(["E in the frame turned -45 deg: x' north-west (the difference), y' north-east "
-                              "(the sum); H as the source cache, turned after the pass"])
-    # the variant is rewritten only where it is absent or `force` is set, but the algebra is checked against
+    e_d, e_v = diagonals(ex, ey, ln, le)
+    d["Ex"] = e_d.astype(np.float32)
+    d["Ey"] = e_v.astype(np.float32)
+    d["signs_applied"] = np.array(["Ex %+d, Ey %+d applied before the combination" % (s_ex, s_ey)])
+    d["reason_x"] = np.array(["Ex' = (L_N Ex - L_E Ey)/d with L_N %.4g m, L_E %.4g m, d %.4g m: the voltage "
+                              "between the two arm electrodes over their separation, free of the shared "
+                              "centre electrode at any pair of lengths" % (ln, le, dsep)])
+    d["reason_y"] = np.array(["Ey' = (L_E Ex + L_N Ey)/d: the row orthogonal to the arm diagonal, which "
+                              "carries the centre electrode's voltage"])
+    d["ne_frame"] = np.array(["E in the frame turned %+.4f deg = atan2(-L_E, L_N): x' along the arm "
+                              "diagonal, y' orthogonal to it; H as the source cache, turned after the pass"
+                              % theta])
+    # a cache built at another frame is not this frame's cache: where the sidecar is missing, carries no arm
+    # block (the equal-arm code wrote none) or names other lengths or another theta, the variant is rewritten
+    # whether or not `force` is set, and `refreshed` tells the caller to remake the pass that reads it
+    refreshed = bool(dst.exists() and _frame_changed(dst.with_suffix(".json"), ln, le, theta))
+    # otherwise it is rewritten only where it is absent or `force` is set, and the algebra is checked against
     # the file on disk either way: a check skipped because the file was already there is not a check
-    written = bool(force or not dst.exists())
+    written = bool(force or refreshed or not dst.exists())
     if written:
         np.savez(dst, **d)
     fin = np.isfinite(ex) & np.isfinite(ey)
     got = np.asarray(np.load(dst, allow_pickle=False)["Ex"], float)
-    exact = bool(np.allclose(got[fin], ((ex[fin] - ey[fin]) / SQ2).astype(np.float32), rtol=0, atol=0))
-    return dict(site=site, path=str(dst), written=written, exact=exact, n_finite=int(fin.sum()),
-                sign_ex=float(s_ex), sign_ey=float(s_ey),
-                sidecar=str(_write_ne_sidecar(dst, site, rate, int(fin.sum()), exact, s_ex, s_ey)))
+    want = diagonals(ex[fin], ey[fin], ln, le)[0].astype(np.float32)
+    exact = bool(np.allclose(got[fin], want, rtol=0, atol=0))
+    return dict(site=site, path=str(dst), written=written, refreshed=refreshed, exact=exact,
+                n_finite=int(fin.sum()),
+                sign_ex=float(s_ex), sign_ey=float(s_ey), **_arm_fields(arms, expected_gain(ln, le)),
+                sidecar=str(_write_ne_sidecar(dst, site, rate, int(fin.sum()), exact, s_ex, s_ey,
+                                              ln, le, theta, dsep)))
 
 
-def _write_ne_sidecar(dst: Path, site, rate, n_finite, exact, s_ex, s_ey) -> Path:
+def _frame_changed(sidecar: Path, L_N, L_E, theta) -> bool:
+    """True where the variant on disk was built at other arm lengths or another frame angle.
+
+    A sidecar written before the lengths were carried has no `arms` block at all, so it reads as changed and
+    its cache is rebuilt: the equal-arm combination it holds is this site's only where the arms are equal.
+    """
+    try:
+        a = (json.loads(sidecar.read_text(encoding="utf-8")) or {}).get("arms")
+    except Exception:
+        return True
+    if not isinstance(a, dict):
+        return True
+    return not (abs(float(a.get("L_N", np.nan)) - float(L_N)) <= 1e-9
+                and abs(float(a.get("L_E", np.nan)) - float(L_E)) <= 1e-9
+                and abs(float(a.get("theta_deg", np.nan)) - float(theta)) <= 1e-9)
+
+
+def _write_ne_sidecar(dst: Path, site, rate, n_finite, exact, s_ex, s_ey, L_N, L_E, theta, dsep) -> Path:
     p = dst.with_suffix(".json")
     p.write_text(json.dumps(dict(
         site=site, rate_hz=float(rate), variant="ne",
-        transform="Ex' = (Ex - Ey)/sqrt2, Ey' = (Ex + Ey)/sqrt2; H, t0 and the layout keys unchanged",
+        arms=dict(L_N=float(L_N), L_E=float(L_E), separation_m=float(dsep), theta_deg=float(theta)),
+        transform="Ex' = (L_N Ex - L_E Ey)/d, Ey' = (L_E Ex + L_N Ey)/d with d = sqrt(L_N^2 + L_E^2); "
+                  "H, t0 and the layout keys unchanged",
         signs_applied=dict(Ex=float(s_ex), Ey=float(s_ey)),
         signs_note="the lines are signed in this cache; a pass on it does not sign E again",
-        frame="E turned -45 deg; the tensor a pass on this cache produces is R Z and is turned back",
+        frame="E turned %+.4f deg = atan2(-L_E, L_N); the tensor a pass on this cache produces is R(theta) Z "
+              "and is turned back by Z' = (R Z) R^T at that theta" % theta,
         n_finite_samples=int(n_finite), algebra_exact=bool(exact)), indent=1), encoding="utf-8")
     return p
 
@@ -386,7 +522,7 @@ def turn_errors(e, angle_deg=THETA_NE):
     return np.sqrt(np.einsum("nij,kj->nik", np.asarray(e, float) ** 2, R ** 2))
 
 
-def turn_invariants(z_before, z_after) -> dict:
+def turn_invariants(z_before, z_after, angle_deg=THETA_NE) -> dict:
     """The three tolerances of a column-only turn, and the trace as the counter-example.
 
     The determinant is scaled by ||Z||^2: at a near-singular period the relative form is meaningless (a
@@ -399,7 +535,7 @@ def turn_invariants(z_before, z_after) -> dict:
         return dict(n=0, max_element_rel=np.nan, max_det_scaled=np.nan, max_frobenius_rel=np.nan,
                     trace_ratio=np.nan, ok=False)
     A, B = a[fin], b[fin]
-    R = FR.rotation_matrix(THETA_NE)
+    R = FR.rotation_matrix(float(angle_deg))
     want = np.einsum("nij,kj->nik", A, R)
     el = float(np.max(np.abs(B - want) / np.maximum(np.abs(want), 1e-30)))
     det = float(np.max(np.abs(np.linalg.det(B) - np.linalg.det(A))
@@ -447,8 +583,9 @@ def turn_edi(path, angle_deg=THETA_NE, note="") -> dict:
     st = tf.station_metadata
     try:
         pp = list(st.transfer_function.processing_parameters or [])
-        pp.append("frame=%+.1f deg: x' north-west = (Ex - Ey)/sqrt2 free of the shared centre electrode, "
-                  "y' north-east = (Ex + Ey)/sqrt2 carrying it; the H columns turned to match. %s"
+        pp.append("frame=%+.4f deg = atan2(-L_E, L_N): x' along the arm diagonal, "
+                  "(L_N Ex - L_E Ey)/d free of the shared centre electrode, y' orthogonal to it, "
+                  "(L_E Ex + L_N Ey)/d carrying it; the H columns turned to match. %s"
                   % (angle_deg, note))
         st.transfer_function.processing_parameters = pp
     except Exception:
@@ -460,5 +597,5 @@ def turn_edi(path, angle_deg=THETA_NE, note="") -> dict:
     t2 = TF(fn=str(path))
     t2.read()
     Z2 = np.asarray(t2.impedance.values, complex)
-    inv = turn_invariants(Z, Z2)
+    inv = turn_invariants(Z, Z2, angle_deg)
     return dict(path=str(path), **inv)

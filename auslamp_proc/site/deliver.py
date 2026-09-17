@@ -129,7 +129,11 @@ def forms_table(rows, out_path=None, baseline_path=None, bar_band=BAR_BAND_S,
         judged = bool(controls) and any(np.isfinite(v) for v in ctrl_bars.values())
         wins = all(beats(this_bar, v, margin) for v in ctrl_bars.values() if np.isfinite(v)) if judged \
             else False
-        if r.get("status") not in ("made", "exists"):
+        if r.get("status") == "refused":
+            # the method's own floor stating what the cache leaves, measured before the pass: a reading with
+            # numbers, and not the same thing as an exception out of the estimator
+            verdict = str(r.get("reason") or "refused before the pass")
+        elif r.get("status") not in ("made", "exists"):
             verdict = "NOT MADE"
         elif r.get("inter_site"):
             verdict = "shown, never delivered: an inter-site impedance"

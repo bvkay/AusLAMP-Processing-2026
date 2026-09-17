@@ -101,7 +101,7 @@ def test_window_from_days_takes_the_longest_run_and_falls_back():
     assert w2["n_days"] == 8 and "weak days are admitted" in w2["reason"]
 
 
-# ---------------------------------------------------------------- the north-minus-east diagonal
+# ---------------------------------------------------------------- the shared centre and the arm diagonal
 
 def test_ne_algebra_is_exact():
     """Fails if Ex' differs from (Ex - Ey)/sqrt2 or Ey' from (Ex + Ey)/sqrt2 at any finite sample."""
@@ -112,6 +112,88 @@ def test_ne_algebra_is_exact():
     assert np.allclose(eyp, (ex + ey) / np.sqrt(2.0), rtol=0, atol=0)
     # the inverse: the pair is a rotation of (Ex, Ey) by -45 deg, so the norm is kept
     assert np.allclose(exp ** 2 + eyp ** 2, ex ** 2 + ey ** 2)
+
+
+def test_equal_arms_reduce_to_the_ported_numbers():
+    """Fails if equal arms do not give an expected gain of 1, a diagonal at -45 deg of length L sqrt2, and
+    the (Ex -+ Ey)/sqrt2 pair the Victoria tool uses -- the general form must contain the frozen one."""
+    assert centre.expected_gain(50.0, 50.0) == 1.0
+    assert abs(centre.diagonal_angle(50.0, 50.0) - centre.THETA_NE) < 1e-12
+    assert abs(centre.diagonal_length(50.0, 50.0) - 50.0 * np.sqrt(2.0)) < 1e-12
+    ex, ey = RNG.normal(size=4000), RNG.normal(size=4000)
+    e_d, e_v = centre.diagonals(ex, ey, 50.0, 50.0)
+    assert np.allclose(e_d, (ex - ey) / np.sqrt(2.0), rtol=1e-12, atol=0)
+    assert np.allclose(e_v, (ex + ey) / np.sqrt(2.0), rtol=1e-12, atol=0)
+
+
+def test_the_diagonal_direction_and_length_follow_the_arms():
+    """Fails if the arm diagonal of a 9 m north arm and a 12 m east arm is not at atan2(-12, 9) from north
+    over a separation of 15 m, or if the pair is not a rotation of (Ex, Ey) by that angle."""
+    ln, le = 9.0, 12.0
+    theta = centre.diagonal_angle(ln, le)
+    assert abs(theta - np.degrees(np.arctan2(-le, ln))) < 1e-12
+    assert abs(theta - (-53.13010235)) < 1e-6, theta
+    assert abs(centre.diagonal_length(ln, le) - 15.0) < 1e-12
+    assert abs(theta - centre.THETA_NE) > 8.0, "unequal arms must NOT sit at the equal-arm -45 deg"
+    ex, ey = RNG.normal(size=4000), RNG.normal(size=4000)
+    e_d, e_v = centre.diagonals(ex, ey, ln, le)
+    # a rotation keeps the norm, which is what says the pair is a frame turn and not a rescaling
+    assert np.allclose(e_d ** 2 + e_v ** 2, ex ** 2 + ey ** 2)
+
+
+def test_the_arm_diagonal_cancels_an_injected_centre_and_the_equal_arm_one_does_not():
+    """Fails if (L_N Ex - L_E Ey)/d does not remove an injected centre voltage to 1e-9 of the true field at
+    unequal arms, or if (Ex - Ey)/sqrt2 -- the equal-arm form -- removes it there."""
+    ln, le, n = 9.0, 12.0, 20000
+    ex_true, ey_true = RNG.normal(size=n), RNG.normal(size=n)
+    v = 5.0 * np.cumsum(RNG.normal(size=n))          # the centre electrode's own voltage
+    c = -v / ln
+    ex, ey = ex_true + c, ey_true + c * (ln / le)    # s = +1: arms north and east
+    d_true = centre.diagonals(ex_true, ey_true, ln, le)[0]
+    d_got = centre.diagonals(ex, ey, ln, le)[0]
+    assert np.max(np.abs(d_got - d_true)) < 1e-9 * max(1.0, np.max(np.abs(d_true))), \
+        np.max(np.abs(d_got - d_true))
+    naive = (ex - ey) / np.sqrt(2.0) - (ex_true - ey_true) / np.sqrt(2.0)
+    assert np.max(np.abs(naive)) > 1e-3 * np.max(np.abs(c)), "the equal-arm diagonal must leave a residue"
+
+
+def test_the_residual_test_holds_at_unequal_arms_where_the_equal_arm_form_would_not():
+    """Fails if a pair sharing one centre on 9 m and 12 m arms does not read a gain near L_N/L_E = 0.75 with
+    a scaled gain inside 0.85-1.18 -- and it fails the other way if 0.75 lies inside the equal-arm band,
+    which would mean the change of criterion could not have changed a verdict."""
+    ln, le = 9.0, 12.0
+    g_expected = centre.expected_gain(ln, le)
+    assert abs(g_expected - 0.75) < 1e-12
+    n = 4 * centre.NPERSEG
+    hx, hy = RNG.normal(size=n), RNG.normal(size=n)
+    c = RNG.normal(size=n) * 3.0
+    ex = 2.0 * hy + 0.1 * RNG.normal(size=n) + c
+    ey = -2.0 * hx + 0.1 * RNG.normal(size=n) + c * (ln / le)
+    st = centre.day_stats(ex, ey, hx, hy, band_s=(4.0, 200.0), L_N=ln, L_E=le)
+    assert st["coh_r"] >= centre.RESID_COH_MIN, st
+    assert abs(st["gain"] - g_expected) < 0.05 * g_expected, st
+    ratio = st["gain"] / g_expected
+    assert centre.GAIN_LO <= ratio <= centre.GAIN_HI, (ratio, st)
+    # the criterion this replaces: |g| judged against 1, which refuses the same site
+    assert not (centre.GAIN_LO <= st["gain"] <= centre.GAIN_HI), \
+        "the equal-arm criterion must refuse this pair, or the change of criterion is untested"
+    # and the diagonal the arms define is the one the H coherence prefers
+    assert st["mcoh_diff"] > st["mcoh_sum"], st
+
+
+def test_the_turn_back_holds_its_invariants_at_the_arm_angle():
+    """Fails if the turn-back at theta = atan2(-L_E, L_N) moves an element beyond 1e-6 relative, the
+    determinant beyond 1e-5 of ||Z||^2 or the Frobenius norm beyond 1e-6 -- the tolerances are the -45 deg
+    ones and must hold at any angle -- or if the trace comes out invariant there."""
+    theta = centre.diagonal_angle(9.0, 12.0)
+    Z = RNG.normal(size=(40, 2, 2)) + 1j * RNG.normal(size=(40, 2, 2))
+    Zr, _ = centre.turn_columns(Z, None, theta)
+    inv = centre.turn_invariants(Z, Zr, angle_deg=theta)
+    assert inv["ok"], inv
+    assert abs(inv["trace_ratio"] - 1.0) > 1e-3, "the trace is NOT an invariant of Z -> Z R^T"
+    # and the -45 deg turn-back does NOT verify a turn taken at the arm angle
+    assert not centre.turn_invariants(Z, Zr, angle_deg=centre.THETA_NE)["ok"], \
+        "checking at the wrong angle must fail, or the angle is not carried into the check"
 
 
 def test_turn_back_keeps_the_element_determinant_and_norm_and_not_the_trace():
@@ -296,19 +378,6 @@ def test_notch_moves_only_the_tone_bin():
     assert st["samples_passed_through"] == 0
 
 
-def test_spike_screen_blanks_the_named_samples_and_nothing_else():
-    """Fails if the screen blanks a sample outside i-2..i+3 of a step, or misses the step it was given."""
-    x = RNG.normal(size=10000) * 0.01
-    x[5000] += 100.0
-    bad, mad = variants.spike_counts(x, k=30.0)
-    hit = np.flatnonzero(bad)
-    assert hit.min() == 5000 - variants.SPIKE_BEFORE - 1 or hit.min() == 5000 - variants.SPIKE_BEFORE
-    assert bad.sum() <= 2 * (variants.SPIKE_BEFORE + variants.SPIKE_AFTER + 1)
-    assert np.isfinite(mad) and mad > 0
-    clean = RNG.normal(size=10000) * 0.01
-    assert variants.spike_counts(clean, k=30.0)[0].sum() == 0
-
-
 def test_sha256_of_an_unchanged_channel_is_its_source():
     """Fails if the byte identity a variant claims can be true of a changed array."""
     x = RNG.normal(size=1000).astype(np.float32)
@@ -397,3 +466,28 @@ def test_forms_table_refuses_to_promote_a_form_without_a_control():
     t = deliver.forms_table(rows)
     assert not bool(t.candidate.iloc[0])
     assert "no control" in t.verdict.iloc[0]
+
+
+def test_a_refused_form_and_a_crashed_one_do_not_read_the_same():
+    """Fails if a form the floor refused before the pass reads the same on the table as one that crashed --
+    the distinction is that the first is a reading with numbers and the second is a failure."""
+    why = ("refused: the notched screen leaves 0 run(s) of 3600 s against the remote (the whole record "
+           "keeps 55.59 d over 87 run(s))")
+    rows = [dict(site="X", form="notched", kind="remote", rate_hz=10.0, params="k", status="refused",
+                 product="", controls="whole10", criterion="", seed=None, reason=why, error=""),
+            dict(site="X", form="other", kind="remote", rate_hz=10.0, params="k", status="FAILED",
+                 product="", controls="whole10", criterion="", seed=None,
+                 error="ValueError: aurora returned no transfer function")]
+    t = deliver.forms_table(rows).set_index("form")
+    assert t.loc["notched", "verdict"] == why and "0 run(s)" in t.loc["notched", "verdict"]
+    assert t.loc["other", "verdict"] == "NOT MADE"
+    assert not bool(t.loc["notched", "candidate"]) and not bool(t.loc["other", "candidate"])
+
+
+def test_refusal_sentence_carries_the_numbers_that_refused_the_form():
+    """Fails if the sentence a refused form carries does not name the runs it left, the floor they had to
+    clear, the reference and what the whole record kept: a refusal without numbers is an opinion."""
+    s = forms.refusal_sentence(dict(n_runs=0, min_segment_s=3600.0, kind="remote", days=0.0, empty=True),
+                               dict(n_runs=87, days=55.592), what="the notched screen")
+    for piece in ("the notched screen", "0 run(s)", "3600 s", "remote", "55.59 d", "87 run(s)"):
+        assert piece in s, (piece, s)

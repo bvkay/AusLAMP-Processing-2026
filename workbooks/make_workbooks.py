@@ -3098,7 +3098,6 @@ CONTIG_HOURS = [2, 4, 6, 24]  # the contiguous controls, tiled from the first wh
 SEED = 20260916               # the named seed every random control is drawn under
 CENTRE_DAYS = 3               # the days of highest Ex-Ey coherence the residual test is read over
 NOTCH_RATIO = 10              # the worst-day tone-to-sideband ratio at which a channel is notched
-SPIKE_K = 30                  # the spike screen's multiple of the robust scale of the first differences
 REPLACE_CHANNEL = None        # None = from the DC flags and the candidates table | "Hx" | "Hy"
 LENDER = None                 # None = the nearest candidate that is not in the reference | a site name
 BAR_MARGIN = 0.20             # a delivered selection must beat its control on the bar by this fraction
@@ -3130,8 +3129,10 @@ from IPython.display import Image, display
 from loguru import logger as _loguru
 _loguru.remove()
 
-from auslamp_proc import agreement as AG, look as LK, products as PR, survey as SV
+from auslamp_proc import agreement as AG, look as LK, products as PR, splice as SP, survey as SV
 from auslamp_proc.process import KIND_WORD, references as REF
+from auslamp_proc.process import aurora_run as AR
+from auslamp_proc.process.edi import TEN_HZ_CAVEAT
 from auslamp_proc.process.transients import MIN_SEGMENT_S as TR_MIN_SEGMENT_S
 from auslamp_proc.site import centre as CE, deliver as DL, forms as FM, masks as MK
 from auslamp_proc.site import replace as RP, variants as VA
@@ -3247,26 +3248,26 @@ WB05 = [
 
 One site is taken apart: which days its magnetics are usable, where in time each electric line is worth
 using, whether its two lines share a centre electrode, whether a tone or a spike sits in the record, and
-whether a magnetic channel is worth borrowing from a neighbour. Each answer is built as a FORM -- one pass
+whether a magnetic channel is worth borrowing from a neighbour. Each answer is built as a form -- one pass
 over the same site with one thing changed -- and every form lands in the same run folder as a product
 carrying the header a workbook 03 product carries.
 
 The rule this workbook is written around: a selection of hours or days is never delivered without its
 controls. Each selection carries
 
-1. a RANDOM selection of the same size drawn without replacement from the same scored pool, under a named
-   seed written into the product's header;
-2. a matched-duration CONTIGUOUS selection -- windows of 2, 4, 6 and 24 h tiled from the first whole hour,
-   the top windows by mean score until the kept duration matches the selection's to within one window --
-   because one Aurora window at the deepest decimation level is 65,536 s, so scattered hours can never reach
-   the long periods and only a contiguous comparison at the same cost decides a long-period claim;
-3. the selecting statistic scored kept against dropped, with the random control exempt and expected not to
-   separate;
-4. the DELIVERED PRODUCT scored against its controls on the 10-1000 s bar, on smoothness and on agreement
-   with the baseline at 100-1000 s.
+1. a random selection of the same size, drawn without replacement from the same scored pool under a seed
+   written into the product's header;
+2. a contiguous selection of the same duration -- windows of 2, 4, 6 and 24 h tiled from the first whole hour,
+   the top windows by mean score until the kept duration matches the selection's to within one window. One
+   Aurora window at the deepest decimation level is 65,536 s, so scattered hours cannot reach the long periods
+   and only a contiguous comparison at the same cost decides a long-period claim;
+3. the selecting statistic scored kept against dropped; the random control is expected not to separate;
+4. the product itself scored against its controls on the 10-1000 s bar, on smoothness and on agreement with
+   the baseline at 100-1000 s.
 
-The control sits beside the row that ships, not only beside the hypothesis. A selection whose product does
-not beat its random control buys efficiency, not a different answer, and is not promoted.
+The control is scored on the product that would be delivered, not only on the statistic that chose the hours.
+A selection whose product does not beat its random control has narrowed nothing but its error bars, and is
+not promoted.
 
 Selecting on the target's own E-H coherence uses the target's own response and favours the hours where the
 linear model already fits: for a dead electrode that is the truth, for a merely noisy one it can bias the
@@ -3351,37 +3352,28 @@ sound where the field is within 5 per cent of IGRF and both fluctuations sit wit
 neighbours'. Without a neighbour that day only the field is judged and the row says so.
 
 The fleet test takes one stretch and scores the 100-1000 s Hx-Hx and Hy-Hy coherence of every pair of the
-site and the sites covering it. Its POSITIVE limb reads the site's median against the sites within
-FLEET_NEAR_KM against the CONTROL PAIRS at the same distances: a site coherent with the fleet the way its
+site and the sites covering it. Its positive limb reads the site's median against the sites within
+FLEET_NEAR_KM against the control pairs at the same distances: a site coherent with the fleet the way its
 neighbours are with each other is a site whose magnetics can be used. A site incoherent with every other
 site -- a median Hx coherence under 0.3 -- is named and dropped from the control, because a dead sensor or a
 clock hours out is not a control.
 
-Its NEGATIVE limb is the SHIFTED PAIR: the same stretch, the same estimator, the site's Hx against each
-neighbour's Hx taken 12 h later (and Hy likewise), medianed over the pairs, which must read under 0.3. That
-is a change of criterion and not a relaxation of one (Ben, 2026-09-17). The criterion used until then was a
-stretch of the site's own junk magnetics, and a stretch of junk does not exist at a sound site: written that
-way the criterion fails by construction wherever the magnetics are good, and the number it reports is the
-coherence of a perfectly good day, which says nothing about the site. The shifted pair exists at every site
-and tests what the criterion is for -- whether the estimator can tell a coherent pair from an incoherent one
-over THIS stretch, in THIS band, on THESE records. A stretch of junk is still accepted as NEG_STRETCH and is
-reported beside the shifted control where one is given.
+Its negative limb is a shifted pair: the same stretch and the same estimator on the site's Hx against each
+neighbour's Hx taken 12 h later (and Hy likewise), the median over the pairs, which must read under 0.3. A
+coherent pair and a shifted one differ by the whole of what the test measures, and the shifted pair exists at
+every site; a stretch of junk magnetics, the control the method was first written with, does not exist at a
+sound site (NEG_STRETCH accepts one where there is).
 
 The clock test reads the lag of the peak cross-correlation of the despiked Hx against a reference site over a
-+-12 h search, and refines the peak to a fraction of a sample with a parabola through its two neighbours. The
-series correlated is the 5-20 s BAND-PASSED record and not the 3,000 s high-passed one the coherence tests
-use -- a change of criterion and not a relaxation of one (Ben, 2026-09-17). The high-pass leaves the daily
-variation in, and the daily variation is a half-day sinusoid: correlated against a neighbour it peaks at the
-edge of a +-12 h search as readily as at zero. At Q17 two days survived the earlier rule at +-30,000 s with
-peak correlations of 0.52-0.62 against a floor of 0.3-0.4 on every other lag of the same day, while the
-campaign measured that same clock at +0.4 s on this band. The search window stays at +-12 h so an hour-scale
-offset is still found.
++-12 h search, the peak refined to a fraction of a sample with a parabola through its two neighbours. The
+series correlated is the 5-20 s band-passed record, not the 3,000 s high-passed one the coherence tests use:
+a high-pass leaves the daily variation in, and a half-day sinusoid correlated against a neighbour peaks at the
+edge of a +-12 h search as readily as at zero (at Q17 that gave a lag of hours where the clock is right to
+0.4 s). The search stays at +-12 h so an hour-scale offset is still found.
 
-Three guards follow from it, and a day is counted only where all of them hold with the field test: the peak
-correlation reaches 0.5, the peak stands at least 1.5 times the median correlation over that day's other
-lags, and the peak is not within 5 per cent of the search edge. Fewer than 5 counted days leaves the clock
-UNJUDGED and no median is reported, because a median of two edge hits is a number with no measurement behind
-it.
+A day is counted only where the field test holds and three guards pass: the peak correlation reaches 0.5, the
+peak stands at least 1.5 times the median correlation over that day's other lags, and the peak is not within
+5 per cent of the search edge. Fewer than 5 counted days leaves the clock UNJUDGED and no median is reported.
 
 **This check fails if the shifted-pair control reads a 100-1000 s coherence of 0.3 or more on either
 horizontal channel or could not be scored, if the site's own median falls below 0.8 of the control pairs' on
@@ -3445,8 +3437,8 @@ if NEG_STRETCH:
 
 ("md", r"""One bar per pair of the fleet table, the site's own pairs first and the control pairs behind,
 with the shifted pair of each neighbour drawn beside it. What to look for is the shifted bars sitting on the
-floor while the unshifted ones stand: that gap is the whole content of the test, and a site whose own bars
-sit down with the shifted ones has magnetics the fleet does not see."""),
+floor while the unshifted ones stand: that gap is what the test measures, and a site whose own bars
+sit down with the shifted ones is not measuring the field the fleet measures."""),
 
 ("code", '''fig = FF.fleet_bars(ft, SITE, OUT / "07_fleet.png", near_km=FLEET_NEAR_KM,
                     floor=MK.NEGATIVE_MAX)
@@ -3508,31 +3500,29 @@ else:
 
 The quality map is where in time each electric line follows the magnetic field. Three scales, each with the
 statistic the scale can carry: the hourly 4-50 s coherence of each line with the H it couples to, the daily
-50-1000 s MULTIPLE coherence of each line with the local pair and with the observatory pair, and one
+50-1000 s multiple coherence of each line with the local pair and with the observatory pair, and one
 1000-10000 s number on the whole record decimated to 0.1 Hz. The multiple coherence is bias-corrected --
 g2c = (g2 - p/nu) / (1 - p/nu) with p = 2 predictors and nu = 0.82 times the number of segments -- because an
 estimate from few segments saturates at 1 or sits on the bias floor, which is what an uncorrected hourly
 estimate over 50-1000 s reads at every site.
 
 What the number is, and what it is not. It is the fraction of the electric line's power the magnetic field
-explains, so it measures LOCAL ELECTRIC NOISE. A low value does not mean the component cannot be measured: a
+explains, so it measures local electric noise. A low value does not mean the component cannot be measured: a
 remote reference beats the noise the target and the reference do not share, which is why the sites with a
 noisy shared centre sit at the bottom of this table and still deliver products. Nor does a high value mean
 the row is right: a site whose second line repeats the first has the highest coherence in a survey and an
 unusable yx row, which is a geometry fault that coherence with the magnetic field cannot see.
 
-The day mask keeps the whole days whose OBSERVATORY multiple coherence reaches DAY_THR; those columns carry
+The day mask keeps the whole days whose observatory multiple coherence reaches DAY_THR; those columns carry
 no local magnetic noise, which is why the mask is taken on them. Its control keeps the same number of days
 drawn without replacement from the same pool of scored days under the seed printed below.
 
 **This check fails if any mask lacks its control, if a control differs in size from its selection, if a mask
-keeps too few days to be scored at all, or if a PROMOTED mask does not beat its control on the 10-1000 s bar
-by at least 20 per cent.** Promotion is the reading, not the criterion (Ben, 2026-09-17): the wording used
-until then conflated "not promoted" with "failed", so a mask that honestly bought nothing was recorded as a
-defect of the workbook. A mask that does not beat its control buys efficiency and not a different answer, is
-printed as such, and is not carried into the forms table as a candidate; the check is on whether every
-selection has a control of the right size, whether anything was scored at all, and whether the promotions the
-section makes agree with the bar they are made on."""),
+keeps too few days to be scored at all, or if a promoted mask does not beat its control on the 10-1000 s bar
+by at least 20 per cent.** A mask that does not beat its control is not promoted and is printed as such;
+that is a finding about the record, not a failure of the check. The check is on whether every selection has a
+control of the right size, whether anything was scored at all, and whether the promotions agree with the bar
+they are made on."""),
 
 ("code", '''t = time.time()
 QM = MK.quality_map(sv, SITE)
@@ -3571,7 +3561,14 @@ for comp in COMPONENTS:
                   FF.mask_spans(keep, _t0m)))
     spans.append(("%s control, seed %d" % (comp, SEED), "0.4", "//", FF.mask_spans(ctrl, _t0m)))
 fig = FF.record_spans(_t0m, _arrm, OUT / "10_day_masks.png", site=SITE, spans=spans,
-                      title="%s: the day masks and their random controls over the record" % SITE)
+                      title="%s: the day masks and their controls" % SITE,
+                      caption="The record as a per-minute mean over its per-minute envelope, with the days "
+                              "each component's mask keeps drawn as a solid span in that component's colour "
+                              "and the random control of the same size hatched beside it. The control draws "
+                              "the same number of days from the same pool under seed %d, so the two cost the "
+                              "same and only the choosing differs: %s."
+                              % (SEED, "; ".join("%s keeps %d day(s)" % (c, DAY_MASKS[c][2]["days_kept"])
+                                                 for c in COMPONENTS)))
 WRITTEN.append(OUT / "10_day_masks.png")
 display(Image(filename=str(OUT / "10_day_masks.png")))
 del _arrm
@@ -3668,7 +3665,13 @@ for k, comp in enumerate(COMPONENTS):
             curves.append((name, read(r["product"]), "C%d" % (2 * k + (0 if ls == "-" else 1)), ls))
 if len(curves) > 1:
     fig = FF.form_panels(curves, SITE, OUT / "11_daymask_products.png",
-                         title="%s: the day masks and their controls against the whole record" % SITE,
+                         title="%s: the day-mask products" % SITE,
+                         caption="Each day mask's product and its equal-size random control against the "
+                                 "whole record in black, on the panels and the limits workbook 04 uses. The "
+                                 "three passes differ only in which days went in, so a mask that bought a "
+                                 "cleaner answer sits on the whole record's curve with a smaller error bar "
+                                 "and its control does not; a mask and its control lying together say the "
+                                 "selection bought the duration and not the days.",
                          period_range=(1, 50000))
     WRITTEN.append(OUT / "11_daymask_products.png")
     display(Image(filename=str(OUT / "11_daymask_products.png")))
@@ -3679,7 +3682,7 @@ else:
 ("md", r"""## 4. Windows
 
 A line that dies mid-record is not a reason to throw the record away. The rule is the whole record for the
-healthy row and for the tipper, the window for the other row, and BOTH windows in the provenance. The window
+healthy row and for the tipper, the window for the other row, and both windows in the provenance. The window
 proposed here is the longest run of sound days of that line in the elines table; where no run of sound days
 reaches the floor in survey.yaml the weak days are admitted and the row says so, so the window is a proposal
 and not a finding. A window already in decisions.csv is used instead.
@@ -3689,14 +3692,13 @@ estimate sees only the days its electrode was alive, and an estimator handed a l
 given NaN over the rest. The merge then replaces exactly that component's two impedance rows in a copy of the
 whole-record product; the station block, the position, the tipper and every other row carry across untouched.
 
-The control is a random block of the SAME LENGTH placed elsewhere in the record under the seed printed below.
+The control is a random block of the same length placed elsewhere in the record under the seed printed below.
 A window that buys nothing beyond its length is one a block of the same length placed anywhere would buy.
 
 **This check fails if the merge changes any row other than the windowed component's two, if a window lacks
-its equal-length random block, or if a PROMOTED window does not beat that block on the 10-1000 s bar by at
-least 20 per cent.** As in section 3, promotion is the reading and not the criterion (Ben, 2026-09-17): a
-window that does not beat its block is printed as buying efficiency rather than a different answer and is not
-carried forward, which is a finding about the site and not a defect of the workbook."""),
+its equal-length random block, or if a promoted window does not beat that block on the 10-1000 s bar by at
+least 20 per cent.** As in section 3, a window that does not beat its block is not promoted, which is a
+finding about the site and not a failure of the check."""),
 
 ("code", '''WINDOWS, WIN_ROWS = {}, []
 cell = str(sv.decision(SITE).get("windows", "")).strip()
@@ -3766,7 +3768,13 @@ for comp in COMPONENTS:
                   [(w["t_start"], w["t_end"])]))
     spans.append(("%s block, seed %d" % (comp, w["seed"]), "0.4", "//", [w["control"]]))
 fig = FF.record_spans(_t0w, _arrw, OUT / "12_windows_record.png", site=SITE, spans=spans,
-                      title="%s: the proposed window per component and its equal-length random block" % SITE)
+                      title="%s: the windows and their equal-length blocks" % SITE,
+                      caption="The record with each component's proposed window drawn as a solid span in "
+                              "that component's colour and its control hatched beside it: a contiguous "
+                              "block of the same length placed at random under the seed printed above. The "
+                              "window is the longest run of days the elines table calls sound for that line, "
+                              "so the control asks whether the answer came from the days chosen or from the "
+                              "length alone.")
 WRITTEN.append(OUT / "12_windows_record.png")
 display(Image(filename=str(OUT / "12_windows_record.png")))
 del _arrw
@@ -3848,7 +3856,7 @@ else:
 '''),
 
 ("md", r"""The windowed product, its random block and the merged file against the whole record. What to
-look for is the merged curve following the whole record on the row the window did NOT touch and the windowed
+look for is the merged curve following the whole record on the row the window did not touch and the windowed
 curve on the row it did: that is the merge rule drawn, and a departure on the untouched row is the failure
 the check above scores."""),
 
@@ -3863,8 +3871,13 @@ for k, comp in enumerate(COMPONENTS):
             curves.append((name, read(r["product"]), "C%d" % (3 * k + off), ls))
 if len(curves) > 1:
     fig = FF.form_panels(curves, SITE, OUT / "13_window_products.png",
-                         title="%s: the windows, their equal-length blocks and the merged files against the "
-                               "whole record" % SITE, period_range=(1, 50000))
+                         title="%s: the window products and the merges" % SITE,
+                         caption="Each component's windowed pass, the equal-length random block that "
+                                 "controls it, and the merged file that carries the window's two impedance "
+                                 "rows into a copy of the whole record, all against the whole record in "
+                                 "black. The merged curve is the one delivered: only that component's two "
+                                 "rows differ from the black, and the tipper and the other row are the "
+                                 "whole record's.", period_range=(1, 50000))
     WRITTEN.append(OUT / "13_window_products.png")
     display(Image(filename=str(OUT / "13_window_products.png")))
 else:
@@ -3878,14 +3891,13 @@ non-overlapping one-hour windows, and the best HOURS_FRACTION of the candidate w
 pool is the hours whose day the elines table calls sound; where that leaves fewer than 24 candidates the weak
 days are admitted and the selection says so.
 
-Three things are scored beside it and the section is not read without them. The RANDOM control keeps the same
-number of windows drawn without replacement from the same pool under SEED and is expected NOT to separate
-kept from dropped -- if it does, the statistic is not measuring what the selection claims. The CONTIGUOUS
-controls tile windows of CONTIG_HOURS hours from the first whole hour, score each by the mean of its hours
-and take the top ones until the kept duration matches the selection's to within one window; one Aurora window
-at the deepest decimation level is 65,536 s, so a scattered selection cannot reach the long periods at all
-and only a contiguous comparison at the same cost decides a long-period claim. The products of all three are
-read against the baseline.
+Two controls are scored beside it. The random control keeps the same number of windows drawn without
+replacement from the same pool under SEED and is expected not to separate kept from dropped; if it does, the
+statistic is not measuring what the selection claims. The contiguous controls tile windows of CONTIG_HOURS
+hours from the first whole hour, score each by the mean of its hours and take the top ones until the kept
+duration matches the selection's to within one window; one Aurora window at the deepest decimation level is
+65,536 s, so a scattered selection cannot reach the long periods and only a contiguous comparison at the same
+cost decides a long-period claim. The products of all three are read against the baseline.
 
 **This check fails if the ranked selection does not separate kept from dropped on the selecting statistic, if
 the random control separates by more than a fifth of the ranked selection's separation, or if a contiguous
@@ -4035,53 +4047,85 @@ for k, comp in enumerate(COMPONENTS):
             curves.append((name, read(r["product"]), "C%d" % (3 * k + j), ("-", ":", "--")[j]))
 if len(curves) > 1:
     fig = FF.form_panels(curves, SITE, OUT / "15_hours_products.png",
-                         title="%s: the best hours, the random control and the contiguous control against "
-                               "the whole record" % SITE, period_range=(1, 50000))
+                         title="%s: the best-hours products" % SITE,
+                         caption="The best hours of each component, the same number of hours drawn at "
+                                 "random from the same pool, and the contiguous windows tiled to the same "
+                                 "duration, all against the whole record in black. The three selections "
+                                 "cost the same number of hours, so a curve that beats the other two beat "
+                                 "them on which hours were chosen; the long periods are where an hourly "
+                                 "selection is most likely to cost bandwidth rather than buy quality.",
+                         period_range=(1, 50000))
     WRITTEN.append(OUT / "15_hours_products.png")
     display(Image(filename=str(OUT / "15_hours_products.png")))
 else:
     print("no selection product was made, so there is nothing to draw against the whole record")
 '''),
 
-("md", r"""## 6. The shared centre and the north-minus-east diagonal
+("md", r"""## 6. The shared centre and the arm diagonal
 
-The EDL L layout is three electrodes: a shared centre and two arms, so a noisy centre puts one voltage on
-both lines. With the lines physically signed the model reads Ex = Ex_true + c and Ey = Ey_true + s c, with
-s = +1 for arms north and east (or south and west) and -1 where one arm is reversed. The E signs in
+The EDL L layout is three electrodes: a shared centre C, a north arm of length L_N and an east arm of length
+L_E, so Ex = (V_N - V_C)/L_N and Ey = (V_E - V_C)/L_E. A noisy centre puts one voltage on both lines, and
+because the two lines divide that voltage by different lengths it does not arrive as the same field on both.
+With the lines physically signed and a centre voltage n the model reads
+
+    Ex = Ex_true + c,   Ey = Ey_true + s c (L_N / L_E),   c = -n / L_N,
+
+with s = +1 for arms north and east (or south and west) and -1 where one arm is reversed. The E signs in
 decisions.csv predict s; an undecided sign is never filled by convention and leaves the site UNJUDGED on that
 prediction.
 
 The residual test removes the part of each line that (Hx, Hy) explains, per frequency bin, from the
 cross-spectra at 20-200 s on the CENTRE_DAYS days of highest Ex-Ey coherence, and reads what is left: the
-model holds where the residual coherence is at least 0.9 and the complex gain is between 0.85 and 1.18, and
-the sign of the real part of the gain is the observed s. The clean diagonal is the one whose multiple
+complex gain g = S_ry,rx / S_rx,rx of a real shared centre is s L_N / L_E, so the model holds where the
+residual coherence is at least 0.9 and |g| divided by the expected L_N / L_E lies between 0.85 and 1.18. The
+sign of the real part of the gain is still the observed s. The clean diagonal is the one whose multiple
 coherence with (Hx, Hy) is the higher.
 
-The CONTROL is BUILT, not found (Ben, 2026-09-17). The site's own Ex is paired with the nearest sound site's
-Ey, both read against the site's own (Hx, Hy) over the same days, and the residual test is run on that pair:
-two electrodes tens of kilometres apart have no common voltage, so the model must NOT hold there. That is a
-change of criterion and not a relaxation of one. The criterion used until then was a site of the same group
-whose own Ex-Ey coherence stays under 0.35 on every day, and such a site need not exist: a one-dimensional
-earth correlates the two lines through the source field alone, and no site of AusLAMP Queensland Phase 1
-clears the ceiling, the lowest daily maximum in the survey being 0.354. A control that may not exist leaves
-the section UNJUDGED wherever the survey is layered; the built pair exists at every site with a neighbour.
-The found control site is kept as a READING beside it, with the ceiling it did or did not clear.
+The expected gain is L_N / L_E, not 1. With equal arms (Victoria's 50 m) the ratio is 1 and the two forms
+coincide; with unequal arms they do not: Q58N, with arms of 9.0 m and 11.9 m, reads a gain of 0.76 at a
+residual coherence of 1.00, and 9.0/11.9 = 0.756, so its two lines share one voltage. The arm lengths come
+from sites.csv dipole_n_m and dipole_e_m; an `assume:` cell is used and named, and a site with no lengths on
+file is UNJUDGED on this criterion.
 
-Where the model holds, the remedy is the north-minus-east diagonal: V_N - V_E = L (Ex - Ey) is the voltage
-across the diagonal of length L sqrt 2, so Ex' = (Ex - Ey)/sqrt 2 is the field along the north-west diagonal
-and free of the centre, and Ey' = (Ex + Ey)/sqrt 2 carries the centre doubled. The pair is E in the frame
-turned by -45 deg, so a pass on the variant cache gives R Z and turning the H columns as well completes
-Z' = (R Z) R^T. The x' row is the clean one; the y' row is kept for the record. The turn is checked on the
-elements to 1e-6 relative, on the determinant to 1e-5 of the squared Frobenius norm -- the relative form is
-meaningless at a near-singular period -- and on the Frobenius norm to 1e-6. The trace is NOT an invariant of
-a column-only turn and its ratio is printed as the counter-example.
+The control is built, not found. The site's own Ex is paired with the nearest sound site's Ey, both read
+against the site's own (Hx, Hy) over the same days, and the residual test is run on that pair: two electrodes
+tens of kilometres apart have no common voltage, so the model must not hold there. A control site whose own
+Ex-Ey coherence stays under 0.35 on every day need not exist -- a one-dimensional earth correlates the two
+lines through the source field alone, and no site of AusLAMP Queensland Phase 1 clears that ceiling -- so the
+found site is kept as a reading beside the built pair.
 
-**This check fails if the BUILT control holds the model, if it could not be built, if the variant cache does
-not reproduce (Ex - Ey)/sqrt 2 of the signed source at every finite sample, if the turn-back changes an
+Where the model holds, the remedy is the arm diagonal: the voltage between the two arm electrodes carries no
+centre at any pair of lengths, because the centre cancels in the difference of the two arm potentials.
+
+    V_N - V_E = L_N Ex - L_E Ey,   d = sqrt(L_N^2 + L_E^2),   Ex' = (L_N Ex - L_E Ey) / d,
+
+which is the field along the unit vector (L_N, -L_E)/d in (north, east), that is at theta = atan2(-L_E, L_N)
+from north, over the separation d of the two arm electrodes. The orthogonal row Ey' = (L_E Ex + L_N Ey)/d
+carries the centre and is kept for the record. Equal arms give theta = -45 deg and the pair reduces to
+(Ex - Ey)/sqrt 2 and (Ex + Ey)/sqrt 2 exactly. The pair is E in the frame turned by theta, so a pass on the
+variant cache gives R(theta) Z, and turning the H columns as well completes Z' = (R Z) R^T and T' = T R^T at
+that theta. The x' row is the clean one; the y' row is kept for the record. The turn is checked on the elements to 1e-6 relative, on the determinant to 1e-5
+of the squared Frobenius norm -- the relative form is meaningless at a near-singular period -- and on the
+Frobenius norm to 1e-6. The trace is not an invariant of a column-only turn and its ratio is printed as the
+counter-example.
+
+**This check fails if the built control holds the model, if it could not be built, if the variant cache does
+not reproduce (L_N Ex - L_E Ey)/d of the signed source at every finite sample, if the turn-back changes an
 invariant beyond its tolerance, or if a sign prediction disagrees with the observed sign where both
 exist.**"""),
 
-("code", '''BUILT = CE.built_control(sv, SITE, days=CENTRE_DAYS, elines=ELINES, members=SITES)
+("code", '''ARMS = CE.arm_lengths(sv, SITE)
+G_EXPECTED = CE.expected_gain(ARMS["L_N"], ARMS["L_E"])
+THETA = CE.diagonal_angle(ARMS["L_N"], ARMS["L_E"])
+print("the arms at %s: %s" % (SITE, ARMS["note"]))
+print("   the model predicts |g| = L_N / L_E = %.3f, and the arm diagonal lies at %+.2f deg from north over "
+      "a separation of %.2f m (equal arms would give 1.000 and -45.00 deg)"
+      % (G_EXPECTED, THETA, CE.diagonal_length(ARMS["L_N"], ARMS["L_E"])))
+if ARMS["assumed"]:
+    print("   %s carries an assumed length, which the product's provenance carries with it"
+          % ", ".join(ARMS["assumed"]))
+print()
+BUILT = CE.built_control(sv, SITE, days=CENTRE_DAYS, elines=ELINES, members=SITES)
 print("the built control: %s -- %s" % (BUILT.get("site"), BUILT.get("reason")))
 CTRL = CE.control_site(sv, SITE, SITES)
 print("the found control site (a reading): %s -- %s" % (CTRL.get("site"), CTRL.get("reason")))
@@ -4096,18 +4140,19 @@ if BUILT.get("judged"):
 if CTRL.get("site"):
     CENTRE[CTRL["site"]] = CE.residual_test(sv, CTRL["site"], CENTRE_DAYS,
                                             CE.read_elines(sv, CTRL["site"]))
-cols = ["site", "days", "src_coh", "resid_coh", "resid_gain", "s_pred", "s_obs", "sign_undecided",
-        "mcoh_diff", "mcoh_sum", "model_holds", "control", "clean_pred", "clean_obs", "clean_by_H",
-        "sign_agrees", "remedy_applicable"]
+cols = ["site", "days", "src_coh", "resid_coh", "L_N", "L_E", "gain_expected", "resid_gain", "gain_ratio",
+        "s_pred", "s_obs", "sign_undecided", "mcoh_diff", "mcoh_sum", "model_holds", "control",
+        "clean_pred", "clean_obs", "clean_by_H", "sign_agrees", "remedy_applicable"]
 CENTRE_TABLE = pd.DataFrame([{k: v.get(k) for k in cols} for v in CENTRE.values() if v.get("judged")])
 print(CENTRE_TABLE.round(3).to_string(index=False) if len(CENTRE_TABLE) else "no site produced a usable day")
 '''),
 
-("md", r"""The residual test drawn: the residual coherence and the complex gain against frequency over the
-band, for the site and for the built control, with the 0.9 coherence line and the 0.85-1.18 gain band. What
-to look for is the site's coherence riding along the top of the band with a gain sitting inside the box while
-the built control's coherence lies on the floor: the gap between the two lines is what says the test can tell
-a shared centre from a pair that cannot have one."""),
+("md", r"""The residual test drawn: the residual coherence and the complex gain over the band, for the site
+and for the built control, with the 0.9 coherence line and the 0.85-1.18 band on the gain divided by the
+L_N / L_E the arms predict, so 1 is what a shared centre would give at this site's lengths. What to look for
+is the site's coherence riding along the top of the band with a scaled gain sitting inside the box while the
+built control's coherence lies on the floor: the gap between the two lines is what says the test can tell a
+shared centre from a pair that cannot have one."""),
 
 ("code", '''fig = FF.residual_panels(sv, SITE, CENTRE.get(SITE, {}), BUILT, OUT / "16_centre_residual.png",
                          days=CENTRE_DAYS, elines=ELINES, band_s=CE.BAND_S)
@@ -4119,15 +4164,22 @@ display(Image(filename=str(OUT / "16_centre_residual.png")))
 me = CENTRE.get(SITE, {})
 if me.get("model_holds"):
     NE = CE.ne_variant(sv, SITE, 1, force=REDO)
-    print("the NE variant cache: %s (%s; Ex' equals (Ex - Ey)/sqrt2 of the signed source at every one of "
+    print("the NE variant cache: %s (%s; Ex' equals (L_N Ex - L_E Ey)/d of the signed source at every one of "
           "the %s finite samples: %s)"
-          % (NE.get("path"), "written" if NE.get("written") else "already on disk and checked again",
+          % (NE.get("path"), ("rewritten: the cache on disk was built at other arm lengths or another frame"
+                              if NE.get("refreshed") else
+                              "written" if NE.get("written") else "already on disk and checked again"),
              NE.get("n_finite"), NE.get("exact")))
-    DIAG = form("diagonal", variant="ne", apply_e_signs=False, turn_ne=True,
+    # a pass on a cache that has just been rebuilt at a different frame is not a pass on this cache
+    DIAG = form("diagonal", variant="ne", apply_e_signs=False, turn_ne=True, turn_angle_deg=THETA,
+                redo=bool(REDO or NE.get("refreshed")),
                 criterion="the turn-back keeps the element, determinant and Frobenius invariants of a "
                           "column-only turn",
-                extra_lines=["diagonal=x' north-west = (Ex - Ey)/sqrt2, the clean row where the model "
-                             "holds; y' north-east = (Ex + Ey)/sqrt2, kept for the record"])
+                extra_lines=["diagonal=x' along the arm diagonal, (L_N Ex - L_E Ey)/d with L_N %.4g m, "
+                             "L_E %.4g m and d %.4g m, the clean row where the model holds; y' orthogonal "
+                             "to it, (L_E Ex + L_N Ey)/d, kept for the record"
+                             % (ARMS["L_N"], ARMS["L_E"], CE.diagonal_length(ARMS["L_N"], ARMS["L_E"])),
+                             "frame_deg=%+.4f = atan2(-L_E, L_N); equal arms would give -45" % THETA])
     t = DIAG.get("turn") or {}
     if t:
         print("   the turn-back over %d period(s): elements %.2e (tolerance %.0e), determinant %.2e scaled "
@@ -4139,30 +4191,39 @@ if me.get("model_holds"):
           "%s" % ("applies" if me.get("remedy_applicable") else "does NOT apply", SITE,
                   me.get("clean_obs"), me.get("clean_by_H")))
 else:
-    print("the model does not hold at %s (residual coherence %.2f, gain %.2f): no variant cache is written"
-          % (SITE, me.get("resid_coh", np.nan), me.get("resid_gain", np.nan)))
+    print("the model does not hold at %s (residual coherence %.2f, gain %.2f against the %.3f the arms "
+          "predict, a ratio of %.2f): no variant cache is written"
+          % (SITE, me.get("resid_coh", np.nan), me.get("resid_gain", np.nan), G_EXPECTED,
+             me.get("gain_ratio", np.nan)))
 '''),
 
-("md", r"""One day of the two signed lines above and the two diagonals below. What to look for is the two
-lines moving together -- that common motion is the centre's voltage -- and the difference beneath them,
-which is what the north-west diagonal keeps after it has cancelled."""),
+("md", r"""One day of the two signed lines above and the two arm diagonals below. What to look for is the two
+lines moving together -- that common motion is the centre's voltage, arriving on each line divided by its own
+arm length -- and the length-weighted difference beneath them, which is what the arm diagonal keeps after it
+has cancelled."""),
 
 ("code", '''fig = FF.diagonal_day(sv, SITE, OUT / "17_diagonal_day.png", elines=ELINES)
 WRITTEN.append(OUT / "17_diagonal_day.png")
 display(Image(filename=str(OUT / "17_diagonal_day.png")))
 '''),
 
-("md", r"""The diagonal product against the baseline, where one was built. The x' row is the north-west
-diagonal and not the xy component, so the two curves are not the same quantity and are not expected to lie on
-each other: what to look for is whether the x' row is smoother and carries a smaller bar than the row the
-shared centre sits in."""),
+("md", r"""The diagonal product against the baseline, where one was built. The x' row is the arm diagonal and
+not the xy component, so the two curves are not the same quantity and are not expected to lie on each other:
+what to look for is whether the x' row is smoother and carries a smaller bar than the row the shared centre
+sits in."""),
 
 ("code", '''r = made_product("diagonal")
 if r and BASE:
     fig = FF.form_panels([("whole", read(BASE), "k", "-"), ("diagonal", read(r["product"]), "C0", "-")],
                          SITE, OUT / "18_diagonal_product.png",
-                         title="%s: the diagonal pass turned back to -45 deg, against the baseline -- the x' "
-                               "row is the north-west diagonal, not xy" % SITE, period_range=(1, 50000))
+                         title="%s: the diagonal pass against the baseline" % SITE,
+                         caption="The pass on the arm-diagonal cache, turned back by theta = %+.2f deg = "
+                                 "atan2(-L_E, L_N) with L_N = %.4g m and L_E = %.4g m, against the "
+                                 "whole-record baseline in black. The x' row is the field along the arm "
+                                 "diagonal and not the xy component, so the two are different quantities "
+                                 "and are not expected to lie on each other; what the figure is for is the "
+                                 "size of the error bars on the row the shared centre sits in."
+                                 % (THETA, ARMS["L_N"], ARMS["L_E"]), period_range=(1, 50000))
     WRITTEN.append(OUT / "18_diagonal_product.png")
     display(Image(filename=str(OUT / "18_diagonal_product.png")))
 else:
@@ -4176,9 +4237,11 @@ if not BUILT.get("judged"):
     fail.append("the control could not be built (%s), so the test was not shown able to fail"
                 % BUILT.get("reason"))
 elif BUILT.get("model_holds"):
-    fail.append("the built control %s holds the model (residual coherence %.2f, gain %.2f): the test finds a "
-                "shared centre between two electrodes that cannot have one"
-                % (BUILT["site"], BUILT["resid_coh"], BUILT["resid_gain"]))
+    fail.append("the built control %s holds the model (residual coherence %.2f, gain %.2f, a ratio of %.2f "
+                "to the %.3f the arms predict): the test finds a shared centre between two electrodes that "
+                "cannot have one"
+                % (BUILT["site"], BUILT["resid_coh"], BUILT["resid_gain"],
+                   BUILT.get("gain_ratio", np.nan), G_EXPECTED))
 if me.get("sign_undecided"):
     fail.append("UNJUDGED on the sign prediction at %s: %s undecided in decisions.csv, never filled by "
                 "convention" % (SITE, me["sign_undecided"]))
@@ -4186,8 +4249,8 @@ elif me.get("model_holds") and me.get("sign_agrees") is False:
     fail.append("the sign prediction %+d disagrees with the observed %+d at %s"
                 % (me["s_pred"], me["s_obs"], SITE))
 if NE.get("exact") is False:
-    fail.append("the variant cache does not reproduce (Ex - Ey)/sqrt 2 of the signed source at every one of "
-                "its %s finite samples" % NE.get("n_finite"))
+    fail.append("the variant cache does not reproduce (L_N Ex - L_E Ey)/d of the signed source at every one "
+                "of its %s finite samples" % NE.get("n_finite"))
 if DIAG and (DIAG.get("turn") or {}) and not (DIAG.get("turn") or {}).get("ok"):
     t = DIAG["turn"]
     fail.append("the turn-back moves an invariant: elements %.2e, determinant %.2e, Frobenius %.2e"
@@ -4199,9 +4262,11 @@ turn_text = (("the turn-back on the diagonal holds the three invariants: element
               % (t.get("max_element_rel", np.nan), t.get("max_det_scaled", np.nan),
                  t.get("max_frobenius_rel", np.nan), t.get("trace_ratio", np.nan))) if t
              else "no diagonal was built, so the turn-back was not scored")
-read_text = ("%s reads a residual coherence of %.2f with a gain of %.2f, so the model %s there, and its "
-             "observed sign %s %s the %s its E signs predict"
-             % (SITE, me.get("resid_coh", np.nan), me.get("resid_gain", np.nan),
+read_text = ("%s has arms of %.4g m north and %.4g m east, so the model predicts |g| = %.3f; it reads a "
+             "residual coherence of %.2f with a gain of %.2f, a ratio of %.2f, so the model %s there, and "
+             "its observed sign %s %s the %s its E signs predict"
+             % (SITE, ARMS["L_N"], ARMS["L_E"], G_EXPECTED, me.get("resid_coh", np.nan),
+                me.get("resid_gain", np.nan), me.get("gain_ratio", np.nan),
                 "HOLDS" if me.get("model_holds") else "does NOT hold", sign(me.get("s_obs")),
                 "agrees with" if me.get("sign_agrees") else "is not scored against",
                 sign(me.get("s_pred"))))
@@ -4221,11 +4286,11 @@ else:
 
 ("md", r"""## 7. The notch and the spike screen
 
-Both are CACHE VARIANTS written beside the original, never in place, so a pass on a variant differs from a
+Both are cache variants written beside the original, never in place, so a pass on a variant differs from a
 pass on the original only in the channels that fired. A channel that does not fire is copied through and its
 sha256 is compared with the source's, which is what makes the control meaningful.
 
-The tone at 1.000 Hz and its 2.000 Hz harmonic is decided PER WORST DAY and PER CHANNEL. Per worst day
+The tone at 1.000 Hz and its 2.000 Hz harmonic is decided per worst day and per channel. Per worst day
 because the tone is intermittent: a whole-record statistic misses a fault that destroys the band containing
 1.000 s exactly. Per channel because the tone sits in one horizontal channel at most sites and in both at
 some. The filter is a Q = 100 notch applied with filtfilt, so it is zero phase and linear time invariant and
@@ -4233,16 +4298,25 @@ cannot change the record outside the two notch bands, and it is applied gap-awar
 hole of 60 s or more, each piece filtered with 600 s of padding -- because one filter pass over an
 interpolated hole rings the narrow filter and moves the record.
 
-The spike screen is new work and not a port: the despike of the look stage is a diagnostic used before a
-coherence estimate and was never a processing step. The samples i-2 to i+3 around any first-difference step
-beyond SPIKE_K times the robust scale are blanked and LEFT NaN -- a cache never carries interpolation -- and
-its own control is the count on the quietest day by H variance against the noisiest.
+A sample-blanking screen (k = 30 times the robust scale of the first difference, the samples i-2 to i+3 around
+each step blanked) was tried here and is not a form: at Q53N it blanked 0.56 per cent of the 10 Hz samples,
+which fragmented the record from 87 runs over 55.34 d into 140 runs over 14.06 d against the remote -- 66.5
+per cent of what the mask kept went to the 3,600 s run floor -- and the pass then returned no transfer
+function at all.
 
-**This check fails if an untouched channel is not byte-identical to its source, or if the notch moves any
-period other than the tone bin and its harmonic by more than 2.5 per cent.** With no channel firing the check
-is UNJUDGED and the section says so."""),
+A form the method's own floor refuses is a reading; a form that crashes is a failure. Before either 10 Hz form
+reaches Aurora the workbook measures what its cache leaves against the reference it will be passed with --
+the mask, the reference's own coverage, and the record cut into runs at the 3,600 s floor -- and prints the
+kept days and run count of each beside the whole record's. A form whose kept duration is zero is not passed:
+its row reads `refused` with those numbers, and the ratio table and the rates figure carry that sentence
+where its curve would have been, rather than a traceback out of the estimator.
 
-("code", '''CENSUS, DECISION, NOTCH, SPIKE = pd.DataFrame(), pd.DataFrame(), {}, {}
+**This check fails if an untouched channel is not byte-identical to its source, if the notch moves any period
+other than the tone bin and its harmonic by more than 2.5 per cent, or if any form of this section ended in
+an exception rather than a stated refusal.** With no channel firing the check is UNJUDGED and the section
+says so."""),
+
+("code", '''CENSUS, DECISION, NOTCH = pd.DataFrame(), pd.DataFrame(), {}
 if 10 not in RATES:
     print("RATES does not include 10: the census reads the 10 Hz cache and is not run")
 elif not VA.cache_path(WORK, SITE, 10).exists():
@@ -4263,15 +4337,6 @@ else:
           % (", ".join(NOTCH.get("fired", [])) or "nothing", NOTCH.get("untouched_identical")))
     if NOTCH.get("controls"):
         print(pd.DataFrame(NOTCH["controls"]).round(4).to_string(index=False))
-    t = time.time()
-    SPIKE = VA.spike_variant(sv, SITE, SPIKE_K, 10, force=REDO)
-    print("the despiked variant in %.0f s: %s" % (time.time() - t, SPIKE.get("path")))
-    if SPIKE.get("per_channel"):
-        print(pd.DataFrame(SPIKE["per_channel"]).round(6).to_string(index=False))
-    c = SPIKE.get("control", {})
-    print("   control: the quietest day %s (H variance %.3g) blanks %s sample(s), the noisiest %s (%.3g) "
-          "blanks %s" % (c.get("quietest_day"), c.get("quietest_h_variance"), c.get("quietest_blanked"),
-                         c.get("noisiest_day"), c.get("noisiest_h_variance"), c.get("noisiest_blanked")))
 '''),
 
 ("md", r"""The spectrum of each channel around 1.000 Hz and 2.000 Hz, on that channel's own worst day,
@@ -4283,22 +4348,43 @@ show here and nowhere else."""),
     fig = FF.notch_spectra(sv, SITE, DECISION, OUT / "19_notch_spectra.png", freqs=VA.FREQS)
     WRITTEN.append(OUT / "19_notch_spectra.png")
     display(Image(filename=str(OUT / "19_notch_spectra.png")))
-    fig = FF.spike_map(SPIKE, SITE, OUT / "21_spike_screen.png")
-    WRITTEN.append(OUT / "21_spike_screen.png")
-    display(Image(filename=str(OUT / "21_spike_screen.png")))
 '''),
 
 ("code", '''RATIO = pd.DataFrame()
 if NOTCH.get("path"):
     kind10 = BASELINE_KIND
     if kind10 != "single" and not (WORK / "references" / "10hz" / ("%s_%s.npz" % (kind10, SITE))).exists():
-        print("no 10 Hz %s reference store for %s: the three passes use the single station, which is one "
-              "reference for all three and is what the control asks for" % (kind10, SITE))
+        print("no 10 Hz %s reference store for %s: both passes use the single station, which is one "
+              "reference for both and is what the control asks for" % (kind10, SITE))
         kind10 = "single"
-    for name, variant in (("whole10", ""), ("notched", "notched"), ("despiked", "despiked")):
+    # what each cache leaves against the reference it will be passed with, measured BEFORE any pass: the
+    # mask, the reference's own coverage and the run floor, cut into the runs Aurora would be handed. A
+    # cache that leaves nothing is refused here with its numbers, rather than crashing the estimator later
+    COVER = {n: FM.coverage(sv, SITE, kind=kind10, rate=10, variant=v)
+             for n, v in (("whole10", ""), ("notched", "notched"))}
+    print("what each 10 Hz cache leaves against the %s reference, before any pass: the mask, the reference's "
+          "own coverage, and the record cut into runs at the %g s floor"
+          % (KIND_WORD.get(kind10, kind10), TR_MIN_SEGMENT_S))
+    for name in ("whole10", "notched"):
+        c = COVER[name]
+        print("   %-9s %6.2f d over %3d run(s) of the record's %.2f d; %.1f %% of the samples kept, %.1f %% "
+              "of the record lost to the floor" % (name, c["days"], c["n_runs"], c["record_days"],
+                                                   100 * c["kept_frac"], 100 * c["floor_dropped_frac"]))
+    print()
+    REFUSED = []
+    for name, variant in (("whole10", ""), ("notched", "notched")):
+        if COVER[name]["empty"]:
+            why = FM.refusal_sentence(COVER[name], COVER["whole10"],
+                                      what=("the %s screen" % variant) if variant else "the mask")
+            FORM_ROWS.append(FM.refused_row(sv, SITE, name, OUT, kind10, 10, PARAMS, why,
+                                            cov=COVER[name], controls=(["whole10"] if variant else []),
+                                            criterion="not passed: the floor leaves no run to hand Aurora"))
+            REFUSED.append((name, why))
+            print("   %s is NOT passed -- %s" % (name, why))
+            continue
         r = form(name, kind=kind10, rate=10, variant=variant,
                  criterion=("only the tone bin and its harmonic move, every other period within 2.5 %"
-                            if variant else "the original, the control both variants are read against"),
+                            if variant else "the original, the control the variant is read against"),
                  controls=(["whole10"] if variant else []))
         if variant:
             # a variant is read against its original period by period and never on the bar
@@ -4306,7 +4392,7 @@ if NOTCH.get("path"):
     base10 = made_product("whole10")
     if base10:
         a = read(base10["product"])
-        for name in ("notched", "despiked"):
+        for name in ("notched",):
             r = made_product(name)
             if r is None:
                 continue
@@ -4314,16 +4400,69 @@ if NOTCH.get("path"):
             per.insert(0, "form", name)
             RATIO = pd.concat([RATIO, per], ignore_index=True)
     print(RATIO.round(4).to_string(index=False) if len(RATIO) else "no 10 Hz pair to compare")
+    for name, why in REFUSED:
+        # the refusal stands in the table's place for that variant: the row is missing for a stated reason
+        print("   %-9s no row: %s" % (name, why))
     print()
-    print("what each variant cost the pass: a screen that blanks scattered samples fragments the record, "
-          "and the %g s run floor then throws the pieces away" % TR_MIN_SEGMENT_S)
-    for name in ("whole10", "notched", "despiked"):
+    print("what each form cost the pass")
+    for name in ("whole10", "notched"):
         r = rows_by_form().get(name, {})
-        print("   %-9s %s d kept over %s run(s)" % (name, r.get("days"), r.get("n_runs")))
+        print("   %-9s %s d kept over %s run(s)%s"
+              % (name, r.get("days"), r.get("n_runs"),
+                 ("  [%s]" % r["reason"]) if r.get("reason") else ""))
     fig = FF.ratio_panel(RATIO, SITE, OUT / "20_variant_ratio.png",
-                         tone_bands=[AG.band_label(*SHORT_BANDS[0]), AG.band_label(*SHORT_BANDS[1])])
+                         tone_bands=[AG.band_label(*SHORT_BANDS[0]), AG.band_label(*SHORT_BANDS[1])],
+                         refused=REFUSED)
     WRITTEN.append(OUT / "20_variant_ratio.png")
     display(Image(filename=str(OUT / "20_variant_ratio.png")))
+'''),
+
+("md", r"""The 10 Hz forms themselves, against the 1 Hz whole-record baseline. The variant ratio above says
+what the notch moved; this says what the 10 Hz pass produced in the first place, which nothing else in the
+workbook shows. What to look for is the dashed curves lying on the solid one where the two rates overlap, the
+size of the error bars at the short end, and the step across the join line: the two shaded bands are the ones
+a splice would score that step on, and the octave between them is the guard that holds the logger's own
+instrument line and is scored by nothing."""),
+
+("code", '''rows = rows_by_form()
+curves = [("whole, 1 Hz", read(BASE), "k", "-")] if BASE else []
+for j, name in enumerate(("whole10", "notched")):
+    r = made_product(name)
+    if r:
+        # two dashed styles, not one: a variant that moved nothing lies exactly under its original
+        curves.append(("%s, 10 Hz" % name, read(r["product"]), "C%d" % j, ("--", ":")[j]))
+if len(curves) > 1:
+    _bs = AR.bands_for(10)
+    _k10 = rows.get("whole10", {}).get("kind", BASELINE_KIND)
+    _cost = "; ".join("%s %s s over %s run(s)" % (n, rows.get(n, {}).get("seconds"),
+                                                  rows.get(n, {}).get("n_runs"))
+                      for n in ("whole10", "notched")
+                      if rows.get(n, {}).get("status") in ("made", "exists"))
+    # a form the floor refused carries its sentence where its curve would have been
+    _gone = " ".join("%s is not drawn -- %s." % (n, w) for n, w in REFUSED)
+    fig = FF.rate_panels(curves, SITE, OUT / "20b_rates.png", join_s=SP.SPLICE_JOIN_S,
+                         bands=(SP.STEP_BELOW, SP.STEP_ABOVE), period_range=(SP.SHORT_FLOOR_S, 2000),
+                         title="%s: the 10 Hz forms against the 1 Hz baseline" % SITE,
+                         caption="The 10 Hz forms dashed -- the original cache and the notched variant, on "
+                                 "the same %s reference and the same %s "
+                                 "parameters -- against the 1 Hz whole-record baseline solid, from %g s to "
+                                 "2,000 s. The 10 Hz passes read the band file %s (%d levels, window %d "
+                                 "samples) and the 1 Hz baseline reads %s (%d levels), so the two rates "
+                                 "carry different band edges and land on different periods. The dash-dotted "
+                                 "line at %g s is where a short end would join the 1 Hz row; the shaded "
+                                 "columns %g-%g s and %g-%g s are the two bands the step at that join is "
+                                 "scored on, and the octave between them is the guard band, scored by "
+                                 "nothing. The passes ran one at a time, %s, because one 10 Hz pass holds "
+                                 "the whole record in memory. %s Caveat: %s."
+                                 % (KIND_WORD.get(_k10, _k10), PARAMS, SP.SHORT_FLOOR_S,
+                                    _bs.file.name, _bs.levels, _bs.window,
+                                    AR.bands_for(1).file.name, AR.bands_for(1).levels,
+                                    SP.SPLICE_JOIN_S, SP.STEP_BELOW[0], SP.STEP_BELOW[1],
+                                    SP.STEP_ABOVE[0], SP.STEP_ABOVE[1], _cost, _gone, TEN_HZ_CAVEAT))
+    WRITTEN.append(OUT / "20b_rates.png")
+    display(Image(filename=str(OUT / "20b_rates.png")))
+else:
+    print("no 10 Hz form was made, so there is nothing to draw against the 1 Hz baseline")
 '''),
 
 ("code", '''TONE_BANDS = [AG.band_label(*SHORT_BANDS[0]), AG.band_label(*SHORT_BANDS[1])]
@@ -4346,44 +4485,52 @@ else:
     elif worst > 0.025:
         fail.append("the notch moves a period outside the tone bin and its harmonic by %.1f %%"
                     % (100 * worst))
+# a form that ended in an exception is a FAIL with the form named; a form the floor refused, with its runs
+# and its days measured before the pass, is a reading and is not one
+crashed = [r for r in FORM_ROWS if r.get("rate_hz") == 10.0 and r.get("status") == "FAILED"]
+for r in crashed:
+    fail.append("the form %s ended in an exception rather than a stated refusal: %s"
+                % (r["form"], str(r.get("error"))[:160]))
+refused_text = "; ".join("%s %s" % (n, w) for n, w in (globals().get("REFUSED") or []))
 if fail:
-    print("VERDICT: FAIL -- %s" % "; ".join(fail))
+    print("VERDICT: FAIL -- %s%s" % ("; ".join(fail), ("; " + refused_text) if refused_text else ""))
 elif note:
     print("VERDICT: UNJUDGED -- %s, so neither limb of the criterion was scored" % note)
 else:
     print("VERDICT: PASS -- %s fired and %s did not, and every channel that did not fire is byte-identical "
           "to its source by sha256; outside the tone bin and its harmonic (%s) the worst period moves by "
-          "%.2f %%, under 2.5 %%"
+          "%.2f %%, under 2.5 %%; no form of this section ended in an exception%s"
           % (", ".join(NOTCH["fired"]),
              ", ".join(c for c in sorted(NOTCH["identical"]) if c not in NOTCH["fired"]) or "no channel",
-             " and ".join(TONE_BANDS), 100 * worst))
+             " and ".join(TONE_BANDS), 100 * worst,
+             (", and " + refused_text) if refused_text else ""))
 '''),
 
 ("md", r"""## 8. Replacement magnetics and the lender
 
 At long period the horizontal magnetic field is homogeneous over the site spacing, so a neighbour's H
-measures the same field; at short period it is not. A borrowed long end therefore goes UNDER the site's own
+measures the same field; at short period it is not. A borrowed long end therefore goes under the site's own
 short periods and the two are spliced where borrowing stops costing.
 
-The rule picks the WORST channel only, and only where it is clearly worse than the other: a site
+The rule picks the worse channel only, and only where it is clearly worse than the other: a site
 decorrelated from its neighbours for any reason -- distance, a quiet spell, its own noise -- has both
 channels below any threshold, so a rule reading "any channel below a threshold" replaces both and wrecks the
 site. The coherence is the whole-record mean over 100-1000 s, deliberately not the chunk median used
 elsewhere, and both series are despiked first, because a whole-record mean has no median to hide behind and
-one logger spike sets the number. The candidate must itself be sound against a THIRD site at 0.80: a donor
+one logger spike sets the number. The candidate must itself be sound against a third site at 0.80: a donor
 vouched for by the site it stands in for has been vouched for by nobody. A donor that is a member of the
 reference the pass reads is refused, because a reference sharing a channel with the local H is comparing a
 channel with itself.
 
-Four forms. A is the site's own H -- the baseline of section 1. B replaces one channel with the nearest sound
-site's SAME channel and keeps the site's own other channel. C replaces it with the fleet stack's channel and
+Four forms. A is the site's own H, the baseline of section 1. B replaces one channel with the nearest sound
+site's same channel and keeps the site's own other channel. C replaces it with the fleet stack's channel and
 is shown and never delivered, because a stack is a reference and never a local H; its pass reads the
-observatory, since every member of the stack is inside its own local H. D borrows the WHOLE pair: the tensor
-of the site's E on the field a neighbour measured, which is an INTER-SITE IMPEDANCE, shown and never
+observatory, since every member of the stack is inside its own local H. D borrows the whole pair: the tensor
+of the site's E on the field a neighbour measured, which is an inter-site impedance, shown and never
 delivered. D and the lender form are one construction and one pass.
 
 The frames. The lender's pair is served in its own mean-field frame and is turned by minus the site's angle
-into the site's SENSOR frame before it stands in for a sensor-frame channel; the tensor is then turned back
+into the site's sensor frame before it stands in for a sensor-frame channel; the tensor is then turned back
 on the right by M R(-t), with M's row taken from the identity where the channel is borrowed and from R(t)
 where it is the site's own. With both channels borrowed that is the rotation R(-t); with neither it is the
 identity; with one of each it is not a rotation at all.
@@ -4571,9 +4718,9 @@ The tipper is an H-only quantity and survives two dead electric lines, so a site
 impedance can still deliver its tipper. The impedance rows are written as the empty-data fill and two INFO
 lines say what the file is, so a reader cannot take the blank rows for a measurement.
 
-The tipper is REFUSED where the vertical channel is not measuring the vertical field, and neither fault is
-visible in the tipper itself: Hz a COPY of a horizontal channel, which reads a coherence of 1.00 with Hx and
-makes the tipper a re-statement of the horizontal record, or a LEAK, where Hz carries the site's own
+The tipper is refused where the vertical channel is not measuring the vertical field, and neither fault is
+visible in the tipper itself: Hz a copy of a horizontal channel, which reads a coherence of 1.00 with Hx and
+makes the tipper a re-statement of the horizontal record, or a leak, where Hz carries the site's own
 horizontal field at 1000-4000 s while carrying nothing of a neighbour's vertical field. A real vertical field
 is coherent with a neighbour's at those periods, because the source is regional.
 
@@ -4606,12 +4753,11 @@ else:
 ("md", r"""## 10. The forms table
 
 Every form with the products it is read against, the criterion in words, the verdict and the reading. This is
-the file workbook 06 reads. A form is a CANDIDATE only where it beats every control it carries on the
-10-1000 s bar by BAR_MARGIN: a selection whose product does not beat its random control buys efficiency, not
-a different answer, and is not promoted. A form with no control is read and never promoted on this table
-alone, and a form that borrows both horizontal channels is never a candidate.
+the file workbook 06 reads. A form is a candidate only where it beats every control it carries on the
+10-1000 s bar by BAR_MARGIN. A form with no control is read and never promoted on this table alone, and a form
+that borrows both horizontal channels is never a candidate.
 
-The decisions.csv cells this workbook proposes are printed below and are NOT written unless WRITE_DECISIONS
+The decisions.csv cells this workbook proposes are printed below and are not written unless WRITE_DECISIONS
 is True. Decisions are the analyst's."""),
 
 ("code", '''TABLE = DL.forms_table(FORM_ROWS, OUT / "forms.csv", baseline_path=BASE, bar_band=tuple(BAR_BAND),
@@ -4696,6 +4842,8 @@ print(cost.to_string(index=False))
 '''),
 ]
 
+
+# ===================================================================== 06 the final transfer function
 
 NOTEBOOKS = {"01_survey.ipynb": WB01, "02_records.ipynb": WB02, "03_process.ipynb": WB03,
              "04_products.ipynb": WB04, "05_site.ipynb": WB05}

@@ -1,6 +1,6 @@
-"""Cache variants: the 1.000 Hz tone notched out, and a spike screen, each written beside the original.
+"""The cache variant: the 1.000 Hz tone notched out, written beside the original.
 
-A cache is never edited in place. Each variant is a full npz under <work_root>/cache_<rate>hz_<name>/ with a
+A cache is never edited in place. The variant is a full npz under <work_root>/cache_<rate>hz_<name>/ with a
 JSON sidecar naming what was done to which channel, and the sha256 of every channel so that a channel the
 variant did not touch can be shown byte-identical to its source. That identity is what makes the
 product-level control meaningful: a pass on the variant differs from a pass on the original only in the
@@ -16,12 +16,8 @@ phase and linear time invariant and cannot change the record outside the two not
 GAP-AWARE, the record cut at every hole of 60 s or more and each piece filtered with 600 s of padding,
 because one filtfilt over an interpolated 17.6 h hole moved a record by 2.15 per cent of its rms.
 
-THE SPIKE SCREEN is new work and not a port: vic_windows.despike (:95-110) is a diagnostic used before a
-coherence estimate and was never a processing step. Per channel, the samples i-2 to i+3 around any
-first-difference step beyond k x 1.4826 x the median absolute deviation of the steps are blanked and LEFT
-NaN -- a cache never carries interpolation -- and the count is written per channel and per UTC day. Its own
-control is the count on the quietest day by H variance against the noisiest: a screen that fires as often on
-a quiet day as on a loud one is measuring the estimator's own threshold and not the record.
+A sample-blanking spike screen was tried here and removed: it is not a form. The despike of the look stage
+stays what it always was, a diagnostic taken before a coherence estimate.
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -47,9 +43,6 @@ RATIO_FIRE = 10.0
 GAP_SPLIT_S = 60.0
 MIN_SEG_S = 600.0
 PAD_S = 600.0
-
-SPIKE_K = 30.0
-SPIKE_BEFORE, SPIKE_AFTER = 2, 3        # samples i-2 to i+3 inclusive
 
 
 def sha256_array(x) -> str:
@@ -261,93 +254,4 @@ def notch_variant(sv, site, decision: pd.DataFrame, rate=10, variant="notched", 
                 untouched_identical=all(before[ch] == after[ch] for ch in before if ch not in fire),
                 fired_changed=all(before[ch] != after[ch] for ch in fire if ch in before))
     dst.with_suffix(".json").write_text(json.dumps(side, indent=1), encoding="utf-8")
-    return side
-
-
-def spike_counts(x, k=SPIKE_K):
-    """(the blanking mask, the robust scale of the steps). The samples i-2 to i+3 around each hit."""
-    x = np.asarray(x, float)
-    bad = np.zeros(len(x), bool)
-    d = np.diff(x)
-    good = np.isfinite(d)
-    if good.sum() < 10:
-        return bad, np.nan
-    mad = float(np.median(np.abs(d[good] - np.median(d[good]))) * 1.4826)
-    if not np.isfinite(mad) or mad <= 0:
-        return bad, mad
-    for i in np.flatnonzero(good & (np.abs(d) > float(k) * mad + 1e-9)):
-        bad[max(0, i - SPIKE_BEFORE):i + SPIKE_AFTER + 1] = True
-    return bad, mad
-
-
-def spike_variant(sv, site, k=SPIKE_K, rate=10, variant="despiked", force=False) -> dict:
-    """Write cache_<rate>hz_<variant>/<site>.npz with the samples around each first-difference step blanked.
-
-    The blanked samples are left NaN: a cache never carries interpolation, and the estimator's own mask is
-    what decides what a NaN costs. The count per channel and per UTC day is written into the sidecar, with
-    the quietest and the noisiest day by H variance named as the control pair.
-    """
-    src = cache_path(sv.cfg["work_root"], site, rate)
-    dst = cache_path(sv.cfg["work_root"], site, rate, variant)
-    if not src.exists():
-        return dict(site=site, status="no cache at %s" % src)
-    if dst.exists() and not force:
-        side = dst.with_suffix(".json")
-        if side.exists():
-            return json.loads(side.read_text(encoding="utf-8"))
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    fs = float(rate)
-    z = np.load(src, allow_pickle=False)
-    dat = {kk: z[kk] for kk in z.files}
-    z.close()
-    t0 = float(np.asarray(dat["t0"]).ravel()[0])
-    before = {ch: sha256_array(dat[ch]) for ch in CHANNELS if ch in dat}
-    bounds = day_bounds(t0, len(np.asarray(dat["Hx"])), fs)
-    per_day, per_channel = [], []
-    hvar = {}
-    for i0, i1, lab in bounds:
-        seg = np.asarray(dat["Hx"], np.float64)[i0:i1]
-        fin = np.isfinite(seg)
-        hvar[lab] = float(np.var(seg[fin])) if fin.sum() > 100 else np.nan
-    for ch in CHANNELS:
-        if ch not in dat:
-            continue
-        x = np.asarray(dat[ch], np.float64)
-        bad, mad = spike_counts(x, k)
-        for i0, i1, lab in bounds:
-            per_day.append(dict(channel=ch, day=lab, blanked=int(bad[i0:i1].sum()),
-                                samples=int(i1 - i0)))
-        per_channel.append(dict(channel=ch, blanked=int(bad.sum()), samples=int(len(x)),
-                                fraction=float(bad.mean()), step_scale=mad,
-                                threshold=(float(k) * mad if np.isfinite(mad) else np.nan)))
-        x[bad] = np.nan
-        dat[ch] = x.astype(np.asarray(dat[ch]).dtype)
-        del x, bad
-    days = pd.DataFrame(per_day)
-    quiet = min((d for d in hvar if np.isfinite(hvar[d])), key=lambda d: hvar[d], default="")
-    loud = max((d for d in hvar if np.isfinite(hvar[d])), key=lambda d: hvar[d], default="")
-    note = ("spike screen: samples i-%d to i+%d around any first difference beyond %g x 1.4826 MAD of the "
-            "steps, left NaN" % (SPIKE_BEFORE, SPIKE_AFTER, float(k)))
-    dat["despike"] = np.array([note])
-    np.savez(dst, **dat)
-    after = {ch: sha256_array(dat[ch]) for ch in CHANNELS if ch in dat}
-    del dat
-
-    def _day_total(day):
-        if not day or not len(days):
-            return None
-        return int(days[days.day == day].blanked.sum())
-
-    side = dict(site=site, variant=variant, rate_hz=fs, k=float(k), source=str(src), path=str(dst),
-                built_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), note=note,
-                per_channel=per_channel, per_day=days.to_dict("records"),
-                control=dict(quietest_day=quiet, quietest_h_variance=hvar.get(quiet),
-                             quietest_blanked=_day_total(quiet),
-                             noisiest_day=loud, noisiest_h_variance=hvar.get(loud),
-                             noisiest_blanked=_day_total(loud),
-                             rule="the screen must fire more on the noisiest day than on the quietest"),
-                sha256_source={k2: v for k2, v in sorted(before.items())},
-                sha256_variant={k2: v for k2, v in sorted(after.items())},
-                identical={ch: bool(before[ch] == after[ch]) for ch in sorted(before)})
-    dst.with_suffix(".json").write_text(json.dumps(side, indent=1, default=str), encoding="utf-8")
     return side

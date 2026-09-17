@@ -64,7 +64,7 @@ def cache_dir(work_root, rate=1, variant="") -> Path:
 def load_local(sv, site, rate=1, variant="", apply_e_signs=True):
     """(t0, the five channels signed and rotated, the angle, the signs applied, the undecided channels).
 
-    `variant` names a cache beside the original -- ne, notched, despiked -- which is read in its place.
+    `variant` names a cache beside the original -- ne, notched -- which is read in its place.
     `apply_e_signs` is False for a variant whose electric channels are already signed (the NE cache), because
     signing them twice would undo the difference the variant exists for.
     """
@@ -119,9 +119,74 @@ def record_form(out_dir, entry: dict) -> Path:
     return p
 
 
+def coverage(sv, site, kind="remote", rate=1, variant="", apply_e_signs=True, keep_extra=None,
+             keep_name="", min_segment_s=None) -> dict:
+    """What a cache would give Aurora against a reference, measured before any pass is run.
+
+    The same mask the pass builds -- the transient events of the site, of the reference and of the electric
+    lines, the reference's own coverage, and any extra selection -- is built here and cut into runs at the
+    package's floor. `n_runs` and `days` are what Aurora would actually be handed.
+
+    A screen that blanks scattered samples fragments the record and the floor then throws the pieces away, so
+    a variant can leave nothing to pass while its source leaves the whole record. Measuring that first turns
+    it into a reading with numbers instead of an exception out of the estimator.
+    """
+    work = Path(sv.cfg["work_root"])
+    fs = float(rate)
+    floor_s = float(TR.MIN_SEGMENT_S if min_segment_s is None else min_segment_s)
+    t0, local, _ang, _ap, _un = load_local(sv, site, rate, variant, apply_e_signs)
+    n = len(local["Hx"])
+    rt0, rh, rmask, info = REF.load_reference(kind, site, rate, work)
+    if rh is not None and rt0 != t0:
+        raise ValueError("%s %s: the reference starts at %d and the record at %d" % (site, kind, rt0, t0))
+    ev_site = TR.site_events(site, list(sv.sites.site), work, sv.cfg)
+    ev_e = TR.e_events(site, work, sv.cfg)
+    ev_rem = []
+    if kind == "remote":
+        ev_rem = [(float(pd.Timestamp(a).timestamp()), float(pd.Timestamp(b).timestamp()))
+                  for a, b in (info.get("remote_events") or [])]
+    extra = None if keep_extra is None else np.asarray(keep_extra, bool)
+    if extra is not None and len(extra) < n and fs > 1.0:
+        extra = np.repeat(extra, int(round(fs)))
+    if extra is not None and len(extra) < n:
+        extra = np.concatenate([extra, np.zeros(n - len(extra), bool)])
+    keep, stats = TR.build_keep(t0, local, fs, ev_site, ev_rem, ev_e,
+                                remote_mask=(None if rmask is None else rmask[:n]),
+                                extra_mask=(None if extra is None else extra[:n]), extra_name=keep_name)
+    segs = TR.segments(keep, int(floor_s * fs))
+    days = sum(L for _, L in segs) / (86400.0 * fs)
+    return dict(site=site, kind=kind, rate_hz=float(rate), variant=(variant or "the original cache"),
+                n_runs=len(segs), days=float(days), min_segment_s=floor_s,
+                record_days=float(n / (86400.0 * fs)), kept_frac=stats["kept_frac"],
+                floor_dropped_frac=TR.floor_dropped_frac(keep, fs), empty=bool(not segs))
+
+
+def refusal_sentence(cov: dict, whole: dict, what="the screen") -> str:
+    """The sentence a form refused by the floor carries in place of a product."""
+    return ("refused: %s leaves %d run(s) of %g s against the %s (the whole record keeps %.2f d over %d "
+            "run(s))" % (what, cov.get("n_runs", 0), cov.get("min_segment_s", TR.MIN_SEGMENT_S),
+                         cov.get("kind", ""), whole.get("days", float("nan")), whole.get("n_runs", 0)))
+
+
+def refused_row(sv, site, form, out_dir, kind, rate, params, reason, cov=None, controls=(),
+                criterion="") -> dict:
+    """The forms-table row of a form that was NOT passed, with the numbers that refused it.
+
+    `refused` is not `FAILED`: the first is the method's own floor stating what the cache leaves, measured
+    before Aurora is called, and the second is an exception out of the estimator.
+    """
+    row = dict(site=site, form=form, kind=kind, rate_hz=float(rate), params=params,
+               product="", controls=";".join(controls), criterion=criterion, seed=None,
+               status="refused", error="", reason=reason, seconds=None,
+               days=(None if cov is None else cov.get("days")),
+               n_runs=(None if cov is None else cov.get("n_runs")))
+    record_form(out_dir, dict(row, product=str(Path(out_dir) / product_name(site, form, kind, rate, params))))
+    return row
+
+
 def run_form(sv, site, form, out_dir, kind="remote", rate=1, params="kaiser20_75",
              keep_extra=None, keep_name="", window=None, variant="", apply_e_signs=True,
-             local_h=None, correction=None, turn_ne=False, seed=None, controls=(),
+             local_h=None, correction=None, turn_ne=False, turn_angle_deg=None, seed=None, controls=(),
              criterion="", extra_lines=(), lender=None, redo=False, verbose=True) -> dict:
     """One form of one site as a product. Returns the row the forms table is built from.
 
@@ -129,7 +194,8 @@ def run_form(sv, site, form, out_dir, kind="remote", rate=1, params="kaiser20_75
     of the transient mask and reported on its own line. `window` is (t_start, t_end) in unix seconds and
     slices everything, H included. `variant` names a cache beside the original. `local_h` replaces Hx, Hy
     after the frame is applied, and `correction` is the matrix the tensor's H basis is right-multiplied by
-    afterwards. `turn_ne` completes the north-minus-east turn on the written file. `lender` names the site a
+    afterwards. `turn_ne` completes the arm-diagonal turn on the written file, at `turn_angle_deg`
+    (the site's own atan2(-L_E, L_N); None keeps the equal-arm -45 deg). `lender` names the site a
     borrowed channel came from and is refused where it is a member of the reference this pass reads.
     """
     aurora_run.silence_loggers()
@@ -252,8 +318,10 @@ def run_form(sv, site, form, out_dir, kind="remote", rate=1, params="kaiser20_75
         mth5_build.remove(h5)
         turn = None
         if turn_ne:
-            from .centre import turn_edi
-            turn = turn_edi(edi_out, note="form %s" % form)
+            from .centre import THETA_NE, turn_edi
+            turn = turn_edi(edi_out, angle_deg=(THETA_NE if turn_angle_deg is None
+                                                else float(turn_angle_deg)),
+                            note="form %s" % form)
         elif correction is not None:
             from .replace import correct_edi
             turn = correct_edi(edi_out, np.asarray(correction, float), note="form %s" % form)
