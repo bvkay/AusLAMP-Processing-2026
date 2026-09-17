@@ -17,7 +17,9 @@ against, the criterion in words, the verdict, and the reading -- the bar over 10
 agreement with the baseline per decade -- and whether the form is a candidate for workbook 06. A form is a
 candidate only where it beats every control it carries on the bar by the stated margin: a selection whose
 product does not beat its random control buys efficiency, not a different answer, and is not promoted. A form
-that borrows both horizontal channels is an inter-site impedance and is never a candidate.
+that borrows both horizontal channels is an inter-site impedance and is never a candidate. A form assembled
+from other forms carries `candidate_rule`, a {candidate, verdict} the caller states, because its controls
+belong to the rows it was assembled from and this row's own bar cannot be read for them.
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -151,6 +153,13 @@ def forms_table(rows, out_path=None, baseline_path=None, bar_band=BAR_BAND_S,
                        % (bar_band[0], bar_band[1], 100 * margin)) if wins else \
                       ("does NOT beat its control(s) on the %g-%g s bar by %.0f %%: efficiency, not a "
                        "different answer" % (bar_band[0], bar_band[1], 100 * margin))
+        rule = r.get("candidate_rule") or {}
+        if rule:
+            # a form assembled from other forms carries its own candidacy rule with the sentence that
+            # states it: its controls were the passes its rows were made by, and this row's own bar --
+            # the better of its two rows -- cannot say whether each of those rows beat its control
+            wins = bool(rule.get("candidate"))
+            verdict = str(rule.get("verdict") or verdict)
         out.append(dict(
             site=r.get("site"), form=form, kind=r.get("kind"), rate_hz=r.get("rate_hz"),
             product=Path(str(r.get("product"))).name, status=r.get("status"),

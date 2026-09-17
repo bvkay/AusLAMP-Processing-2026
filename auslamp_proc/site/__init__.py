@@ -3,8 +3,8 @@
 The modules are ordered as workbook 05 reads them: masks (the magnetics by day, the fleet and clock tests,
 the quality map, the day masks, the component masks, the best hours and the windows), centre (the shared
 centre and the arm diagonal), variants (the notch as a cache variant), replace (a magnetic channel borrowed
-per channel), forms (one product per form in the run layout) and deliver (the tipper-only product and the
-forms table).
+per channel), forms (one product per form in the run layout), deliver (the tipper-only product and the forms
+table) and recipe (one frame and one rule per impedance row, composed into one product).
 
 The control rule every selection in this package obeys: a selection of hours or days carries a random
 selection of the same size drawn without replacement from the same scored pool under a named seed, a
@@ -16,4 +16,4 @@ delivered product scored against both controls.
 from __future__ import annotations
 
 FORMS = ("whole", "window", "daymask", "hours", "diagonal", "notched",
-         "replace", "lender", "tipper_only")
+         "replace", "lender", "tipper_only", "recipe")

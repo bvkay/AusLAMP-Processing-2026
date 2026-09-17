@@ -666,3 +666,64 @@ def forms_bars(table, site, out, band=(10, 1000), margin=0.2, figsize=(13, 8)):
                   "cent; %d of %d form(s) are. A form sitting on the whole record's own bar bought "
                   "efficiency and not a different answer, which is a reading and not a failure."
                   % (band[0], band[1], 100 * margin, int(d.candidate.sum()), len(d)), out)
+
+
+# ---------------------------------------------------------------- the recipe
+
+def recipe_spans(coh, rows, site, out, coh_min=0.5, title="", caption="", figsize=(13, 7)):
+    """The hourly coherence of each recorded line with its H, and each row's stretch drawn over it.
+
+    `coh` is site.recipe.hour_coherence's table and `rows` is [(label, colour, hatch, [(t_a, t_b), ...])] in
+    unix seconds, the rows of spans drawn above the series in the order given.
+    """
+    pairs = (("xy", "Ex with Hy"), ("yx", "Ey with Hx"))
+    if coh is None or not len(coh):
+        fig, ax = _fig(1, 1, figsize=figsize)
+        ax.text(0.5, 0.5, "the record holds no whole UTC hour to score", ha="center")
+        return finish(fig, title or "%s: the recipe's stretches" % site, caption, out)
+    t0 = float(coh.t_start.iloc[0])
+    days = (np.asarray(coh.t_start, float) - t0) / DAY
+    fig, ax = _fig(len(pairs), 1, figsize=figsize, sharex=True)
+    ax = np.atleast_1d(ax)
+    top = 1.02 + 0.055 * max(1, len(rows)) + 0.02
+    for k, (comp, label) in enumerate(pairs):
+        a = ax[k]
+        a.plot(days, np.asarray(coh["coh_%s" % comp], float), color=SPAN_COLOUR[comp], lw=0.6, label=label)
+        a.axhline(float(coh_min), color="0.3", ls="--", lw=1, label="%.2f" % float(coh_min))
+        a.set(ylabel="%s coherence" % label, ylim=(0, top), yticks=[0, 0.25, 0.5, 0.75, 1.0])
+        a.grid(alpha=GRID_ALPHA)
+        for j, (name, colour, hatch, items) in enumerate(rows):
+            lo, hi = 1.02 + 0.055 * j, 1.06 + 0.055 * j
+            for i, (ta, tb) in enumerate(items):
+                a.fill_between([(ta - t0) / DAY, (tb - t0) / DAY], lo, hi, color=colour, alpha=0.75, lw=0,
+                               hatch=hatch, label=(name if (i == 0 and k == 0) else None))
+        a.legend(fontsize=7, loc="lower left", ncol=2 + len(rows))
+    ax[-1].set_xlabel("days from %s UTC" % _iso(t0))
+    return finish(fig, title or "%s: the recipe's stretches over the coherence they were chosen on" % site,
+                  caption, out)
+
+
+def recipe_product(curves, site, out, join_s=None, title="", caption="", period_range=(1, 50000),
+                   figsize=(13, 8)):
+    """The assembled product against the baseline and the controls, with the y row's last period marked.
+
+    `curves` is [(label, TFData, colour, linestyle)] as for form_panels. The vertical line is the longest
+    period the y row reaches: above it the assembled file carries the EDI empty value on that row, and the
+    two rows of the product stop being the same measurement of the same span of time.
+    """
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(2, 2, figsize=figsize, sharex=True)
+    ax_rho_xy, ax_rho_yx = axes[0]
+    ax_ph_xy, ax_ph_yx = axes[1]
+    rho = []
+    for label, tf, colour, ls in curves:
+        if tf is None:
+            continue
+        rho += tf_panels(ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx, None, None, tf, label,
+                         colour=colour, ls=ls, marker="o", period_range=period_range, bars=True)
+    _dress((ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx, None, None), rho, period_range)
+    if join_s and np.isfinite(join_s):
+        for a in (ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx):
+            a.axvline(float(join_s), color="0.3", ls="-.", lw=1)
+    ax_rho_xy.legend(fontsize=8, loc="best")
+    return finish(fig, title or "%s: the assembled recipe" % site, caption, out)

@@ -112,6 +112,27 @@ comparison_positions:
 checks:
   first_data_file: {}
 
+  # The window the campaign's analyst chose at Q58N and the product built on it, for workbook 05's recipe
+  # section. recipe_window is what the analyst's rule returned -- the longest contiguous stretch with both
+  # recorded electric lines above 0.5 coherence with the magnetic field at 20-200 s -- and the workbook's own
+  # rule must land within tolerance_h of each end of it. A site with no entry reads UNJUDGED on that check.
+  recipe_window:
+    tolerance_h: 1
+    Q58N:
+      t_start: "2026-03-22T12:00:00+00:00"
+      t_end: "2026-03-23T02:00:00+00:00"
+      source: "D:/BEN/MTH5_Aurora_mt-io_2026/scripts/processing/PROJECT_JOURNAL.md :1678-1683 and
+        Q58N_EXPLANATION_2026-09-07.md :44-46, 2026-09-07; scratch q58n_clean_window_10hz.py"
+  # The campaign's product of record for the same composition, read-only, for the comparison alone.
+  recipe_comparison:
+    Q58N:
+      path: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/processed_2026/final_2026-09-09/products_of_record/Q58N_diagonal_frame_salvage.edi
+      frame: diagonal
+      band_s: [5, 100]
+      note: "the September 2026 campaign's salvage of Q58N in the arm-diagonal frame (-52.9 deg): row 1 and
+        the tipper from the 1 Hz diagonal over half the record, row 2 from the 14 h clean window at 10 Hz
+        rotated and interpolated, the periods above 1,066 s written as the EDI 1e32 fill"
+
 floors:
   member_chunk_days: 0.5
   align_fallback_s: 43200

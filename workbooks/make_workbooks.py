@@ -3092,7 +3092,7 @@ SURVEY = "queensland_phase1"  # any folder under surveys/: queensland_phase2 | q
 SITE = "Q53N"                 # one site; Q53N carries a shared centre and sound magnetics (see below)
 RUN = "site"                  # the forms' run name; the folder is <work_root>/<SITE>/<RUN>_<stamp>
 STAMP = None                  # None = the newest <RUN>_* folder if there is one, else a new stamp
-BASELINE_KIND = "remote"      # the reference every form is built on: single | remote | stack | obs | stack_obs
+BASELINE_KIND = "remote"      # the reference every form is built on: remote | stack | obs | stack_obs
 RATES = [1, 10]               # [1] is the 1 Hz lane alone; 10 adds the notch, the spike screen and the short end
 COMPONENTS = ["xy", "yx"]     # the components the masks, the windows and the hours are selected for
 REDO = False                  # True remakes a form whose EDI is already in the run folder
@@ -3152,7 +3152,7 @@ from auslamp_proc.process import aurora_run as AR
 from auslamp_proc.process.edi import TEN_HZ_CAVEAT
 from auslamp_proc.process.transients import MIN_SEGMENT_S as TR_MIN_SEGMENT_S
 from auslamp_proc.site import centre as CE, deliver as DL, forms as FM, masks as MK
-from auslamp_proc.site import replace as RP, variants as VA
+from auslamp_proc.site import recipe as RC, replace as RP, variants as VA
 from auslamp_proc.figures import site_forms as FF
 from auslamp_proc.raw import cache as CACHE
 
@@ -3267,7 +3267,8 @@ One site is taken apart: which days its magnetics are usable, where in time each
 using, whether its two lines share a centre electrode, whether a tone or a spike sits in the record, and
 whether a magnetic channel is worth borrowing from a neighbour. Each answer is built as a form -- one pass
 over the same site with one thing changed -- and every form lands in the same run folder as a product
-carrying the header a workbook 03 product carries.
+carrying the header a workbook 03 product carries. Section 10 then composes the answers: one frame and, per
+impedance row, which hours that row is estimated on and at which rate, assembled into one product.
 
 The rule this workbook is written around: a selection of hours or days is never delivered without its
 controls. Each selection carries
@@ -3291,9 +3292,10 @@ linear model already fits: for a dead electrode that is the truth, for a merely 
 estimate towards the quiet hours. The thresholds therefore sit well below live -- 0.5, where a live line
 reads above 0.85 -- and the component mask asks for a sustained run rather than a single low hour.
 
-Seven checks state their failure criterion in bold above the cell and print a verdict below it. A check that
-scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported FAILED and is
-not revised afterwards.
+Nine checks state their failure criterion in bold above the cell and print a verdict below it. A check that
+scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported as FAIL and is
+not revised afterwards. The recipe's window check is scored only where `survey.yaml` records a window for the
+site; elsewhere it prints the window it found as a reading and writes no verdict.
 
 The site the parameter cell opens on is AusLAMP Queensland Phase 1's Q53N: its two electric lines read an
 Ex-Ey coherence of 0.95-0.99 on every day of the record while its magnetometer passes the DC test against
@@ -4301,11 +4303,11 @@ else:
              read_text, turn_text, found_text))
 '''),
 
-("md", r"""## 7. The notch and the spike screen
+("md", r"""## 7. The notch and the 10 Hz forms
 
-Both are cache variants written beside the original, never in place, so a pass on a variant differs from a
-pass on the original only in the channels that fired. A channel that does not fire is copied through and its
-sha256 is compared with the source's, which is what makes the control meaningful.
+The notched cache is written beside the original, never in place, so a pass on it differs from a pass on the
+original only in the channels that fired. A channel that does not fire is copied through and its sha256 is
+compared with the source's, which is what makes the control meaningful.
 
 The tone at 1.000 Hz and its 2.000 Hz harmonic is decided per worst day and per channel. Per worst day
 because the tone is intermittent: a whole-record statistic misses a fault that destroys the band containing
@@ -4370,26 +4372,41 @@ show here and nowhere else."""),
 ("code", '''RATIO = pd.DataFrame()
 if NOTCH.get("path"):
     kind10 = BASELINE_KIND
-    if kind10 != "single" and not (WORK / "references" / "10hz" / ("%s_%s.npz" % (kind10, SITE))).exists():
-        print("no 10 Hz %s reference store for %s: both passes use the single station, which is one "
-              "reference for both and is what the control asks for" % (kind10, SITE))
-        kind10 = "single"
+    NO_STORE_10 = not (WORK / "references" / "10hz" / ("%s_%s.npz" % (kind10, SITE))).exists()
+    if NO_STORE_10:
+        # the single station is not a kind of this package, so a missing store refuses the form rather
+        # than falling back to one: a product estimated on the site's own H is biased by its own noise
+        print("no 10 Hz %s reference store for %s: both 10 Hz forms are refused with that reason"
+              % (kind10, SITE))
     # what each cache leaves against the reference it will be passed with, measured BEFORE any pass: the
     # mask, the reference's own coverage and the run floor, cut into the runs Aurora would be handed. A
     # cache that leaves nothing is refused here with its numbers, rather than crashing the estimator later
-    COVER = {n: FM.coverage(sv, SITE, kind=kind10, rate=10, variant=v)
-             for n, v in (("whole10", ""), ("notched", "notched"))}
-    print("what each 10 Hz cache leaves against the %s reference, before any pass: the mask, the reference's "
-          "own coverage, and the record cut into runs at the %g s floor"
-          % (KIND_WORD.get(kind10, kind10), TR_MIN_SEGMENT_S))
-    for name in ("whole10", "notched"):
-        c = COVER[name]
-        print("   %-9s %6.2f d over %3d run(s) of the record's %.2f d; %.1f %% of the samples kept, %.1f %% "
-              "of the record lost to the floor" % (name, c["days"], c["n_runs"], c["record_days"],
-                                                   100 * c["kept_frac"], 100 * c["floor_dropped_frac"]))
+    COVER = ({} if NO_STORE_10 else
+             {n: FM.coverage(sv, SITE, kind=kind10, rate=10, variant=v)
+              for n, v in (("whole10", ""), ("notched", "notched"))})
+    if COVER:
+        print("what each 10 Hz cache leaves against the %s reference, before any pass: the mask, the "
+              "reference's own coverage, and the record cut into runs at the %g s floor"
+              % (KIND_WORD.get(kind10, kind10), TR_MIN_SEGMENT_S))
+        for name in ("whole10", "notched"):
+            c = COVER[name]
+            print("   %-9s %6.2f d over %3d run(s) of the record's %.2f d; %.1f %% of the samples kept, "
+                  "%.1f %% of the record lost to the floor"
+                  % (name, c["days"], c["n_runs"], c["record_days"], 100 * c["kept_frac"],
+                     100 * c["floor_dropped_frac"]))
     print()
     REFUSED = []
     for name, variant in (("whole10", ""), ("notched", "notched")):
+        if NO_STORE_10:
+            why = ("refused: there is no 10 Hz %s reference store for %s, and the single station is not a "
+                   "kind of this package" % (kind10, SITE))
+            FORM_ROWS.append(FM.refused_row(sv, SITE, name, OUT, kind10, 10, PARAMS, why,
+                                            controls=(["whole10"] if variant else []),
+                                            criterion="not passed: the reference this form needs is not "
+                                                      "on disk"))
+            REFUSED.append((name, why))
+            print("   %s is NOT passed -- %s" % (name, why))
+            continue
         if COVER[name]["empty"]:
             why = FM.refusal_sentence(COVER[name], COVER["whole10"],
                                       what=("the %s screen" % variant) if variant else "the mask")
@@ -4767,12 +4784,481 @@ else:
           % (", ".join(dead_lines) or "no line dead"))
 '''),
 
-("md", r"""## 10. The forms table
+("md", r"""## 10. The recipe
+
+The sections above each change one thing and score it. This one composes them: a frame for the product and,
+per impedance row, which hours that row is estimated on and at which sample rate. One row can come from the
+whole record at 1 Hz and the other from a short window at 10 Hz, and the two are assembled into one tensor.
+
+The cell below is the one to edit. `frame` is the frame both rows are passed in, so nothing is turned after
+the assembly: `native` is the site's own sensor frame after the mean-field rotation, `diagonal` is section
+6's arm diagonal. `hours` of a row is one of
+
+| hours | what it selects |
+|---|---|
+| `whole` | the record |
+| `f05`, `f10`, `f25` | workbook 03's hour selections (`process.selection`), scored on this frame's cache at this row's rate over 1-30 s, each carrying its `r25` control |
+| `window:coherent` | the longest contiguous stretch in which both recorded lines read above `WINDOW_COH` with the magnetic field each couples to -- Ex with Hy, Ey with Hx -- over 20-200 s, per whole UTC hour |
+| `window:<start UTC>/<hours>` | a stretch named in the cell, as an ISO UTC start and a count of hours |
+
+The window is read on the two recorded lines -- Ex and Ey from the site's own 1 Hz cache as laid -- and never
+on the frame's variant of them, whatever frame the rows are passed in: the window exists to find where both
+electrodes were measuring, which is a fact about the electrodes and not about the frame their voltages are
+later combined in. It is read at 1 Hz whatever a row's rate, because 200 s is measured on the long record.
+Every window and every selection carries a control at the same cost: a stretch of the same length placed at
+random elsewhere in the record under the seed, or the `r25` draw of the same number of hours.
+
+A row at 10 Hz needs the 10 Hz cache of the site, the frame's variant of that cache, and the reference store
+of BASELINE_KIND at 10 Hz, which is the remote's own 10 Hz record on this site's grid. Where one of the three
+is not on disk the row is refused with the reason and no pass is run, by the rule of section 7: the single
+station is not a kind of this package, so a missing store is not fallen back from.
+
+The assembly. The x row supplies Zx'x' and Zx'y' and the y row Zy'x' and Zy'y'. The x row's product is the
+base, so its period grid, its station block and its position carry through, and the y row is matched onto
+that grid where the two grids are one and interpolated in log period onto it where they are not. A period the
+y row's own grid does not reach carries the EDI empty-data value 1e32, which `products.read_tf` masks per
+component, so the assembled file reads back with that row empty above the y row's longest period rather than
+carrying a number nothing measured. A y row at 10 Hz reaches below the x row's shortest period, and those
+periods are not carried either: one file holds one grid, and the grid is the x row's. The tipper is the named
+row's. The header carries one `recipe=` line per row with the frame, the hours, the rate, the window and the
+control's seed.
+
+Where a row asks for what a section above has already built -- the whole record at 1 Hz in the native frame
+is the baseline, and in the diagonal frame it is section 6's `diagonal` form -- that product is taken and no
+second pass of the same specification is run.
+
+What this composes at AusLAMP Queensland Phase 2's Q58N, whose two lines share a noisy centre electrode: the
+x' row and the tipper from the arm diagonal over the whole record at 1 Hz, and the y' row from both recorded
+lines over the 14 h the window rule finds, at 10 Hz against the same remote. That is the composition the
+campaign reached by hand for this site, and check 1 below scores the rule written here against the window it
+used, recorded in `survey.yaml`. At the shipped Q53N the recipe is frame native with both rows the whole
+record at 1 Hz, which is the baseline itself and buys nothing: the section is there to be edited."""),
+
+("code", '''# ---- the recipe: one composition of the sections above, one row at a time ----
+RECIPE = dict(frame="native", x=dict(hours="whole", rate=1), y=dict(hours="whole", rate=1), tipper="x")
+# frame     native | diagonal (section 6's arm diagonal); both rows are passed in it
+# x, y      the x' and y' rows (x and y where the frame is native). hours is
+#           whole | f05 | f10 | f25 | window:coherent | window:<start UTC>/<hours>; rate is 1 or 10
+# tipper    which row's pass the tipper is taken from: x | y
+WINDOW_COH = 0.5   # <- both recorded lines above this at 20-200 s, per whole UTC hour, is inside a window
+'''),
+
+("md", r"""The frame, the variant cache each rate needs, the window the rule finds, and what each row
+resolves to. The five longest coherent stretches are printed beside the one chosen, so the margin between the
+longest and the next is visible: a rule that picks a 14 h stretch over an 11 h one is a different claim from
+one that picks 14 h over 3 h."""),
+
+("code", '''FRAME = RC.frame_spec(sv, SITE, RECIPE["frame"])
+RATES_USED = sorted({int(RECIPE[k].get("rate", 1)) for k in ("x", "y")})
+print("frame        %s -- %s" % (FRAME["frame"], FRAME["note"]))
+print("rows         x': %s at %g Hz; y': %s at %g Hz; the tipper from the %s row"
+      % (RECIPE["x"]["hours"], RECIPE["x"]["rate"], RECIPE["y"]["hours"], RECIPE["y"]["rate"],
+         RECIPE["tipper"]))
+NE_CACHE = {}
+for _r in RATES_USED:
+    if FRAME["variant"] == "ne" and VA.cache_path(WORK, SITE, _r).exists():
+        _t = time.time()
+        NE_CACHE[_r] = CE.ne_variant(sv, SITE, _r, force=REDO)
+        print("   the %d Hz arm-diagonal cache in %.0f s: %s (%s; exact on %s finite sample(s): %s)"
+              % (_r, time.time() - _t, NE_CACHE[_r].get("path"),
+                 "rewritten at these arm lengths" if NE_CACHE[_r].get("refreshed") else
+                 "written" if NE_CACHE[_r].get("written") else "already on disk and checked again",
+                 NE_CACHE[_r].get("n_finite"), NE_CACHE[_r].get("exact")))
+t = time.time()
+COH_HOURS = RC.hour_coherence(sv, SITE, RC.WINDOW_RATE)
+COHERENT = RC.coherent_window(COH_HOURS, WINDOW_COH)
+print()
+print("the window rule over %d whole UTC hour(s) of the %g Hz record in %.0f s"
+      % (len(COH_HOURS), RC.WINDOW_RATE, time.time() - t))
+print("   %s" % COHERENT["reason"])
+for _h, _a, _b in COHERENT["runs"][:5]:
+    print("   %4d h  %s .. %s UTC" % (_h, pd.Timestamp(_a, unit="s"), pd.Timestamp(_b, unit="s")))
+'''),
+
+("code", '''ROWS = {}
+for key in ("x", "y"):
+    spec = RECIPE[key]
+    hours, rate = str(spec.get("hours", "whole")), int(spec.get("rate", 1))
+    row = dict(row=key, hours=hours, rate=rate, seed=SEED + (0 if key == "x" else 1), window=None,
+               control_window=None, keep=None, control_keep=None, control=None, selection=None,
+               spans=[], control_spans=[], keep_name="the record", control_keep_name="", reuse="",
+               product="", refused=RC.missing_inputs(sv, SITE, rate, FRAME["variant"], BASELINE_KIND))
+    if not row["refused"] and hours.startswith("window"):
+        w = COHERENT if hours == "window:coherent" else RC.named_window(hours)
+        days = ((w["t_end"] - w["t_start"]) / 86400.0) if w.get("t_start") else 0.0
+        if not w.get("t_start"):
+            row["refused"] = "refused: %s" % w["reason"]
+        elif days < FM.min_window_days(sv):
+            row["refused"] = ("refused: the window is %.2f d, under the %g d floor in survey.yaml"
+                              % (days, FM.min_window_days(sv)))
+        else:
+            c = RC.control_window(t0_rec, n_rec, w, row["seed"])
+            row.update(window=w, control_window=c, control="recipe_%s_control" % key,
+                       spans=[(w["t_start"], w["t_end"])], control_spans=[(c["t_start"], c["t_end"])],
+                       keep_name="%s, %.2f h" % (hours, (w["t_end"] - w["t_start"]) / 3600.0),
+                       control_keep_name="a stretch of the same length elsewhere in the record, seed %d"
+                                         % row["seed"])
+    elif not row["refused"] and hours in RC.SELECTION_KEYS:
+        sel = RC.selection_hours(sv, SITE, hours, rate=rate, variant=FRAME["variant"], seed=SEED,
+                                 elines=ELINES)
+        row.update(selection=sel, keep=sel[hours]["keep"], control_keep=sel[RC.CONTROL_KEY]["keep"],
+                   control="recipe_%s_control" % key,
+                   spans=[tuple(x) for x in sel[hours]["hours"]],
+                   control_spans=[tuple(x) for x in sel[RC.CONTROL_KEY]["hours"]],
+                   keep_name="the best %.0f %% of %d scored hour(s) by %g-%g s coherence"
+                             % (100 * sel[hours]["fraction"], sel["scored"], sel["band_s"][0],
+                                sel["band_s"][1]),
+                   control_keep_name="%d hour(s) drawn at random from the same pool, seed %d"
+                                     % (sel[RC.CONTROL_KEY]["n_hours"], SEED))
+    elif not row["refused"] and hours != "whole":
+        row["refused"] = ("refused: hours=%s is none of whole, %s, window:coherent or window:<start>/<hours>"
+                          % (hours, ", ".join(RC.SELECTION_KEYS)))
+    if hours == "whole":
+        row["spans"] = [(t0_rec, t0_rec + int(n_rec))]
+        reuse = {"native": "whole", "diagonal": "diagonal"}[FRAME["frame"]]
+        got = made_product(reuse) if rate == 1 else None
+        if got:
+            row.update(reuse=reuse, product=str(got["product"]))
+    ROWS[key] = row
+cols = ["row", "hours", "rate", "seed", "window_start", "window_end", "days", "control_start", "control",
+        "reuse", "refused"]
+print(pd.DataFrame([dict(
+    row="%s (%s)" % (r["row"], RC.ROW_LABEL[r["row"]]), hours=r["hours"], rate=r["rate"], seed=r["seed"],
+    window_start=(pd.Timestamp(r["window"]["t_start"], unit="s") if r["window"] else ""),
+    window_end=(pd.Timestamp(r["window"]["t_end"], unit="s") if r["window"] else ""),
+    days=round(sum(b - a for a, b in r["spans"]) / 86400.0, 3),
+    control_start=(pd.Timestamp(r["control_window"]["t_start"], unit="s") if r["control_window"] else ""),
+    control=(r["control"] or ""), reuse=(r["reuse"] or ""), refused=r["refused"][:70])
+    for r in ROWS.values()])[cols].to_string(index=False))
+for r in ROWS.values():
+    print("   %s: %s" % (r["row"], r["keep_name"]))
+'''),
+
+("md", r"""The two hourly coherence series the window rule reads, with each row's stretch drawn above them
+and its control beneath it. What to look for is the chosen stretch sitting where both series are above the
+line at the same time -- one line alone above it is not a window, because the second row needs both
+electrodes -- and the control landing somewhere the two series are neither obviously better nor worse: the
+two cost the same, so the difference between their products is what the stretch bought."""),
+
+("code", '''spans = []
+for key in ("x", "y"):
+    r = ROWS[key]
+    spans.append(("%s row: %s" % (RC.ROW_LABEL[key], r["hours"]), FF.SPAN_COLOUR[RC.ROW_COMPONENT[key]],
+                  None, r["spans"][:400]))
+    if r["control_spans"]:
+        spans.append(("%s control, seed %d" % (RC.ROW_LABEL[key], r["seed"]), "0.4", "//",
+                      r["control_spans"][:400]))
+fig = FF.recipe_spans(COH_HOURS, spans, SITE, OUT / "25_recipe_windows.png", coh_min=WINDOW_COH,
+                      title="%s: the recipe's stretches over the coherence they were chosen on" % SITE,
+                      caption="The squared coherence of each recorded electric line with the magnetic field "
+                              "it couples to, over %g-%g s, one value per whole UTC hour on the %g Hz cache "
+                              "as laid, with the %.2f line drawn. Above each panel: the stretch each row of "
+                              "the recipe is estimated on, and beneath it that row's control at the same "
+                              "cost. The window rule takes the longest contiguous run of hours with both "
+                              "lines above the line; %d hour(s) of %d scored are above it here, in %d run(s)."
+                              % (RC.WINDOW_BAND_S[0], RC.WINDOW_BAND_S[1], RC.WINDOW_RATE, WINDOW_COH,
+                                 COHERENT["n_hours_above"], COHERENT["n_hours_scored"], COHERENT["n_runs"]))
+WRITTEN.append(OUT / "25_recipe_windows.png")
+display(Image(filename=str(OUT / "25_recipe_windows.png")))
+'''),
+
+("md", r"""One pass per row and one per control, each measured against the reference before it is run: the
+mask, the reference's own coverage and the record cut into runs at the 3,600 s floor. A row whose cache
+leaves nothing is refused there with those numbers rather than crashing the estimator, and a row whose inputs
+are not on disk was refused above. The assembled product is then written from the two rows."""),
+
+("code", '''for key in ("x", "y"):
+    row = ROWS[key]
+    name = "recipe_%s" % key
+    crit = ("the %s row: %s at %g Hz in the %s frame"
+            % (RC.ROW_LABEL[key], row["hours"], row["rate"], FRAME["frame"]))
+    if row["refused"]:
+        FORM_ROWS.append(FM.refused_row(sv, SITE, name, OUT, BASELINE_KIND, row["rate"], PARAMS,
+                                        row["refused"],
+                                        controls=([row["control"]] if row["control"] else []),
+                                        criterion="not passed: " + crit))
+        print("   %-20s is NOT passed -- %s" % (name, row["refused"]))
+        continue
+    if row["reuse"]:
+        FORM_ROWS.append(dict(site=SITE, form=name, kind=BASELINE_KIND, rate_hz=float(row["rate"]),
+                              params=PARAMS, product=row["product"], controls="", seed=None,
+                              status="exists", days=None, n_runs=None, seconds=None, error="",
+                              criterion=crit + "; the %s form's product, which is the same specification, "
+                                               "and no second pass of it is run" % row["reuse"]))
+        print("   %-20s takes the %s form's product: %s"
+              % (name, row["reuse"], Path(row["product"]).name))
+        continue
+    jobs = [(name, row["window"], row["keep"], row["keep_name"], crit,
+             [row["control"]] if row["control"] else [])]
+    if row["control"]:
+        jobs.append((row["control"], row["control_window"], row["control_keep"], row["control_keep_name"],
+                     "the control of the %s row at the same cost" % RC.ROW_LABEL[key], []))
+    for job_name, window, keep, keep_name, criterion, controls in jobs:
+        extra = RC.window_mask(t0_rec, n_rec, window) if window else keep
+        cov = FM.coverage(sv, SITE, kind=BASELINE_KIND, rate=row["rate"], variant=FRAME["variant"],
+                          apply_e_signs=FRAME["apply_e_signs"], keep_extra=extra, keep_name=keep_name)
+        print("   %-20s %6.2f d over %3d run(s) of the record's %.2f d, measured before the pass"
+              % (job_name, cov["days"], cov["n_runs"], cov["record_days"]))
+        if cov["empty"]:
+            why = ("refused: %s leaves %d run(s) of %g s against the %s reference, of a record of %.2f d"
+                   % (keep_name, cov["n_runs"], cov["min_segment_s"],
+                      KIND_WORD.get(BASELINE_KIND, BASELINE_KIND), cov["record_days"]))
+            FORM_ROWS.append(FM.refused_row(sv, SITE, job_name, OUT, BASELINE_KIND, row["rate"], PARAMS,
+                                            why, cov=cov, controls=controls,
+                                            criterion="not passed: the floor leaves no run to hand Aurora"))
+            print("      NOT passed -- %s" % why)
+            continue
+        form(job_name, kind=BASELINE_KIND, rate=row["rate"], variant=FRAME["variant"],
+             apply_e_signs=FRAME["apply_e_signs"], turn_ne=FRAME["turn_ne"],
+             turn_angle_deg=FRAME["turn_angle_deg"],
+             window=((window["t_start"], window["t_end"]) if window else None),
+             keep_extra=(None if window else keep), keep_name=keep_name, seed=row["seed"],
+             controls=controls, criterion=criterion,
+             redo=bool(REDO or (NE_CACHE.get(row["rate"]) or {}).get("refreshed")),
+             extra_lines=RC.recipe_lines(RECIPE, ROWS))
+'''),
+
+("code", '''ASSEMBLED, ROW_READINGS = None, []
+for key in ("x", "y"):
+    r = made_product("recipe_%s" % key)
+    if r is None:
+        continue
+    comp = RC.ROW_COMPONENT[key]
+    ctrl_name = ROWS[key]["control"]
+    ctrl = made_product(ctrl_name) if ctrl_name else None
+    bar_row = DL.bar(read(r["product"]), comp, *BAR_BAND)
+    bar_ctrl = DL.bar(read(ctrl["product"]), comp, *BAR_BAND) if ctrl else np.nan
+    # each row on its own element and never on the product's bar, which is the better of the two rows and
+    # would answer for the row a window was not chosen for
+    ROW_READINGS.append(dict(row=RC.ROW_LABEL[key], form="recipe_%s" % key, element="Z%s" % comp,
+                             hours=ROWS[key]["hours"], rate_hz=ROWS[key]["rate"], days=r.get("days"),
+                             bar=bar_row, control=(ctrl_name or "none"), control_bar=bar_ctrl,
+                             promoted=(DL.beats(bar_row, bar_ctrl, BAR_MARGIN)
+                                       if np.isfinite(bar_ctrl) else None)))
+rx, ry = made_product("recipe_x"), made_product("recipe_y")
+if rx and ry:
+    for key, r in (("x", rx), ("y", ry)):
+        ROWS[key]["product"] = str(r["product"])
+    out = OUT / FM.product_name(SITE, "recipe", BASELINE_KIND, ROWS["x"]["rate"], PARAMS)
+    ASSEMBLED = RC.assemble(rx["product"], ry["product"], out, tipper=RECIPE["tipper"],
+                            lines=RC.recipe_lines(RECIPE, ROWS))
+    scored = [d for d in ROW_READINGS if d["promoted"] is not None]
+    me = CENTRE.get(SITE, {})
+    model_ok = True if FRAME["frame"] == "native" else bool(me.get("model_holds"))
+    why = []
+    # a recipe whose rows are all the whole record carries no control at all, so it carries no evidence of
+    # its own and is read like every other form with no control: the vacuous "all of nothing was beaten" is
+    # not a promotion
+    if not scored:
+        why.append("no row carries a control, because every row is the whole record, so the assembled "
+                   "product carries no evidence of its own")
+    elif not all(d["promoted"] for d in scored):
+        why.append("the %s row does not beat its control on the %g-%g s bar of %s by %.0f %%"
+                   % (", ".join(d["row"] for d in scored if not d["promoted"]), BAR_BAND[0], BAR_BAND[1],
+                      ", ".join(d["element"] for d in scored if not d["promoted"]), 100 * BAR_MARGIN))
+    if not model_ok:
+        why.append("the shared-centre model does not hold at %s (residual coherence %.2f, gain ratio "
+                   "%.2f), and the diagonal frame rests on it"
+                   % (SITE, me.get("resid_coh", np.nan), me.get("gain_ratio", np.nan)))
+    bars = "; ".join("%s %.4f against %.4f" % (d["row"], d["bar"], d["control_bar"]) for d in scored)
+    frame_held = ("the shared-centre model holds at %s, which the diagonal frame rests on" % SITE
+                  if FRAME["frame"] == "diagonal" else "the frame is the site's own")
+    verdict = ("NOT a candidate: %s" % "; ".join(why)) if why else \\
+              ("a candidate: every row carrying a control beats it on the %g-%g s bar of its own element by "
+               "at least %.0f %% (%s), and %s"
+               % (BAR_BAND[0], BAR_BAND[1], 100 * BAR_MARGIN, bars, frame_held))
+    FORM_ROWS.append(dict(site=SITE, form="recipe", kind=BASELINE_KIND,
+                          rate_hz=float(ROWS["x"]["rate"]), params=PARAMS, product=str(out), controls="",
+                          seed=None, status="made", days=None, n_runs=None, seconds=None, error="",
+                          criterion="the %s frame: Zx'x' and Zx'y' from the x row, Zy'x' and Zy'y' from the "
+                                    "y row, the tipper from the %s row"
+                                    % (FRAME["frame"], RECIPE["tipper"]),
+                          candidate_rule=dict(candidate=bool(not why), verdict=verdict)))
+    WRITTEN.append(out)
+    print("   the y row covers %d of %d period(s), %.4g to %.4g s; above that the row carries the %g fill"
+          % (ASSEMBLED["n_y_periods"], ASSEMBLED["n_periods"], ASSEMBLED["y_min_s"], ASSEMBLED["y_max_s"],
+             ASSEMBLED["fill"]))
+    for ln in RC.recipe_lines(RECIPE, ROWS):
+        print("   %s" % ln)
+    print("   the assembled product is %s" % verdict)
+else:
+    print("no assembled product: the %s row was not made"
+          % ", ".join(k for k in ("x", "y") if not made_product("recipe_%s" % k)))
+'''),
+
+("md", r"""The assembled product against the whole-record baseline and against each row's control. What to
+look for is the x' panels lying on the curve the row they came from drew, the y' panels stopping at the
+dash-dotted line -- the longest period that row reaches, above which the file carries the empty value -- and
+each control sitting off the row it controls by more than its error bars, which is what says the stretch was
+worth choosing."""),
+
+("code", '''curves = [("whole, the baseline", read(BASE), "k", "-")] if BASE else []
+if ASSEMBLED:
+    curves.append(("recipe", read(ASSEMBLED["path"]), "C0", "-"))
+for j, key in enumerate(("x", "y")):
+    r = made_product("recipe_%s_control" % key)
+    if r:
+        curves.append(("%s control" % RC.ROW_LABEL[key], read(r["product"]), "C%d" % (j + 1), ":"))
+if ASSEMBLED and len(curves) > 1:
+    fig = FF.recipe_product(curves, SITE, OUT / "26_recipe_product.png",
+                            join_s=ASSEMBLED["y_max_s"],
+                            title="%s: the assembled recipe against the baseline and the controls" % SITE,
+                            caption="The assembled product in the %s frame: the first row from the x row's "
+                                    "pass (%s at %g Hz) and the second from the y row's (%s at %g Hz), with "
+                                    "the tipper from the %s row, against the whole-record 1 Hz baseline in "
+                                    "black and against each row's control at the same cost, dotted. %s. The "
+                                    "dash-dotted line at %.4g s is the longest period the y row reaches; "
+                                    "above it that row carries the EDI empty value and nothing is drawn. The "
+                                    "two panels are two rows of one tensor and not two estimates of one "
+                                    "quantity, so they are not expected to lie on each other, and where the "
+                                    "recipe's frame is not the site's own the black curve is a different "
+                                    "quantity again and is drawn for scale alone."
+                                    % (FRAME["frame"], ROWS["x"]["hours"], ROWS["x"]["rate"],
+                                       ROWS["y"]["hours"], ROWS["y"]["rate"], RECIPE["tipper"],
+                                       ASSEMBLED["how"], ASSEMBLED["y_max_s"]))
+    WRITTEN.append(OUT / "26_recipe_product.png")
+    display(Image(filename=str(OUT / "26_recipe_product.png")))
+else:
+    print("no assembled product, so there is nothing to draw against the baseline")
+'''),
+
+("md", r"""**Where `survey.yaml` `checks.recipe_window` records a window for this site, this check fails if
+the rule's window does not land within `tolerance_h` of it at each end.** The rule the package writes has to
+reproduce the choice the campaign made by hand, and the only site where that comparison exists is Q58N of
+AusLAMP Queensland Phase 2, whose recorded window is 2026-03-22 12:00 to 2026-03-23 02:00 UTC. Where no window
+is on record the cell prints the one the rule found as a reading and writes no verdict."""),
+
+("code", '''want_all = (sv.cfg.get("checks") or {}).get("recipe_window") or {}
+tol_h = float(want_all.get("tolerance_h", 1))
+want = want_all.get(SITE) or {}
+found = (("the rule found %d h, %s to %s UTC"
+          % (COHERENT["hours"], pd.Timestamp(COHERENT["t_start"], unit="s"),
+             pd.Timestamp(COHERENT["t_end"], unit="s"))) if COHERENT["t_start"]
+         else ("the rule found no stretch: %s" % COHERENT["reason"]))
+if not want:
+    # a reading and no verdict: survey.yaml records no window for this site, so the criterion has nothing
+    # to be scored against and a verdict line here would be a judgement on nothing
+    print("%s. survey.yaml checks.recipe_window records no window for %s, so this check is not scored here "
+          "and the window above is a reading. The sites it is scored at are %s"
+          % (found, SITE, ", ".join(sorted(k for k in want_all if k != "tolerance_h")) or "none"))
+elif not COHERENT["t_start"]:
+    print("VERDICT: FAIL -- %s, where the record carries %s to %s UTC (%s)"
+          % (found, want["t_start"], want["t_end"], str(want.get("source"))[:110]))
+else:
+    a = int(pd.Timestamp(want["t_start"]).timestamp())
+    b = int(pd.Timestamp(want["t_end"]).timestamp())
+    da, db = abs(COHERENT["t_start"] - a) / 3600.0, abs(COHERENT["t_end"] - b) / 3600.0
+    if max(da, db) > tol_h:
+        print("VERDICT: FAIL -- %s, which misses the recorded %s to %s UTC by %.2f h at the start and "
+              "%.2f h at the end, beyond the %g h the check allows (%s)"
+              % (found, want["t_start"], want["t_end"], da, db, tol_h, str(want.get("source"))[:110]))
+    else:
+        print("VERDICT: PASS -- %s, within %.2f h and %.2f h of the recorded %s to %s UTC, both inside the "
+              "%g h the check allows; the next longest stretch the rule found is %s (%s)"
+              % (found, da, db, want["t_start"], want["t_end"], tol_h,
+                 ("%d h" % COHERENT["runs"][1][0]) if len(COHERENT["runs"]) > 1 else "none",
+                 str(want.get("source"))[:110]))
+'''),
+
+("md", r"""**This check fails if any row's pass ended in an exception rather than a stated refusal.** A row
+refused before its pass, with its runs and its days measured first, is a reading and not a failure; a row
+that ended in a traceback is a failure with the row named.
+
+Each row against its own control is a reading and not a limb of the criterion, as in sections 3, 4 and 5: a
+row that does not beat its control by BAR_MARGIN bought efficiency and not a different answer, and reads
+`not promoted`. The comparison is per row and at the same cost -- the x' row against the x' row's control on
+Zx'y', the y' row against the y' row's on Zy'x' -- because the assembled product's bar is the better of its
+two rows and would answer for the row a window was not chosen for. Both bars are printed either way, and the
+same readings decide whether the assembled product is a candidate in section 11's table."""),
+
+("code", '''fail, note = [], []
+for key in ("x", "y"):
+    for name in ("recipe_%s" % key, ROWS[key]["control"]):
+        if not name:
+            continue
+        r = rows_by_form().get(name, {})
+        if r.get("status") == "FAILED":
+            fail.append("%s ended in an exception rather than a stated refusal: %s"
+                        % (name, str(r.get("error"))[:150]))
+        elif r.get("status") == "refused":
+            note.append("%s was refused before the pass: %s" % (name, str(r.get("reason"))[:110]))
+        elif made_product(name) is None:
+            note.append("%s carries no product on disk" % name)
+print(pd.DataFrame(ROW_READINGS).round(4).to_string(index=False) if ROW_READINGS
+      else "no recipe row was made")
+for d in ROW_READINGS:
+    if d["promoted"] is None:
+        print("   %s reads %.4f on the %g-%g s bar of %s and carries no control, so it is read and not "
+              "promoted" % (d["row"], d["bar"], BAR_BAND[0], BAR_BAND[1], d["element"]))
+    else:
+        print("   %s reads %.4f on the %g-%g s bar of %s against its control's %.4f -- %s"
+              % (d["row"], d["bar"], BAR_BAND[0], BAR_BAND[1], d["element"], d["control_bar"],
+                 "promoted" if d["promoted"] else
+                 "not promoted: efficiency, not a different answer"))
+if ASSEMBLED and BASE and all(ROWS[k]["reuse"] == "whole" for k in ("x", "y")):
+    # both rows of this recipe ARE the baseline, so the assembly has to give the baseline back, element for
+    # element. Where a row is anything else the two files are different quantities and the ratio says nothing
+    same = RC.row_comparison(read(BASE), read(ASSEMBLED["path"]), 1.0, 100000.0)
+    print()
+    print("both rows of this recipe are the whole-record baseline, so the assembly must return it: the "
+          "assembled product against the baseline, every element over the whole band")
+    print(same.round(4).to_string(index=False))
+print()
+scored = [d for d in ROW_READINGS if d["promoted"] is not None]
+readings = ("; as readings, %s"
+            % "; ".join("%s %.4f against its control's %.4f, %s"
+                        % (d["row"], d["bar"], d["control_bar"],
+                           "promoted" if d["promoted"] else "not promoted")
+                        for d in scored)) if scored else \\
+           "; no row carries a control, because every row is the whole record"
+if fail:
+    print("VERDICT: FAIL -- %s%s%s" % ("; ".join(fail), ("; " + "; ".join(note)) if note else "", readings))
+elif not ROW_READINGS:
+    print("VERDICT: UNJUDGED -- no recipe row was passed, so no pass could be scored%s"
+          % (": " + "; ".join(note) if note else ""))
+else:
+    print("VERDICT: PASS -- %d row(s) were passed and none ended in an exception (%s)%s%s"
+          % (len(ROW_READINGS),
+             "; ".join("%s %s at %g Hz" % (d["row"], d["hours"], d["rate_hz"]) for d in ROW_READINGS),
+             ("; " + "; ".join(note)) if note else "", readings))
+'''),
+
+("md", r"""The comparison, last and never truth. The campaign's own product of this composition, where
+`survey.yaml` `checks.recipe_comparison` names one for this site, read row by row in the same frame over the
+band it names. It is a shape check on two paths to the same product and carries no verdict: the two were
+estimated from the same raw record and agree or differ for reasons neither file can settle."""),
+
+("code", '''cmp_row = ((sv.cfg.get("checks") or {}).get("recipe_comparison") or {}).get(SITE) or {}
+cmp_path = Path(str(cmp_row.get("path", "")))
+if not cmp_row:
+    print("survey.yaml checks.recipe_comparison names no product for %s: there is nothing to compare "
+          "against, which is the case at every site but the one the campaign salvaged by hand" % SITE)
+elif not ASSEMBLED:
+    print("no assembled product, so the comparison with %s is not made" % cmp_path.name)
+elif not cmp_path.exists():
+    print("%s is named in survey.yaml but is not on disk, so the comparison is not made" % cmp_path)
+else:
+    lo, hi = tuple(cmp_row.get("band_s", (5, 100)))
+    tab = RC.row_comparison(read(ASSEMBLED["path"]), read(str(cmp_path)), lo, hi)
+    print("%s against %s, %g-%g s, the campaign's product over ours" % (Path(ASSEMBLED["path"]).name,
+                                                                        cmp_path.name, lo, hi))
+    print(tab.round(4).to_string(index=False))
+    print()
+    print("the frame of the comparison is %s and ours is %s; %s"
+          % (cmp_row.get("frame"), FRAME["frame"], str(cmp_row.get("note"))[:400]))
+'''),
+
+("md", r"""## 11. The forms table
 
 Every form with the products it is read against, the criterion in words, the verdict and the reading. This is
 the file workbook 06 reads. A form is a candidate only where it beats every control it carries on the
 10-1000 s bar by BAR_MARGIN. A form with no control is read and never promoted on this table alone, and a form
-that borrows both horizontal channels is never a candidate.
+that borrows both horizontal channels is never a candidate. Section 10's assembled `recipe` row is read the
+same way through the rows it was assembled from, because its controls belong to them: it is a candidate where
+at least one of those rows carries a control, where every row that carries one beat it by BAR_MARGIN on its
+own element, and, in the diagonal frame, where section 6's shared-centre model holds at this site; its
+`verdict` cell states which of the three decided it. A recipe whose rows are all the whole record carries no
+control at all and is read and not promoted, like any other form with none.
 
 The decisions.csv cells this workbook proposes are printed below and are not written unless WRITE_DECISIONS
 is True. Decisions are the analyst's."""),
@@ -4840,7 +5326,7 @@ else:
     print("NOT written: WRITE_DECISIONS is False, and decisions are the analyst's")
 '''),
 
-("md", r"""## 11. What was written"""),
+("md", r"""## 12. What was written"""),
 
 ("code", '''rows = []
 for p in list(WRITTEN) + sorted(OUT.glob("*")):
