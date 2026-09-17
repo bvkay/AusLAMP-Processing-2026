@@ -8,106 +8,20 @@ to be on this machine is a test that is skipped on every other one.
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 import pytest
 
 from auslamp_proc.process import frame as FR
 from auslamp_proc.site import centre, deliver, forms, masks, replace
 
 RNG = np.random.default_rng(20260916)
-
-
-# ---------------------------------------------------------------- the selections and their controls
-
-def test_day_mask_control_is_the_same_size_from_the_same_pool():
-    """Fails if the control keeps a different number of days from the selection, or draws a day the map did
-    not score."""
-    n_days, n = 20, 20 * 86400
-    daily = np.full((n_days, 4), np.nan)
-    daily[:, 2] = np.linspace(0.1, 0.9, n_days)
-    daily[3, 2] = np.nan                                     # one day the map could not score
-    qm = dict(daily=daily, n=n, days=["d%02d" % i for i in range(n_days)], site="X")
-    keep, ctrl, rows = masks.day_mask(qm, "xy", thr=0.5, seed=20260916)
-    assert rows["days_kept"] == int(np.sum(np.nan_to_num(daily[:, 2]) >= 0.5))
-    assert rows["days_control"] == rows["days_kept"]
-    assert keep.sum() == ctrl.sum()
-    drawn = {d for d in rows["control_days"].split() if d}
-    assert "d03" not in drawn                                 # the unscored day is not in the pool
-
-
-def test_day_mask_control_is_reproducible_from_its_seed():
-    """Fails if two draws under the same seed differ, or if two different seeds give the same draw."""
-    daily = np.full((30, 4), np.nan)
-    daily[:, 2] = RNG.uniform(0.2, 0.9, 30)
-    qm = dict(daily=daily, n=30 * 86400, days=["d%02d" % i for i in range(30)], site="X")
-    a = masks.day_mask(qm, "xy", 0.5, seed=1)[2]["control_days"]
-    b = masks.day_mask(qm, "xy", 0.5, seed=1)[2]["control_days"]
-    c = masks.day_mask(qm, "xy", 0.5, seed=2)[2]["control_days"]
-    assert a == b and a != c
-
-
-def test_select_hours_ranked_takes_the_best_and_random_does_not():
-    """Fails if the ranked selection does not keep the highest-scoring windows, or if the random selection
-    keeps the same set."""
-    n = 100 * 3600
-    tc = np.arange(100) * 3600.0 + 1800.0
-    score = np.linspace(0.0, 1.0, 100)
-    keep, thr, k = masks.select_hours(tc, score, 0.25, 3600, n)
-    rnd, thr_r, k_r = masks.select_hours(tc, score, 0.25, 3600, n, rng=np.random.default_rng(7))
-    assert k == k_r == 25
-    assert thr == pytest.approx(score[75])
-    assert np.isnan(thr_r)
-    assert keep[-25 * 3600:].all()                            # the top 25 windows are the last ones
-    assert not keep[:75 * 3600].any()
-    assert not np.array_equal(keep, rnd)
-
-
-def test_contiguous_control_matches_the_duration_within_one_window():
-    """Fails if a contiguous window set's kept duration misses the scattered selection's by more than one
-    window."""
-    tc = np.arange(96) * 3600.0 + 1800.0
-    score = RNG.uniform(0, 1, 96)
-    n = 96 * 3600
-    _keep, _thr, k = masks.select_hours(tc, score, 0.25, 3600, n)
-    for hours in (2, 4, 6, 24):
-        _m, row = masks.contiguous_windows(tc, score, hours, n, k)
-        assert abs(row["hours"] - k) <= hours, (hours, row)
-
-
-def test_sustained_low_gives_back_a_hole_shorter_than_min_hole():
-    """Fails if a short low run is masked, or a long one is not."""
-    step, win, n = 1800.0, 3600.0, 200 * 3600
-    tc = np.arange(0, n - int(win), int(step)) + win / 2
-    v = np.full(len(tc), 0.9)
-    v[10:12] = 0.0                                            # one hour low: given back
-    v[100:140] = 0.0                                          # twenty hours low: masked
-    keep, ivl = masks.sustained_low(tc, v, step, win, n, thresh=0.5, smooth_h=1.0, min_hole_h=6.0)
-    assert len(ivl) == 1
-    a, b = ivl[0]
-    assert (b - a) >= 6 * 3600
-    assert keep[:10 * 3600].all()
-
-
-def test_window_from_days_takes_the_longest_run_and_falls_back():
-    """Fails if a shorter sound run is preferred, or if a table with no sound day yields a window without
-    saying it admitted the weak days."""
-    t0 = 1_700_000_000
-    states = ["weak", "sound", "sound", "weak", "sound", "sound", "sound", "dead"]
-    el = pd.DataFrame([dict(day="d%d" % i, t_start=t0 + i * 86400, t_end=t0 + (i + 1) * 86400,
-                            Ex_state=s, Ey_state="weak") for i, s in enumerate(states)])
-    w = masks.window_from_days(el, "xy")
-    assert w["n_days"] == 3 and w["t_start"] == t0 + 4 * 86400
-    w2 = masks.window_from_days(el, "yx")
-    assert w2["n_days"] == 8 and "weak days are admitted" in w2["reason"]
-
-
 # ---------------------------------------------------------------- the shared centre and the arm diagonal
 
 def test_ne_algebra_is_exact():
     """Fails if Ex' differs from (Ex - Ey)/sqrt2 or Ey' from (Ex + Ey)/sqrt2 at any finite sample."""
     ex = RNG.normal(size=5000)
     ey = RNG.normal(size=5000)
-    exp, eyp = (ex - ey) / centre.SQ2, (ex + ey) / centre.SQ2
+    sq2 = float(np.sqrt(2.0))
+    exp, eyp = (ex - ey) / sq2, (ex + ey) / sq2
     assert np.allclose(exp, (ex - ey) / np.sqrt(2.0), rtol=0, atol=0)
     assert np.allclose(eyp, (ex + ey) / np.sqrt(2.0), rtol=0, atol=0)
     # the inverse: the pair is a rotation of (Ex, Ey) by -45 deg, so the norm is kept
@@ -116,7 +30,7 @@ def test_ne_algebra_is_exact():
 
 def test_equal_arms_reduce_to_the_ported_numbers():
     """Fails if equal arms do not give an expected gain of 1, a diagonal at -45 deg of length L sqrt2, and
-    the (Ex -+ Ey)/sqrt2 pair the Victoria tool uses -- the general form must contain the frozen one."""
+    the (Ex -+ Ey)/sqrt2 pair: the general form must reduce to the equal-arm one."""
     assert centre.expected_gain(50.0, 50.0) == 1.0
     assert abs(centre.diagonal_angle(50.0, 50.0) - centre.THETA_NE) < 1e-12
     assert abs(centre.diagonal_length(50.0, 50.0) - 50.0 * np.sqrt(2.0)) < 1e-12
@@ -229,27 +143,6 @@ def test_residual_test_holds_on_a_built_shared_centre_and_not_on_an_independent_
     ey = -2.0 * hx + RNG.normal(size=n)
     st = centre.day_stats(ex, ey, hx, hy, band_s=(4.0, 200.0))
     assert st["coh_r"] < 0.9, st
-
-
-def test_the_shifted_pair_reads_low_where_the_unshifted_pair_reads_high():
-    """Fails if shifting one of two coherent records by 12 h does not drop the 100-1000 s coherence under
-    0.3 while the unshifted pair stays above 0.8 -- which is what makes the shifted pair a control."""
-    from auslamp_proc.look import highpass
-    n = 4 * 86400
-    field = np.cumsum(RNG.normal(size=n))                     # one regional field both sites see
-    a_rec = field + 0.05 * np.cumsum(RNG.normal(size=n))
-    b_rec = field + 0.05 * np.cumsum(RNG.normal(size=n))
-    hp = highpass(1.0, masks.HIGHPASS_S)
-    win = 2 * 86400
-    x = masks.prepare(a_rec[:win], *hp)
-    same = masks.prepare(b_rec[:win], *hp)
-    shifted = masks.prepare(b_rec[43200:43200 + win], *hp)
-    unshifted_coh = masks.band_coherence(x, same, 1.0, masks.FLEET_BAND_S)
-    shifted_coh = masks.band_coherence(x, shifted, 1.0, masks.FLEET_BAND_S)
-    assert unshifted_coh > 0.8, unshifted_coh
-    assert shifted_coh < masks.NEGATIVE_MAX, shifted_coh
-
-
 def test_the_clock_finds_a_fraction_of_a_second_and_never_an_edge_lag():
     """Fails if a pair carrying a strong daily variation and a true lag of 0.4 s does not come back at
     0.4 s, if the peak lands within 5 per cent of the +-12 h search edge, or if the peak does not stand
@@ -405,8 +298,8 @@ def test_tipper_refusal_fires_on_hz_equal_to_hx():
     assert coh_other < deliver.COPY_COH, coh_other
 
 
-def test_tipper_only_refuses_a_refused_tipper_and_a_product_without_one(tmp_path):
-    """Fails if a refused tipper is written anyway, or if a product carrying no tipper yields a file."""
+def test_tipper_only_refuses_a_refused_tipper_and_a_source_without_one(tmp_path):
+    """Fails if a refused tipper is written anyway, or if a source carrying no tipper yields a file."""
     pytest.importorskip("mt_metadata.transfer_functions.core")
     p = np.geomspace(1.0, 1000.0, 20)
     src = _write_edi(tmp_path / "src.edi", p, 1.0, None)
@@ -428,7 +321,7 @@ def test_beats_needs_the_stated_margin():
 def test_forms_table_refuses_to_promote_a_form_without_a_control():
     """Fails if a form carrying no control is marked a candidate."""
     rows = [dict(site="X", form="whole", kind="remote", rate_hz=1.0, params="k", status="made",
-                 product="none.edi", controls="", criterion="", seed=None)]
+                 transfer_function="none.edi", controls="", criterion="", seed=None)]
     t = deliver.forms_table(rows)
     assert not bool(t.candidate.iloc[0])
     assert "no control" in t.verdict.iloc[0]
@@ -440,9 +333,9 @@ def test_a_refused_form_and_a_crashed_one_do_not_read_the_same():
     why = ("refused: the window mask leaves 0 run(s) of 3600 s against the remote (the whole record "
            "keeps 55.59 d over 87 run(s))")
     rows = [dict(site="X", form="windowed", kind="remote", rate_hz=10.0, params="k", status="refused",
-                 product="", controls="whole10", criterion="", seed=None, reason=why, error=""),
+                 transfer_function="", controls="whole10", criterion="", seed=None, reason=why, error=""),
             dict(site="X", form="other", kind="remote", rate_hz=10.0, params="k", status="FAILED",
-                 product="", controls="whole10", criterion="", seed=None,
+                 transfer_function="", controls="whole10", criterion="", seed=None,
                  error="ValueError: aurora returned no transfer function")]
     t = deliver.forms_table(rows).set_index("form")
     assert t.loc["windowed", "verdict"] == why and "0 run(s)" in t.loc["windowed", "verdict"]

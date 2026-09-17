@@ -7,14 +7,14 @@ THE DECOMPOSITION FIRST. Before any row is joined, the 10 Hz path is read agains
 kind over LEVEL_BAND (4-32 s): the median of that ratio over the kinds is the RATE effect and the spread
 across kinds at one rate is the KIND effect. A survey whose rate effect exceeds RATE_PATH_MAX_PCT cannot be
 spliced at all, because the join would deliver the difference between two processing paths as a bend in the
-earth. Aurora at 10 Hz reads about 8 per cent low at 4-32 s against its own 1 Hz product (AusLAMP Victoria,
-2026-09-11), so this is the measurement that decides whether the survey has a short end to deliver.
+earth. Aurora at 10 Hz reads about 8 per cent low at 4-32 s against its own 1 Hz transfer function (AusLAMP
+Victoria, 2026-09-11), so this is the measurement that decides whether the survey has a short end to deliver.
 
-The gate is read over the whole-record 10 Hz pass and the random 25 per cent that controls the selections,
-and over no other row: a selection of the most coherent hours is not comparable to a 1 Hz product of the
-whole record, so its departure over 4-32 s carries the selection as well as the rate, and a gate read over
-it would refuse the join for a difference the join does not deliver. Every 10 Hz row is in the
-decomposition table beside the gate.
+The gate is read over the whole-record 10 Hz pass and the control stretch, and over no other row: a stretch
+of the most coherent hours is not comparable to a 1 Hz transfer function of the whole record, so its
+departure over 4-32 s carries the selection as well as the rate, and a gate read over it would refuse the
+join for a difference the join does not deliver. Every 10 Hz row is in the decomposition table beside the
+gate.
 
 THE ACCEPTANCE. The step at the join is measured on two bands and the worse one governs: STEP_BELOW (8-16 s,
 where the delivered row would be the 10 Hz one) and STEP_ABOVE (32-100 s, where it is the 1 Hz one). A row
@@ -24,14 +24,14 @@ which is not an earth response and is reproducible only to 5-14 per cent between
 a 2 per cent criterion there would measure the line and not the join. The guard band is measured and printed
 per row and scored by nothing.
 
-THE CONTROL GATE, before the step test (Ben, 2026-09-17). The 10 Hz pass runs on the most coherent hours by
-1-30 s E-H coherence and never on the whole record, so a site carries several 10 Hz products per kind: f05,
-f10 and f25 are the best 5, 10 and 25 per cent of hours and r25 is the random 25 per cent that controls them.
-A SELECTION is eligible only where its product beats that kind's r25 control on the CONTROL_BAR_BAND (2-16 s)
-impedance bar by CONTROL_MARGIN -- a selection that does not beat a random one of the same size buys
-efficiency, not a different answer. The whole-record 10 Hz product is a control and not a selection, and is
-allowed into the candidates without the gate; r25 itself is never promoted. A selection whose kind has no r25
-product is UNJUDGED on the gate and is not eligible, and the table says so rather than passing it.
+THE CONTROL GATE, before the step test. The 10 Hz pass runs on the longest coherent stretch and never on the
+whole record, so a site carries two 10 Hz transfer functions per kind: `stretch` is the longest run of whole
+UTC hours with both recorded lines above 0.5 at 20-200 s, and `control` is a run of the same length placed at
+random elsewhere in the record. A stretch is eligible only where it beats that kind's control on the
+CONTROL_BAR_BAND (2-16 s) impedance bar by CONTROL_MARGIN: a selection that does not beat a random one of the
+same length buys efficiency, not a different answer. The whole-record 10 Hz pass is a control and not a
+selection, and is admitted without the gate; the control itself is never promoted. A stretch whose kind has
+no control is UNJUDGED on the gate and is not eligible, and the table says so rather than passing it.
 
 THE SELECTION, inside what the control gate and the acceptance leave, among the 10 Hz rows that pass the
 three response tests of `readings`:
@@ -58,7 +58,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import products as PR, readings as RD
+from . import transfer_functions as TFN, readings as RD
 from .process import KIND_WORD
 
 SPLICE_JOIN_S = 16.0               # the period the 10 Hz row joins the 1 Hz row at, in s
@@ -77,11 +77,10 @@ NEAREST_LOG_TOL = 0.01             # a 10 Hz period lands on a grid point within
 PERIOD_KEY_DP = 6                  # the decimals the union key is rounded to; the VALUE is never rounded
 IDENTITY_TOL = 1e-12               # an unspliced period and value must come back within this, relatively
 
-CONTROL_SELECTION = "r25"          # the random 25 per cent of hours a selection must beat
+CONTROL_SELECTION = "control"      # the random stretch of the same length a selection must beat
 CONTROL_BAR_BAND = (2.0, 16.0)     # the band the control gate reads the bar over, in s
 CONTROL_MARGIN = 0.20              # ... and the fraction of the control's bar a selection must beat it by
-SELECTIONS = ("f05", "f10", "f25")  # the selections of the most coherent hours; r25 is their control
-WHOLE_SELECTION = "whole"          # the whole-record 10 Hz pass: a control, allowed as a candidate
+WHOLE_SELECTION = "whole"          # the whole-record 10 Hz pass: a control, admitted as a candidate
 
 SPLICE_COLUMNS = ["site", "component", "spliced", "kind", "kind_word", "selection", "form",
                   "control_verdict",
@@ -121,20 +120,20 @@ def _ratio_pct(a, b, comp, lo, hi):
 
 # ------------------------------------------------------------------ the rate against the kind
 
-def decompose(products: pd.DataFrame, read=None, band=LEVEL_BAND,
+def decompose(tfs: pd.DataFrame, read=None, band=LEVEL_BAND,
               rate_max_pct=RATE_PATH_MAX_PCT) -> pd.DataFrame:
     """Per site, kind, selection and component, the 10 Hz path against the 1 Hz path of the same kind.
 
     One row per pair that exists, read over `band`. `rate_pct` is the 10 Hz level as a per cent departure
     from the 1 Hz level: the number the acceptance rule of the splice is a guard against. The 1 Hz row of a
-    kind is its whole-record product, so each 10 Hz selection of that kind is read against the same row.
+    kind is its whole-record pass, so each 10 Hz stretch of that kind is read against the same row.
     """
-    read = read or PR.read_tf
+    read = read or TFN.read_tf
     rows = []
-    for site, grp in products.groupby("site", sort=True):
+    for site, grp in tfs.groupby("site", sort=True):
         on = grp[grp.on_disk]
         if "selection" not in on.columns:
-            on = on.assign(selection=PR.WHOLE_SELECTION)
+            on = on.assign(selection=TFN.WHOLE_SELECTION)
         if "form" not in on.columns:
             on = on.assign(form="")
         for kind in sorted(set(on.kind)):
@@ -148,7 +147,7 @@ def decompose(products: pd.DataFrame, read=None, band=LEVEL_BAND,
                 for comp in RD.COMPONENTS:
                     pct, n = _ratio_pct(ten, one, comp, band[0], band[1])
                     rows.append(dict(site=site, kind=kind, kind_word=KIND_WORD.get(kind, kind),
-                                     selection=str(getattr(r, "selection", PR.WHOLE_SELECTION)),
+                                     selection=str(getattr(r, "selection", TFN.WHOLE_SELECTION)),
                                      form=str(getattr(r, "form", "") or ""),
                                      component=comp, band_s="%g-%g" % band, rate_pct=pct, n=n,
                                      inside=bool(np.isfinite(pct) and abs(pct) <= rate_max_pct)))
@@ -166,11 +165,11 @@ def rate_versus_kind(dec: pd.DataFrame, rate_max_pct=RATE_PATH_MAX_PCT,
     The rate effect is what the splice would deliver as a bend; the kind spread is how much of the same
     number is the choice of reference rather than the rate.
 
-    The gate is read over `gate_selections` only -- the whole-record 10 Hz pass and the random 25 per cent
-    that controls the selections. A selection of the most coherent hours is not comparable to a 1 Hz product
-    of the whole record: its departure over 4-32 s carries the selection as well as the rate, and reading
-    the gate over it would refuse the splice for a difference the join does not deliver. Every row stays in
-    the table beside the gate, `in_gate` saying which ones the median was taken over.
+    The gate is read over `gate_selections` only -- the whole-record 10 Hz pass and the control stretch. A
+    stretch of the most coherent hours is not comparable to a 1 Hz pass of the whole record: its departure
+    over 4-32 s carries the selection as well as the rate, and reading the gate over it would refuse the
+    splice for a difference the join does not deliver. Every row stays in the table beside the gate,
+    `in_gate` saying which ones the median was taken over.
     """
     dec = dec.copy()
     if "selection" not in dec.columns:
@@ -217,10 +216,10 @@ def step_at_join(base, short, comp, join=SPLICE_JOIN_S, below=STEP_BELOW, above=
 
 def control_gate(shorts: dict, comp: str, control=CONTROL_SELECTION, band=CONTROL_BAR_BAND,
                  margin=CONTROL_MARGIN, whole=WHOLE_SELECTION) -> dict:
-    """{key: the gate's reading} over one site's 10 Hz products and one component.
+    """{key: the gate's reading} over one site's 10 Hz transfer functions and one component.
 
     A key is (kind, selection) or (kind, selection, form); a form is controlled by its own kind's and
-    form's random selection, so a variant cache is never judged against the original's control.
+    form's control stretch, so a variant cache is never judged against the original's control.
 
     A selection is eligible only where its own bar over `band` is at most (1 - margin) of that control's.
     The whole-record pass carries no selection to control and passes without the gate; the control itself
@@ -241,7 +240,7 @@ def control_gate(shorts: dict, comp: str, control=CONTROL_SELECTION, band=CONTRO
                             verdict="the random control itself: never promoted")
         elif not (np.isfinite(own) and np.isfinite(ctrl) and ctrl > 0):
             out[key] = dict(eligible=False, bar_2_16=own, control_bar_2_16=ctrl,
-                            verdict="UNJUDGED: this row has no %s control to beat" % control)
+                            verdict="UNJUDGED: this row has no %s of its own to beat" % control)
         else:
             wins = bool(own <= (1.0 - float(margin)) * ctrl)
             out[key] = dict(
@@ -260,12 +259,12 @@ def select_rows(site, base, shorts: dict, readings: pd.DataFrame, join=SPLICE_JO
                 short_bar_max=SHORT_BAR_MAX, control=CONTROL_SELECTION, control_band=CONTROL_BAR_BAND,
                 control_margin=CONTROL_MARGIN, rate_ok=None,
                 rate_max_pct=RATE_PATH_MAX_PCT) -> dict:
-    """{component: the chosen row or None} with the reason, over one site's 10 Hz products.
+    """{component: the chosen row or None} with the reason, over one site's 10 Hz transfer functions.
 
-    `shorts` is {(kind, selection, form): (TFData, path)} of the site's 10 Hz products and `readings` is
-    the readings table, which carries the response-test verdict each of them was given. The gate runs first,
-    then the acceptance -- the step at the join and the short-end bar guard -- and the selection runs
-    inside what the two leave.
+    `shorts` is {(kind, selection, form): (TFData, path)} of the site's 10 Hz transfer functions and
+    `readings` is the readings table, which carries the response-test verdict each of them was given. The
+    gate runs first, then the acceptance -- the step at the join and the short-end bar guard -- and the
+    selection runs inside what the two leave.
 
     `rate_ok` is {component: the survey's rate path is inside rate_max_pct}, from `rate_versus_kind`. A
     component whose survey-wide 10 Hz path sits further than that from its 1 Hz path is refused before any
@@ -309,7 +308,7 @@ def select_rows(site, base, shorts: dict, readings: pd.DataFrame, join=SPLICE_JO
                 and np.isfinite(s["short_bar"]) and s["short_bar"] <= short_bar_max]
         best, why = None, ""
         if not scored:
-            why = "no 10 Hz product of this site"
+            why = "no 10 Hz transfer function of this site"
         elif not [s for s in scored if s["passes"]]:
             why = "no 10 Hz row passes the three response tests"
         elif not sound:
@@ -379,7 +378,7 @@ def first_delivered_period(period, z, comp) -> float:
     instead of the row's own finite mask put a period in the file that the row did not carry (vic_splice
     test V6).
     """
-    i, j = PR.COMPONENTS[comp]
+    i, j = TFN.COMPONENTS[comp]
     m = np.isfinite(np.asarray(z)[:, i, j])
     return float(np.min(np.asarray(period, float)[m])) if m.any() else np.nan
 
@@ -447,7 +446,7 @@ def splice(base_path, picks: dict, out_path, join=SPLICE_JOIN_S, floor=SHORT_FLO
                 n_short += 1
         pick["n_short_periods"] = n_short
         pick["shortest_period_s"] = first_delivered_period(pnew, zn, comp)
-        lines.append("splice_%s=below %g s from the 10 Hz %s product on the %s selection of hours (%s), "
+        lines.append("splice_%s=below %g s from the 10 Hz %s transfer function on the %s selection (%s), "
                      "above from the 1 Hz row; step at the join %+0.1f %% (%+0.1f above, %+0.1f below); "
                      "%d period(s) taken; shortest delivered period %.3f s"
                      % (comp, join, pick["kind_word"], pick.get("selection", "whole-record"),
@@ -503,14 +502,14 @@ def unspliced_unchanged(base_path, out_path, spliced=(), tol=IDENTITY_TOL) -> di
     present in the written file and each unspliced component's value at each of them must be identical to
     the input within `tol` relative.
     """
-    base, out = PR.read_tf(base_path), PR.read_tf(out_path)
+    base, out = TFN.read_tf(base_path), TFN.read_tf(out_path)
     pb = np.asarray(base.period, float)
     po = np.asarray(out.period, float)
     idx = np.array([int(np.argmin(np.abs(po - t))) for t in pb]) if len(po) else np.zeros(0, int)
     d_period = (np.abs(po[idx] / pb - 1.0) if len(idx) else np.zeros(0))
     worst_period = float(np.max(d_period)) if len(d_period) else np.nan
     rows, worst_value, worst_where = [], 0.0, ""
-    for comp, (i, j) in PR.COMPONENTS.items():
+    for comp, (i, j) in TFN.COMPONENTS.items():
         if comp in set(spliced):
             continue
         a = base.z[:, i, j]

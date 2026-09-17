@@ -1,21 +1,24 @@
-"""The products of a run: where they are and what they hold.
+"""The transfer functions of a run: where they are and what they hold.
 
-find_products reads the ledger <work_root>/survey/runs.csv and the run folders <site>/<run>_<stamp>/ that
-workbook 03 writes. The ledger is append-only and a resumed run appends a second row per product, so the rows
-are reduced to one per (site, run, stamp, kind, rate) before anything else. runs="latest" keeps, for each run
-name, only its latest stamp, so a 1 Hz run and a 10 Hz run under different names are both kept and a re-run of
-one name does not count twice.
+find_transfer_functions reads the ledger <work_root>/survey/runs.csv and the run folders
+<site>/<run>_<stamp>/ that workbook 03 writes. The ledger is append-only and a resumed run appends a second
+row per transfer function, so the rows are reduced to one per (site, run, stamp, kind, rate) before anything
+else. runs="latest" keeps, for each run name, only its latest stamp, so a 1 Hz run and a 10 Hz run under
+different names are both kept and a re-run of one name does not count twice.
 
-A product also carries the SELECTION of hours it was estimated on, which the file name states and the
-ledger's `selection` column names: `whole` is the whole record and carries no tag, and f05, f10, f25 and r25
-are the best 5, 10 and 25 per cent of hours by 1-30 s E-H coherence and the random 25 per cent that controls
-them (Ben, 2026-09-17: the 10 Hz pass runs on the most coherent hours, never the whole record). A ledger
-written before that column existed has none, and every one of its products is read as the whole record.
+A transfer function also carries the selection of hours it was estimated on, which the file name states and
+the ledger's `selection` column names. `whole` is the whole record and carries no tag; `stretch` is the
+longest contiguous run of whole UTC hours in which Ex against Hy and Ey against Hx both read above 0.5 in
+median squared coherence over 20-200 s, cut to its best 48 contiguous hours where it runs longer; `control`
+is a run of the same length placed at random elsewhere in the record and not overlapping it (Ben, 2026-09-17:
+the 10 Hz pass runs on the most coherent hours, never the whole record). process.selection holds the rule and
+its values. A ledger written before that column existed has none, and every one of its rows is read as the
+whole record.
 
 read_tf applies two rules before a curve is used, both ported from scripts/qc/survey_pdf.py:55 read
 (D:/BEN/MTH5_Aurora_mt-io_2026):
 
-    the fill      the EDI empty-data value 1e32 is masked PER COMPONENT, together with the project's
+    the fill      the EDI empty-data value 1e32 is masked per component, together with the project's
                   no-information convention (Z = 0 with an error of 1e9), so a fill never enters a median
     the sort      periods are sorted and duplicates dropped before any interpolation: some writers emit them
                   unsorted and np.interp on an unsorted grid is silently wrong
@@ -34,7 +37,7 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-from .process import KINDS, KIND_WORD
+from .process import KINDS
 
 # the EDI empty-data value, and the project's Z = 0 with an error of 1e9 for a period carrying no information
 FILL = 1e30
@@ -44,17 +47,17 @@ COMPONENTS = {"xx": (0, 0), "xy": (0, 1), "yx": (1, 0), "yy": (1, 1)}
 OFF_DIAGONAL = ("xy", "yx")
 TIPPER_COMPONENTS = {"zx": (0, 0), "zy": (0, 1)}
 
-PRODUCT_COLUMNS = ["site", "run", "stamp", "kind", "rate_hz", "params", "selection", "path", "xml",
+TF_COLUMNS = ["site", "run", "stamp", "kind", "rate_hz", "params", "selection", "path", "xml",
                    "provenance", "remote", "members", "n_runs", "seconds", "peak_rss_mb", "status",
                    "on_disk"]
 
-# The selection of hours a product was estimated on. A 1 Hz product is the whole record and carries no tag
-# in its file name; a 10 Hz product carries one, because the 10 Hz pass runs on the most coherent hours by
-# 1-30 s E-H coherence (Ben, 2026-09-17): f05, f10 and f25 are the best 5, 10 and 25 per cent of hours and
-# r25 is the random 25 per cent that is their control. `whole` is the untagged whole-record pass.
+# The selection of hours a transfer function was estimated on. A 1 Hz pass is the whole record and carries
+# no tag in its file name; a 10 Hz pass carries one, because it runs on the most coherent hours (Ben,
+# 2026-09-17). `stretch` is the longest contiguous run of hours both lines score above 0.5 over 20-200 s and
+# `control` is a run of the same length drawn at random elsewhere; `whole` is the untagged whole-record pass.
 WHOLE_SELECTION = "whole"
-SELECTION_TAGS = ("whole", "f05", "f10", "f25", "r25")
-PRODUCT_NAME = re.compile(r"^(?P<site>.+?)_(?P<kind>%s)_(?P<rate>\d+)hz_(?P<rest>.+)$"
+SELECTION_TAGS = ("whole", "stretch", "control")
+TF_NAME = re.compile(r"^(?P<site>.+?)_(?P<kind>%s)_(?P<rate>\d+)hz_(?P<rest>.+)$"
                           % "|".join(sorted(KINDS, key=len, reverse=True)))
 
 # the processing_parameters keys a page prints under its title, in the order it prints them
@@ -78,15 +81,15 @@ class TFData(NamedTuple):
 def ledger(work_root) -> pd.DataFrame:
     """<work_root>/survey/runs.csv with one row per (site, run, stamp, kind, rate), the last one kept.
 
-    The ledger is appended to, and a resumed run writes a second row per product with status `exists`, so the
-    raw file holds more rows than there are products.
+    The ledger is appended to, and a resumed run writes a second row per transfer function with status
+    `exists`, so the raw file holds more rows than there are transfer functions.
     """
     path = Path(work_root) / "survey" / "runs.csv"
     if not path.exists():
         raise FileNotFoundError("%s has not been written; run workbook 03 first" % path)
     d = pd.read_csv(path)
     d["rate_hz"] = d.rate_hz.astype(float)
-    # the last row that made the product, else the last row of any status: a resumed run's `exists` row
+    # the last row that made the file, else the last row of any status: a resumed run's `exists` row
     # carries no reference, no members and no cost, and keeping it would blank the provenance the run wrote
     d["_made"] = (d.status.astype(str) == "made").astype(int)
     d = d.sort_values(["site", "run", "stamp", "kind", "rate_hz", "_made"], kind="stable")
@@ -116,12 +119,12 @@ def run_folder(work_root, site, run, stamp) -> Path:
     return Path(work_root) / str(site) / ("%s_%s" % (run, stamp))
 
 
-def product_path(work_root, site, run, stamp, kind, rate_hz, params, selection="") -> Path:
-    """The EDI the run folder holds for one product, built from the folder rule rather than from the ledger.
+def tf_path(work_root, site, run, stamp, kind, rate_hz, params, selection="") -> Path:
+    """The EDI the run folder holds for one transfer function, built from the folder rule and not the ledger.
 
     The ledger records the absolute path the run wrote, which is wrong for a work root that has since moved;
-    the folder rule is not. A product estimated on a selection of hours carries the tag between the rate and
-    the parameter set; the whole record carries none, so an untagged name is unchanged.
+    the folder rule is not. A transfer function estimated on a selection of hours carries the tag between the
+    rate and the parameter set; the whole record carries none, so an untagged name is unchanged.
     """
     tag = str(selection or "").strip()
     tag = "" if tag in ("", WHOLE_SELECTION, "nan") else (tag + "_")
@@ -129,13 +132,13 @@ def product_path(work_root, site, run, stamp, kind, rate_hz, params, selection="
                                                       % (site, kind, int(float(rate_hz)), tag, params))
 
 
-def parse_product_name(path) -> dict:
-    """{site, kind, rate_hz, selection, params} read off a product's file name, or an empty dict.
+def parse_tf_name(path) -> dict:
+    """{site, kind, rate_hz, selection, params} read off a transfer function's file name, or an empty dict.
 
     The parameter set carries an underscore of its own (kaiser20_75), so the selection is recognised as a
     known tag at the head of what follows the rate rather than by splitting on underscores.
     """
-    m = PRODUCT_NAME.match(Path(path).stem)
+    m = TF_NAME.match(Path(path).stem)
     if not m:
         return {}
     rest = m.group("rest")
@@ -148,16 +151,16 @@ def parse_product_name(path) -> dict:
                 selection=sel, params=rest)
 
 
-def find_products(survey, sites, runs="latest", kinds="all", rates="all", work_root=None,
+def find_transfer_functions(survey, sites, runs="latest", kinds="all", rates="all", work_root=None,
                   selections="all") -> pd.DataFrame:
-    """One row per product of the chosen sites and runs, from the ledger and the run folders.
+    """One row per transfer function of the chosen sites and runs, from the ledger and the run folders.
 
     `sites` is a list of site names, `kinds` is "all" or a list of the code keys, `rates` is "all" or a list
     of sample rates in Hz, and `selections` is "all" or a list of the tags. `on_disk` says whether the EDI
     the ledger names is there.
 
-    The ledger's `selection` column names the selection of hours each product was estimated on. A ledger
-    written before that column existed has none, and every one of its products is the whole record.
+    The ledger's `selection` column names the selection of hours each row was estimated on. A ledger written
+    before that column existed has none, and every one of its rows is the whole record.
     """
     work = Path(work_root or survey.cfg["work_root"])
     led = ledger(work)
@@ -176,7 +179,7 @@ def find_products(survey, sites, runs="latest", kinds="all", rates="all", work_r
         keep = keep[keep.selection.isin([str(x) for x in selections])]
     rows = []
     for r in keep.itertuples():
-        p = product_path(work, r.site, r.run, r.stamp, r.kind, r.rate_hz, r.params, r.selection)
+        p = tf_path(work, r.site, r.run, r.stamp, r.kind, r.rate_hz, r.params, r.selection)
         folder = run_folder(work, r.site, r.run, r.stamp)
         rows.append(dict(site=r.site, run=r.run, stamp=r.stamp, kind=r.kind, rate_hz=float(r.rate_hz),
                          params=r.params, selection=r.selection, path=str(p),
@@ -185,7 +188,7 @@ def find_products(survey, sites, runs="latest", kinds="all", rates="all", work_r
                          members=(None if pd.isna(r.members) else r.members),
                          n_runs=r.n_runs, seconds=r.seconds, peak_rss_mb=r.peak_rss_mb,
                          status=r.status, on_disk=p.exists()))
-    out = pd.DataFrame(rows, columns=PRODUCT_COLUMNS)
+    out = pd.DataFrame(rows, columns=TF_COLUMNS)
     order = {k: i for i, k in enumerate(KINDS)}
     if len(out):
         out = out.sort_values(["site", "rate_hz", "run", "kind", "selection"],
@@ -196,8 +199,8 @@ def find_products(survey, sites, runs="latest", kinds="all", rates="all", work_r
 def unledgered(work_root, sites, pairs) -> list:
     """Every EDI sitting in a chosen run folder that the ledger does not name.
 
-    A product on disk with no ledger row is the other half of the same question the check asks of a ledger row
-    with no file, and neither is answered by reading the ledger alone.
+    A transfer function on disk with no ledger row is the other half of the question the check asks of a
+    ledger row with no file, and neither half is answered by reading the ledger alone.
     """
     work = Path(work_root)
     named = set()
@@ -205,7 +208,7 @@ def unledgered(work_root, sites, pairs) -> list:
     if "selection" not in led.columns:
         led = led.assign(selection=WHOLE_SELECTION)
     for r in led.itertuples():
-        named.add(str(product_path(work, r.site, r.run, r.stamp, r.kind, r.rate_hz, r.params,
+        named.add(str(tf_path(work, r.site, r.run, r.stamp, r.kind, r.rate_hz, r.params,
                                    getattr(r, "selection", ""))).lower())
     out = []
     for site in sites:
@@ -215,13 +218,6 @@ def unledgered(work_root, sites, pairs) -> list:
                 if str(p).lower() not in named:
                     out.append(str(p))
     return out
-
-
-def run_provenance(path) -> dict:
-    """provenance.json of a run folder, or an empty dict."""
-    import json
-    p = Path(path)
-    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
 
 
 # ------------------------------------------------------------------ reading a transfer function
@@ -258,9 +254,10 @@ def read_tf(path) -> TFData:
     sort and the mask had to do, so a check can score it.
 
     A file whose impedance is the empty-data fill at every period and component -- an H-only delivery, where
-    the tipper is the product and the two rows carry no measurement -- reads back with no impedance at all,
-    because the reader masks the fill and is left with nothing. It comes back here as an empty tensor on the
-    file's own periods rather than as an error, so a tipper-only product can be read like any other.
+    the tipper is what is delivered and the two impedance rows carry no measurement -- reads back with no
+    impedance at all, because the reader masks the fill and is left with nothing. It comes back here as an
+    empty tensor on the file's own periods rather than as an error, so a tipper-only file reads like any
+    other.
     """
     from mt_metadata.transfer_functions.core import TF
 
@@ -363,8 +360,3 @@ def tipper_parts(tf: TFData, comp: str):
         return None, None, None
     i, j = TIPPER_COMPONENTS[comp]
     return np.real(tf.t[:, i, j]), np.imag(tf.t[:, i, j]), np.asarray(tf.t_err)[:, i, j]
-
-
-def kind_words(keys=KINDS) -> pd.DataFrame:
-    """The vocabulary table: the word for each reference kind beside the code key file names carry."""
-    return pd.DataFrame([dict(word=KIND_WORD[k], key=k) for k in keys])

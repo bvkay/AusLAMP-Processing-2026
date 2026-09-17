@@ -1,9 +1,9 @@
 """provenance.json: what one run rests on, including the parts that are inputs rather than measurements.
 
-The shape is ported from vic_store_w3.provenance (:38-71). One file per run folder, holding the survey.yaml
-fields the run used, the sites.csv and decisions.csv rows verbatim, the reference sidecar of every kind, the
-engine and its version, the band object, the parameter set, the mask statistics per product, the rate, the
-dates, the machine time and peak resident memory per product, and `caveats`.
+One file per run folder, holding the survey.yaml fields the run used, the sites.csv and decisions.csv rows
+verbatim, the reference sidecar of every kind, the engine and its version, the band object, the parameter
+set, the rate, the dates, per transfer function the mask statistics with the machine time and peak resident
+memory, and `caveats`.
 
 `decisions_applied` carries, verbatim, the list process.frame.apply_decisions returned for this site's own
 channels -- one string per decision actually applied, the same strings the EDI carries as `decision=` lines.
@@ -68,13 +68,13 @@ def caveats(site_row, applied_signs, undecided_signs, references: dict, rate, ex
 
 
 def write(path, survey_cfg, site_row, decision_row, references, bands, params_name, params, rate,
-          run_name, stamp, products, mask_stats, cache_sidecar, engine, engine_version, extra_caveats=(),
+          run_name, stamp, tfs, mask_stats, cache_sidecar, engine, engine_version, extra_caveats=(),
           pool=None, rot_segments=(), rot_drop=(), weight_rule="fleet", selection=None,
           decisions_applied=()):
     """Write provenance.json into a run folder and return the dict it holds.
 
     `selection` is the hour selection record of process.selection where the run was made on one: the band and
-    the Welch segment the hours were scored on, and per tag the fraction, the seed, the score threshold and
+    the Welch segment the hours were scored on, and per tag the bounds, the coherence threshold, the seed and
     the hours kept. It is empty for a whole-record run.
     """
     path = Path(path)
@@ -106,7 +106,7 @@ def write(path, survey_cfg, site_row, decision_row, references, bands, params_na
         parameter_set=dict(name=params_name, **{k: v for k, v in params.items()}),
         mask=mask_stats,
         selection=selection or {},
-        products=products,
+        transfer_functions=tfs,
         cache=dict(builder=cache_sidecar.get("builder"), built_utc=cache_sidecar.get("built_utc"),
                    notch=cache_sidecar.get("notch_applied", "none"),
                    signs_in_cache=cache_sidecar.get("signs_applied", "none"),

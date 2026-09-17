@@ -1,7 +1,5 @@
 """Member alignment: the delay a stack member is advanced by before it enters the sum.
 
-Ported from wamt_align.py:54-81, 130-239 and 255-361.
-
 A delay on a single remote cancels exactly in Z, so a remote site is never shifted and neither is the
 observatory. It does not cancel in a stack: members whose delays differ by 2-3 s partly cancel each other
 when they are summed, and 2.5 s is 90 degrees at a 10 s period.
@@ -11,7 +9,7 @@ MAX_WINDOWS = 8 windows spread across the record -- spread and not the first eig
 starts drifting on day 22 would never be seen otherwise. Three gates, all from wamt_align.shift_for:
 
     the lag has to be measurable at all (peak correlation at least MIN_CORR = 0.35 in a window);
-    it has to be ONE CONSTANT across the record, spread <= MAX_SPREAD_S = 1.0 s, because no single shift
+    it has to be one constant across the record, spread <= MAX_SPREAD_S = 1.0 s, because no single shift
         fixes a free-running clock and such a member is worse aligned than not;
     the member has to correlate with the target at 20-200 s at MIN_LONG_CORR = 0.5 at all, or the lag was
         measured on noise.
@@ -25,9 +23,8 @@ The delay itself is applied by shift() as an integer roll and a Lanczos-windowed
 either side. The interpolation is local, so an impulsive sample is not spread and a NaN reaches only the
 2 x LANCZOS_A samples around it.
 
-The settling inside 120 s of a run edge biased the 5-20 s cross-correlation: with references.EDGE_S at 120 s
-rather than 30 s, Q49's eight member lags read +0.00 to +0.12 s where they had read +0.15 to +0.35 s
-(2026-09-17).
+The lag is measured after references.EDGE_S = 120 s is NaN inside every record end and every gap end,
+because the logger's settling there biases the 5-20 s cross-correlation.
 
 @author: ben kay (ben@auscope.org.au)
 """

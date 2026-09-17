@@ -1,25 +1,25 @@
-"""What a form delivers: the tipper-only product, its refusal test, and the forms table workbook 06 reads.
+"""What a form delivers: the tipper-only file, its refusal test, and the forms table workbook 06 reads.
 
-THE TIPPER-ONLY PRODUCT (ported from wamt_esp2026_products.py:339-401). A site with no deliverable impedance
+The tipper-only delivery. A site with no deliverable impedance
 can still deliver its tipper: the tipper is an H-only quantity and survives two dead electric lines. The
-impedance rows stay NaN and the file's INFO lines say so -- "xy rows: no product of record" and "tipper from
-the <kind> product" -- so a reader cannot take the empty rows for a measurement.
+impedance rows stay NaN and the file's info lines say so -- "xy rows: no transfer function of record" and
+"tipper from the <kind> transfer function" -- so a reader cannot take the empty rows for a measurement.
 
-THE REFUSAL. A tipper is refused where the vertical channel is not measuring the vertical field. Two faults
-say so and neither is visible in the tipper itself: Hz a COPY of a horizontal channel, which reads a
-coherence of 1.00 with Hx and makes the tipper a re-statement of the horizontal record; and a LEAK, where Hz
+The refusal. A tipper is refused where the vertical channel is not measuring the vertical field. Two faults
+say so and neither is visible in the tipper itself: Hz a copy of a horizontal channel, which reads a
+coherence of 1.00 with Hx and makes the tipper a re-statement of the horizontal record; and a leak, where Hz
 carries the site's own horizontal field (0.95 with its own H at 1000-4000 s) while carrying nothing of a
 neighbour's vertical field (0.00 with the neighbour's Hz). A real vertical field is coherent with the
 neighbour's vertical field at those periods, because the source is regional.
 
-THE FORMS TABLE is <work_root>/<site>/<run>_<stamp>/forms.csv: one row per form with the products it is read
+The forms table is <work_root>/<site>/<run>_<stamp>/forms.csv: one row per form with the controls it is read
 against, the criterion in words, the verdict, and the reading -- the bar over 10-1000 s, the smoothness, the
 agreement with the baseline per decade -- and whether the form is a candidate for workbook 06. A form is a
-candidate only where it beats every control it carries on the bar by the stated margin: a selection whose
-product does not beat its random control buys efficiency, not a different answer, and is not promoted. A form
-that borrows both horizontal channels is an inter-site impedance and is never a candidate. A form assembled
-from other forms carries `candidate_rule`, a {candidate, verdict} the caller states, because its controls
-belong to the rows it was assembled from and this row's own bar cannot be read for them.
+candidate only where it beats every control it carries on the bar by the stated margin: a selection that does
+not beat its random control buys efficiency, not a different answer, and is not promoted. A form that borrows
+both horizontal channels is an inter-site impedance and is never a candidate. A form assembled from other
+forms carries `candidate_rule`, a {candidate, verdict} the caller states, because its controls belong to the
+rows it was assembled from and this row's own bar cannot be read for them.
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 
 from .. import agreement as AG
-from ..products import COMPONENTS, OFF_DIAGONAL, read_tf
+from ..transfer_functions import COMPONENTS, OFF_DIAGONAL, read_tf
 
 BAR_BAND_S = (10.0, 1000.0)
 AGREE_BAND_S = (100.0, 1000.0)
@@ -50,7 +50,7 @@ LEAK_BAND_S = (1000.0, 4000.0)
 # ---------------------------------------------------------------- the reading
 
 def bar(tf, comp, lo_s=BAR_BAND_S[0], hi_s=BAR_BAND_S[1]) -> float:
-    """The median relative impedance error of one component over a band: the product's bar.
+    """The median relative impedance error of one component over a band: the curve's bar.
 
     The bar always sits beside the shape call, because the shape rule alone passes on noise.
     """
@@ -63,7 +63,7 @@ def bar(tf, comp, lo_s=BAR_BAND_S[0], hi_s=BAR_BAND_S[1]) -> float:
 
 
 def reading(tf, baseline=None, bands=DECADES, bar_band=BAR_BAND_S, agree_band=AGREE_BAND_S) -> dict:
-    """The bar, the smoothness and the agreement with the baseline of one product, per component."""
+    """The bar, the smoothness and the agreement with the baseline of one curve, per component."""
     out = {}
     sm = AG.smoothness(tf)
     for comp in OFF_DIAGONAL:
@@ -101,9 +101,10 @@ def forms_table(rows, out_path=None, baseline_path=None, bar_band=BAR_BAND_S,
     """One row per form with its controls, criterion, verdict and reading. Written to forms.csv.
 
     `rows` are the dicts run_form returned, each carrying `controls` as a semicolon-separated list of the
-    form names it is read against. A form with a control is a candidate only where it beats every one of them
-    on the bar by `margin`; a form with no control (the baseline, a demonstration, an inter-site form) is
-    read and never promoted on this table alone.
+    form names it is read against, and `transfer_function`, which is the key that table uses for the file
+    the pass wrote. A form with a control is a candidate only where it beats every one of them on the bar by `margin`;
+    a form with no control (the baseline, a demonstration, an inter-site form) is read and never promoted on
+    this table alone.
     """
     made = {r["form"]: r for r in rows if r.get("status") in ("made", "exists")}
     tfs, reads = {}, {}
@@ -111,7 +112,7 @@ def forms_table(rows, out_path=None, baseline_path=None, bar_band=BAR_BAND_S,
     if baseline_path and Path(baseline_path).exists():
         base = read_tf(baseline_path)
     for form, r in made.items():
-        p = Path(r["product"])
+        p = Path(r["transfer_function"])
         if not p.exists():
             continue
         try:
@@ -138,7 +139,7 @@ def forms_table(rows, out_path=None, baseline_path=None, bar_band=BAR_BAND_S,
         elif r.get("status") not in ("made", "exists"):
             verdict = "NOT MADE"
         elif r.get("inter_site"):
-            verdict = "shown, never delivered: an inter-site impedance"
+            verdict = "drawn for comparison; not a transfer function: an inter-site impedance"
         elif r.get("judged_on") and r["judged_on"] != "bar":
             # a form whose criterion is a per-period statement is read against its control period by period
             # and never on the bar, which cannot say whether one band moved and the rest held
@@ -147,7 +148,7 @@ def forms_table(rows, out_path=None, baseline_path=None, bar_band=BAR_BAND_S,
         elif not controls:
             verdict = "read, no control: not promoted on this table"
         elif not judged:
-            verdict = "UNJUDGED: no control product was made"
+            verdict = "UNJUDGED: no control was made"
         else:
             verdict = ("beats its control(s) on the %g-%g s bar by at least %.0f %%"
                        % (bar_band[0], bar_band[1], 100 * margin)) if wins else \
@@ -162,9 +163,9 @@ def forms_table(rows, out_path=None, baseline_path=None, bar_band=BAR_BAND_S,
             verdict = str(rule.get("verdict") or verdict)
         out.append(dict(
             site=r.get("site"), form=form, kind=r.get("kind"), rate_hz=r.get("rate_hz"),
-            product=Path(str(r.get("product"))).name, status=r.get("status"),
+            transfer_function=Path(str(r.get("transfer_function"))).name, status=r.get("status"),
             controls=";".join(controls) or "none",
-            control_products=";".join(Path(str(made[c]["product"])).name for c in controls if c in made),
+            control_transfer_functions=";".join(Path(str(made[c]["transfer_function"])).name for c in controls if c in made),
             seed=r.get("seed"), criterion=r.get("criterion") or "",
             bar_10_1000=this_bar,
             control_bar=";".join("%s %.4f" % (c, v) for c, v in ctrl_bars.items() if np.isfinite(v)) or "",
@@ -196,7 +197,7 @@ def tipper_refusal(sv, site, neighbour=None, band_s=LEAK_BAND_S, rate=1) -> dict
     or above 0.95 with its own H at 1000-4000 s while reading under 0.10 with a neighbour's Hz, which is the
     site's own horizontal field leaking into the vertical channel rather than a regional vertical field.
     """
-    from .masks import band_coherence, distance_km, load_raw, prepare, span
+    from .masks import band_coherence, distance_km, load_raw, prepare
     from ..look import highpass
     b, a = highpass(float(rate), 3000.0)
     t0, arr = load_raw(sv, site, rate, ("Hx", "Hy", "Hz"))
@@ -235,18 +236,18 @@ def tipper_refusal(sv, site, neighbour=None, band_s=LEAK_BAND_S, rate=1) -> dict
                 refused=bool(copy or leak), reason="; ".join(why) or "neither fault fires")
 
 
-def tipper_only(product, out_path, kind="", refusal=None) -> dict:
-    """A tipper-only delivery: the impedance rows blanked, the tipper kept, the INFO lines saying so.
+def tipper_only(tf_path, out_path, kind="", refusal=None) -> dict:
+    """A tipper-only delivery: the impedance rows blanked, the tipper kept, the info lines saying so.
 
     The impedance rows are written as the EDI empty-data fill so that a reader cannot take them for a
-    measurement, and two INFO lines name what the file is.
+    measurement, and two info lines name what the file is.
     """
     from mt_metadata.transfer_functions.core import TF
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if refusal and refusal.get("refused"):
         return dict(path=None, written=False, refused=True, reason=refusal.get("reason"))
-    tf = TF(fn=str(product))
+    tf = TF(fn=str(tf_path))
     tf.read()
     has_tipper = False
     try:
@@ -255,12 +256,12 @@ def tipper_only(product, out_path, kind="", refusal=None) -> dict:
         has_tipper = False
     if not has_tipper:
         return dict(path=None, written=False, refused=True,
-                    reason="the product carries no tipper: an H-only delivery has nothing to deliver")
+                    reason="the source carries no tipper: an H-only delivery has nothing to deliver")
     z = np.asarray(tf.impedance.values, complex)
     ze = np.asarray(tf.impedance_error.values, float)
     # the EDI empty-data value, not NaN: an all-NaN tensor leaves the file with no impedance block at all,
-    # which a reader cannot tell from a file that was never given one. products.read_tf masks 1e32 per
-    # component, so the rows come back empty and the block still says which periods the tipper covers.
+    # which a reader cannot tell from a file that was never given one. transfer_functions.read_tf masks 1e32
+    # per component, so the rows come back empty and the block still says which periods the tipper covers.
     tf.impedance = np.full_like(z, EDI_FILL + 0j)
     tf.impedance_error = np.full_like(ze, EDI_FILL)
     try:
@@ -268,9 +269,9 @@ def tipper_only(product, out_path, kind="", refusal=None) -> dict:
         pp = list(st.transfer_function.processing_parameters or [])
         # every processing_parameters line must be key=value: the EDI writer splits each one on the first
         # "=" and raises on a line without one
-        pp += ["xy_rows=no product of record",
-               "yx_rows=no product of record",
-               "tipper=from the %s product %s" % (kind or "source", Path(product).name)]
+        pp += ["xy_rows=no transfer function of record",
+               "yx_rows=no transfer function of record",
+               "tipper=from the %s transfer function %s" % (kind or "source", Path(tf_path).name)]
         if refusal:
             pp.append("tipper_refusal_test=%s (Hz with own Hx %.2f, with own H %.2f, with %s's Hz %.2f)"
                       % (refusal.get("reason", ""), refusal.get("coh_hz_hx", float("nan")),
@@ -287,4 +288,5 @@ def tipper_only(product, out_path, kind="", refusal=None) -> dict:
     finite = {c: int(np.isfinite(back.z[:, i, j]).sum()) for c, (i, j) in COMPONENTS.items()}
     return dict(path=str(out_path), written=True, refused=False,
                 impedance_finite=finite, has_tipper=bool(back.t is not None),
-                reason="the impedance rows are blank and the tipper is the %s product's" % (kind or "source"))
+                reason="the impedance rows are blank and the tipper is the %s transfer function's"
+                       % (kind or "source"))

@@ -1,7 +1,7 @@
 """Two transfer functions on one period grid, and what their difference per decade says.
 
-The grid for a comparison between two of our own products is the ten-per-decade grid T = 10^(k/10) from
-3.16 s (k = 5) to 50,119 s (k = 47), ported from scripts/qc/edi_resample.py:69-71
+The grid for a comparison between two of our own transfer functions is the ten-per-decade grid
+T = 10^(k/10) from 3.16 s (k = 5) to 50,119 s (k = 47), ported from scripts/qc/edi_resample.py:69-71
 (D:/BEN/MTH5_Aurora_mt-io_2026). A pair scored on one curve's own periods moves nothing of that curve.
 
 on_grid interpolates linearly in log10 period, of log10 |Z| and of the unwrapped phase, over the source's own
@@ -24,7 +24,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .products import COMPONENTS, OFF_DIAGONAL, TFData, rho_phase
+from .transfer_functions import COMPONENTS, OFF_DIAGONAL, TFData, rho_phase
 
 # the ten-per-decade grid, 3.16 s to 50,119 s
 K_LO, K_HI, PER_DECADE = 5, 47, 10
@@ -174,16 +174,16 @@ def band_stats(a: TFData, b: TFData, comp: str, lo=AGREE_BAND[0], hi=AGREE_BAND[
 
 # ------------------------------------------------------------------ the comparisons a workbook draws
 
-def kind_vs_kind(products: pd.DataFrame, read=None, bands=BANDS, agree_rho=AGREE_RHO,
+def kind_vs_kind(tfs: pd.DataFrame, read=None, bands=BANDS, agree_rho=AGREE_RHO,
                  agree_phase=AGREE_PHASE_DEG, agree_band=AGREE_BAND) -> pd.DataFrame:
     """Every pair of kinds of one site and rate, per band, with the agreement call over `agree_band`.
 
     `read` is a function from a path to a TFData; the default reads each file once per call.
     """
-    from .products import read_tf
+    from .transfer_functions import read_tf
     read = read or read_tf
     rows = []
-    for (site, rate, run), grp in products.groupby(["site", "rate_hz", "run"], sort=True):
+    for (site, rate, run), grp in tfs.groupby(["site", "rate_hz", "run"], sort=True):
         avail = {r.kind: r.path for r in grp.itertuples() if r.on_disk}
         keys = list(avail)
         for m in range(len(keys)):
@@ -210,12 +210,12 @@ def kind_vs_kind(products: pd.DataFrame, read=None, bands=BANDS, agree_rho=AGREE
     return pd.DataFrame(rows)
 
 
-def run_vs_run(products: pd.DataFrame, read=None, bands=BANDS) -> pd.DataFrame:
-    """The same product (site, kind, rate) across two runs, on the ten-per-decade grid."""
-    from .products import read_tf
+def run_vs_run(tfs: pd.DataFrame, read=None, bands=BANDS) -> pd.DataFrame:
+    """The same (site, kind, rate) across two runs, on the ten-per-decade grid."""
+    from .transfer_functions import read_tf
     read = read or read_tf
     rows = []
-    for (site, kind, rate), grp in products.groupby(["site", "kind", "rate_hz"], sort=True):
+    for (site, kind, rate), grp in tfs.groupby(["site", "kind", "rate_hz"], sort=True):
         runs = [(r.run, r.stamp, r.path) for r in grp.itertuples() if r.on_disk]
         if len(runs) < 2:
             continue

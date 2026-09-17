@@ -1,21 +1,23 @@
 """What the 10 Hz row reads against the 1 Hz row of the same survey, and the caveat that states it.
 
-A caveat has to be true of the survey it sits in (Ben's ruling, 2026-09-17). The departure a 10 Hz product
-carries against its own 1 Hz product is a property of the instrument, the cache and the band file of that
-survey, so it is measured on the survey's own whole-record products rather than quoted from another one.
+A caveat has to be true of the survey it sits in (Ben's ruling, 2026-09-17). The departure a 10 Hz transfer
+function carries against its own 1 Hz transfer function is a property of the instrument, the cache and the
+band file of that survey, so it is measured on the survey's own whole-record transfer functions rather than
+quoted from another one.
 
     departure      the median of rho(10 Hz) / rho(1 Hz) over BAND_S = 4-32 s, per component. The 1 Hz row is
                    interpolated in log period and log rho onto the 10 Hz periods inside the band, and a
                    10 Hz period the 1 Hz row does not reach is dropped rather than compared against the end
                    point numpy.interp would clamp to.
-    measure        that median over the whole-record 10 Hz products of one kind and their 1 Hz twins, with
-                   the sites counted. The whole record is the only fair measurement of the rate, because a
-                   selection of hours differs from the 1 Hz row in which hours it holds as well as in rate.
+    measure        that median over the whole-record 10 Hz transfer functions of one kind and their 1 Hz
+                   twins, with the sites counted. The whole record is the only fair measurement of the rate,
+                   because a selection of hours differs from the 1 Hz row in which hours it holds as well as
+                   in rate, so the `stretch` and `control` passes are not measured on.
     caveat         the sentence the EDI and the prose carry, built from a measurement or, where the survey
                    has none, saying that it has none. No number from another survey appears in either.
 
 The record is written once per survey to <work_root>/survey/rate_departure.json and read by the pass, so
-every 10 Hz product of a survey carries the same measured sentence.
+every 10 Hz transfer function of a survey carries the same measured sentence.
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -80,10 +82,12 @@ def measure(pairs, kind, band_s=BAND_S) -> dict:
 
 
 def caveat(rec=None, band_s=BAND_S) -> str:
-    """The sentence every 10 Hz product carries, built from a measurement or saying there is none."""
+    """The sentence every 10 Hz transfer function carries, built from a measurement or saying there is
+    none."""
     if not rec or not rec.get("median_ratio") or all(v is None for v in rec["median_ratio"].values()):
         return ("the departure of this survey's 10 Hz row from its own 1 Hz row has not been measured, "
-                "because the survey carries no whole-record 10 Hz product to measure it on; not spliced")
+                "because the survey carries no whole-record 10 Hz transfer function to measure it on; "
+                "not spliced")
     b = rec.get("band_s") or list(band_s)
     parts = []
     for c in COMPONENTS:
@@ -91,8 +95,8 @@ def caveat(rec=None, band_s=BAND_S) -> str:
         if v is not None:
             parts.append("%s %+.1f per cent" % (c, 100.0 * (float(v) - 1.0)))
     n = max(rec.get("n_scored", {}).values() or [0]) if rec.get("n_scored") else rec.get("n_sites", 0)
-    return ("Aurora at 10 Hz reads %s at %g-%g s against its own 1 Hz product, measured on this survey's %d "
-            "whole-record 10 Hz %s product(s); not spliced"
+    return ("Aurora at 10 Hz reads %s at %g-%g s against its own 1 Hz transfer function, measured on this "
+            "survey's %d whole-record 10 Hz %s transfer function(s); not spliced"
             % (" and ".join(parts), b[0], b[1], int(n), rec.get("kind", "")))
 
 
@@ -127,12 +131,12 @@ def _split(raw: bytes):
 
 
 def rewrite_caveat(path, sentence) -> dict:
-    """Replace the one caveat_10hz line of a finished product and verify nothing else moved.
+    """Replace the one caveat_10hz line of a finished transfer function, and verify no other byte moved.
 
-    The work is done on the file's BYTES, so no encoding or newline round trip can alter a character the
+    The work is done on the file's bytes, so no encoding or newline round trip can alter a character the
     rewrite did not mean to touch. The new line keeps the old line's prefix up to the key and its own line
     ending, and every other line is carried over unread. After the write the file is read back and the two
-    are compared with that one line removed from each: where anything else differs the original bytes are
+    are compared with that one line removed from each: where any other byte differs the original bytes are
     put back, `changed` is False and the reason says so.
 
     Returns {path, changed, old, new, reason}.
@@ -176,8 +180,8 @@ def rewrite_caveat(path, sentence) -> dict:
     return out
 
 
-def rewrite_products(work_root, sentence, pattern="*/*/*_10hz_*.edi", twin=True) -> list:
-    """Rewrite the caveat of every 10 Hz product under a work root. Returns one record per file touched.
+def rewrite_all(work_root, sentence, pattern="*/*/*_10hz_*.edi", twin=True) -> list:
+    """Rewrite the caveat line of every 10 Hz transfer function under a work root, one record per file.
 
     The XML twin is scored too and rewritten only where it carries the line; the EMTFXML writer drops the
     processing parameters, so on this package's files it does not carry one, and the record says that rather
@@ -205,14 +209,15 @@ def record_rewrite(folder, rows, at=None) -> Path:
     entries = list(d.get(REWRITE_NAME) or [])
     for r in rows:
         if r.get("changed"):
-            entries.append(dict(at=stamp, product=Path(r["path"]).name, old=r["old"], new=r["new"]))
+            entries.append(dict(at=stamp, transfer_function=Path(r["path"]).name, old=r["old"],
+                                new=r["new"]))
     d[REWRITE_NAME] = entries
     p.write_text(json.dumps(d, indent=1, default=str), encoding="utf-8")
     return p
 
 
 def carries_caveat(path, sentence) -> bool:
-    """True where a written product's caveat_10hz line is the sentence given."""
+    """True where a written transfer function's caveat_10hz line is the sentence given."""
     p = Path(path)
     if not p.exists():
         return False

@@ -1,4 +1,4 @@
-"""The arithmetic of auslamp_proc.site.recipe, on synthetic tables and synthetic products.
+"""The arithmetic of auslamp_proc.site.recipe, on synthetic tables and synthetic transfer functions.
 
 Every test states what it would take to fail. None of them reads a survey tree, except the one that asks a
 survey object with no cache on disk for a 10 Hz row and reads the refusal it gets back.
@@ -11,89 +11,79 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from auslamp_proc.process import selection as SEL
+from auslamp_proc.site import masks as MK
 from auslamp_proc.site import recipe
 
 HOUR = 3600.0
-T0 = 1772920800                                     # 2026-03-07 22:00:00 UTC, Q58N's first sample
+T0 = 1772920800                                     # 2026-03-07 22:00:00 UTC, a whole UTC hour
 
 
 def _table(coh_xy, coh_yx, t0=T0):
-    """An hourly coherence table of two given series, as hour_coherence returns one."""
+    """An hour score table of two given series, as process.selection.score_hours returns one."""
     n = len(coh_xy)
     t = np.arange(n) * HOUR + float(t0)
-    out = pd.DataFrame(dict(t_start=t.astype(int), t_end=(t + HOUR).astype(int),
-                            utc=[str(x) for x in t.astype(int)],
-                            coh_xy=np.asarray(coh_xy, float), coh_yx=np.asarray(coh_yx, float)))
-    out.attrs["band_s"] = list(recipe.WINDOW_BAND_S)
+    xy, yx = np.asarray(coh_xy, float), np.asarray(coh_yx, float)
+    out = pd.DataFrame(dict(hour=np.arange(n), t_start=t.astype(int), t_end=(t + HOUR).astype(int),
+                            utc=[str(x) for x in t.astype(int)], coh_xy=xy, coh_yx=yx,
+                            score=np.nanmean(np.vstack([xy, yx]), axis=0)))
+    out.attrs["band_s"] = list(SEL.SCORE_BAND_S)
     return out
 
 
-# ---------------------------------------------------------------- the window rule
+class _Survey:
+    """The two things row_hours asks a survey for: the work root and the span of one cache."""
 
-def test_the_window_rule_takes_the_longest_run_with_both_lines_above():
-    """Fails if the rule returns a run that is not the longest, or one where only one line is above the
-    threshold, or if it counts an hour whose coherence could not be scored."""
-    xy = np.full(40, 0.2)
-    yx = np.full(40, 0.2)
-    xy[2:14], yx[2:14] = 0.8, 0.8                   # 12 h with both lines above: the answer
-    xy[20:35], yx[20:35] = 0.8, 0.2                 # 15 h with one line above: not a window
-    xy[36:39], yx[36:39] = 0.9, 0.9                 # 3 h with both above: shorter
-    got = recipe.coherent_window(_table(xy, yx), coh_min=0.5)
-    assert got["hours"] == 12
-    assert got["t_start"] == T0 + 2 * HOUR
-    assert got["t_end"] == T0 + 14 * HOUR
-    assert got["n_runs"] == 2
-    assert got["n_hours_above"] == 15
+    def __init__(self, work_root, t0=T0, n=60 * 86400):
+        self.cfg = dict(work_root=str(work_root))
+        self._span = (int(t0), int(n))
 
 
-def test_a_gap_hour_cuts_a_run_in_two():
-    """Fails if an hour that could not be scored is treated as inside a coherent stretch."""
-    xy = np.full(20, 0.9)
-    yx = np.full(20, 0.9)
-    xy[9] = np.nan                                  # one hour holding a non-finite sample
-    got = recipe.coherent_window(_table(xy, yx), coh_min=0.5)
-    assert got["hours"] == 10                       # hours 10..19, the longer of the two pieces
-    assert got["n_runs"] == 2
-    assert got["n_hours_scored"] == 19
+# ---------------------------------------------------------------- the hours a row is passed on
+
+def test_whole_is_the_record_and_carries_no_control():
+    """Fails if the whole record is given a window or a control; there is nothing a stretch of the same
+    length elsewhere would be compared against."""
+    got = recipe.row_hours(None, "X", recipe.HOURS_WHOLE, row="x")
+    assert got["rule"] == "whole"
+    assert got["window"] is None and got["control"] is None
 
 
-def test_no_hour_above_the_threshold_is_a_reason_and_not_a_window():
-    """Fails if a record with no coherent hour returns a window rather than the reason it found none."""
-    got = recipe.coherent_window(_table(np.full(10, 0.1), np.full(10, 0.1)), coh_min=0.5)
-    assert got["t_start"] is None and got["hours"] == 0
-    assert "no hour reads above" in got["reason"]
+def test_window_coherent_reads_the_row_s_own_line_through_the_one_rule(monkeypatch, tmp_path):
+    """Fails if the recipe chooses hours by any rule other than process.selection.longest_stretch, or if the
+    x row is not read on Ex against Hy and the y row on Ey against Hx."""
+    xy = np.full(40, 0.9)
+    yx = np.full(40, 0.1)                           # the y line never rises
+    table = _table(xy, yx)
+    monkeypatch.setattr(MK, "span", lambda sv, site, rate=1: (T0, 60 * 86400))
+    sv = _Survey(tmp_path)
+    x = recipe.row_hours(sv, "X", recipe.HOURS_COHERENT, row="x", table=table, seed=SEL.SEED)
+    assert x["line"] == "xy"
+    assert x["window"]["hours"] == 40
+    assert x["control"]["hours"] == 40
+    assert x["control"]["t_end"] <= x["window"]["t_start"] or         x["control"]["t_start"] >= x["window"]["t_end"]
+    y = recipe.row_hours(sv, "X", recipe.HOURS_COHERENT, row="y", table=table, seed=SEL.SEED)
+    assert y["line"] == "yx"
+    assert y["window"]["t_start"] is None and y["control"] is None
 
 
-def test_a_named_window_reads_its_start_and_its_hours():
-    """Fails if the named form does not parse, or if a malformed one raises instead of stating the reason."""
-    got = recipe.named_window("window:2026-03-22 12:00/14")
-    assert got["t_start"] == int(pd.Timestamp("2026-03-22 12:00", tz="UTC").timestamp())
-    assert got["t_end"] - got["t_start"] == 14 * HOUR
-    bad = recipe.named_window("window:not-a-time/14")
-    assert bad["t_start"] is None and "does not read as" in bad["reason"]
+def test_a_named_window_is_parsed_and_not_scored(monkeypatch, tmp_path):
+    """Fails if a window the caller names is re-chosen by the rule, or if a malformed one raises instead of
+    stating the reason."""
+    monkeypatch.setattr(MK, "span", lambda sv, site, rate=1: (T0, 60 * 86400))
+    got = recipe.row_hours(_Survey(tmp_path), "X", "window:2026-03-22 12:00/14", row="y")
+    assert got["window"]["t_end"] - got["window"]["t_start"] == 14 * HOUR
+    assert got["control"]["hours"] == 14
+    bad = recipe.row_hours(_Survey(tmp_path), "X", "window:not-a-time/14", row="y")
+    assert bad["window"]["t_start"] is None and "does not read as" in bad["window"]["reason"]
 
 
-# ---------------------------------------------------------------- the control
-
-def test_the_control_is_the_same_length_and_lands_elsewhere():
-    """Fails if the control stretch differs in length from the window it controls, if it overlaps that
-    window where the record is long enough to hold both, or if two seeds give the same stretch."""
-    n = 60 * 86400
-    w = dict(t_start=T0 + 15 * 86400, t_end=T0 + 15 * 86400 + 14 * int(HOUR))
-    c = recipe.control_window(T0, n, w, seed=20260916)
-    assert (c["t_end"] - c["t_start"]) == (w["t_end"] - w["t_start"])
-    assert c["t_end"] <= w["t_start"] or c["t_start"] >= w["t_end"]
-    assert recipe.control_window(T0, n, w, seed=1)["t_start"] != c["t_start"]
-    assert recipe.control_window(T0, n, w, seed=20260916)["t_start"] == c["t_start"]
-
-
-def test_the_window_mask_covers_exactly_the_window():
-    """Fails if the mask of a window keeps a different number of samples from the window's own length."""
-    n = 10 * 86400
-    w = dict(t_start=T0 + 86400, t_end=T0 + 86400 + 14 * int(HOUR))
-    for fs in (1.0, 10.0):
-        m = recipe.window_mask(T0, int(n * fs), w, fs=fs)
-        assert int(m.sum()) == int(14 * HOUR * fs)
+def test_the_hours_options_are_three_and_a_fourth_is_refused(tmp_path):
+    """Fails if a fraction of the scored hours is still an option a row may name."""
+    assert recipe.HOURS_OPTIONS == ("whole", "window:coherent", "window:<ISO UTC start>/<hours>")
+    for gone in ("f05", "f10", "f25", "r25"):
+        with pytest.raises(ValueError):
+            recipe.row_hours(_Survey(tmp_path), "X", gone, row="x")
 
 
 # ---------------------------------------------------------------- the frame
@@ -158,10 +148,10 @@ def _rows(n, scale):
 
 
 def test_the_rows_assemble_into_one_tensor_with_the_named_row_s_tipper(tmp_path):
-    """Fails if the assembled product does not take its first row from the x pass and its second from the y
+    """Fails if the assembled file does not take its first row from the x pass and its second from the y
     pass, if the tipper is not the named row's, or if a period the y row does not reach carries a number."""
     pytest.importorskip("mt_metadata.transfer_functions.core")
-    from auslamp_proc.products import read_tf
+    from auslamp_proc.transfer_functions import read_tf
     p_long = np.geomspace(1.0, 3000.0, 32)
     p_short = np.geomspace(1.0, 100.0, 24)          # the y row stops at 100 s
     tx = np.full((len(p_long), 1, 2), 0.1 + 0.0j)
@@ -188,10 +178,10 @@ def test_the_rows_assemble_into_one_tensor_with_the_named_row_s_tipper(tmp_path)
 
 
 def test_an_identical_grid_is_taken_and_not_interpolated(tmp_path):
-    """Fails if two products on one grid are interpolated onto each other, which would move every value by
+    """Fails if two transfer functions on one grid are interpolated onto each other, which would move every value by
     the interpolation's own error where nothing had to move."""
     pytest.importorskip("mt_metadata.transfer_functions.core")
-    from auslamp_proc.products import read_tf
+    from auslamp_proc.transfer_functions import read_tf
     p = np.geomspace(1.0, 1000.0, 20)
     x = _write_edi(tmp_path / "x.edi", p, _rows(len(p), 1.0))
     y = _write_edi(tmp_path / "y.edi", p, _rows(len(p), 3.0))
@@ -206,7 +196,7 @@ def test_an_assembled_form_carries_its_own_candidacy_and_its_sentence():
     """Fails if a form assembled from other forms cannot be a candidate without a control of its own, or if
     the rule the caller states does not reach the table's verdict cell."""
     from auslamp_proc.site import deliver
-    base = dict(site="X", kind="remote", rate_hz=1.0, params="k", status="made", product="none.edi",
+    base = dict(site="X", kind="remote", rate_hz=1.0, params="k", status="made", transfer_function="none.edi",
                 controls="", criterion="", seed=None)
     t = deliver.forms_table([dict(base, form="recipe",
                                   candidate_rule=dict(candidate=True,

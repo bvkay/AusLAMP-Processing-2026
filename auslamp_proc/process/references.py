@@ -21,8 +21,14 @@ lender's and not its own. The target's own lender is never a member of a referen
 reference sharing a channel with the local H compares a channel with itself (site/replace.py:29-34,
 vic_w3_lender.py:1-22). Both refusals are named in the reference's sidecar beside every other refusal.
 
+The alignment target (Store.alignment_target). A member's lag is measured against the horizontal pair the
+pass runs on -- the lender's pair on the target's grid where decisions.csv names an h_lender, and the
+target's own pair where it does not -- because the reference has to line up with the local station the MTH5
+carries. Store.rotated, which is what a member, a remote and a candidate are read through, leaves h_lender
+out: the pool and the membership questions are about a site's own record.
+
 The five-branch remote-site rule (ported from wamt_remotes.partner :941-1029, itself the Queensland campaign's
-rule), with the branch and the reason recorded in every product:
+rule), with the branch and the reason recorded in every transfer function:
 
     1  clean, coh >= COH_MIN, overlap >= 90 % of the target's record -> the nearest of them
     2  clean, coh >= COH_MIN                                          -> the longest overlap
@@ -34,7 +40,7 @@ A candidate is scored only where its usable overlap reaches overlap_floor = min(
 0.75 x the days the target can use); the coherence is the event-free 20-200 s chunk median (coherence.pair_coh).
 
 The stack (ported from wamt_remotes.stack_weights / accumulate / _finish :1188-1356). The weight is the
-member's median coherence with the FLEET at 100-1000 s and never its coherence with the target
+member's median coherence with the fleet at 100-1000 s and never its coherence with the target
 (Ben's rule, 2026-09-06): whether a reference is a good measurement of the regional field is a
 question about the reference and the field. Members below STACK_CUTOFF = 0.5 are excluded, the best
 STACK_MAX = 8 are kept, and a stack with fewer than STACK_MIN = 2 members is refused -- a one-member stack is
@@ -152,13 +158,8 @@ def gap_edge_screen(x, fs, edge_s=GAP_EDGE_S) -> np.ndarray:
     away and the 10 Hz grid does not. The screen widens what is already missing and so cannot break a
     continuous stretch into pieces.
 
-    A per-sample amplitude screen was tried here first -- NaN wherever the absolute first difference
-    exceeds 10x the record's median -- and is not used: measured on Q60N at 10 Hz on 2026-09-16 it NaNs
-    865,078 of 52.5 M Hx samples scattered through a gapless record, which leaves 248,970 pieces of a
-    median 1 s, and the 3,600 s run floor then throws away 64.9 per cent of the record. A screen whose cost
-    is paid by the run floor is not a screen. Outliers are handled where they belong, inside the estimator:
-    the robust regression down-weights them and the window screen drops a window whose rms first difference
-    exceeds 10x the median.
+    Outliers are left to the estimator: the robust regression down-weights them, and the window screen
+    drops a window whose rms first difference exceeds 10x the median.
     """
     v = np.asarray(x, float).copy()
     bad = ~np.isfinite(v)
@@ -217,7 +218,7 @@ def member_screen(members: dict, fs, k=SCREEN_K, floor_nt=SCREEN_FLOOR_NT,
                         max(k x MAD(D_i - med), floor_nt). A spike the fleet shares is the field: the median
                         carries it and the departure is what is measured.
         exactly two     the median of two first differences does not name the culprit, so a sample is
-                        flagged where |D_i| exceeds max(k x MAD(D_i), floor_nt) AND the other member's |D_j|
+                        flagged where |D_i| exceeds max(k x MAD(D_i), floor_nt) and the other member's |D_j|
                         at that sample is under floor_nt / 2. Where both exceed the floor neither is
                         flagged, because a step both members take is the field.
         fewer than two, or fewer than `min_members`      nothing is flagged.
@@ -313,8 +314,8 @@ def level_match(members: dict, fs, win_s=LEVEL_WIN_S, min_frac=LEVEL_MIN_FRAC,
     not samples because a running statistic over 53,000 blocks is cheap where one over 3 million samples is
     not.
 
-    Two passes: the first takes the running MEAN of the blocks, which puts the members on a common level, and
-    the second the running MEDIAN, which is robust on a target that no longer steps. Both are needed because
+    Two passes: the first takes the running mean of the blocks, which puts the members on a common level, and
+    the second the running median, which is robust on a target that no longer steps. Both are needed because
     m steps by up to 2,788 nT whenever the member set changes, a median follows such a step where a mean
     smooths it, and a single median pass therefore lays 285-406 steps above 2 nT per million into each member
     against 6-27 before it. `passes` = 1 is the median pass alone.
@@ -431,8 +432,7 @@ def _running_median(b, w, need) -> np.ndarray:
     """The centred running median of the block series b over w blocks, NaN where fewer than `need` finite.
 
     Only whole windows are taken, so the first and last w // 2 blocks are NaN and the interpolation back to
-    the sample grid holds the nearest measured value over them. A truncated window is what biased the sample
-    mean this replaces, so none is offered here.
+    the sample grid holds the nearest measured value over them. No truncated window is offered.
     """
     b = np.asarray(b, float)
     nb = len(b)
@@ -537,7 +537,7 @@ class Store:
         days come back NaN and are excluded from the mean. Above 1 Hz the gap-edge screen runs before the
         rotation.
 
-        h_lender is NOT applied here. This is the site's OWN record, which is what a member, a remote or a
+        h_lender is not applied here. This is the site's own record, which is what a member, a remote or a
         candidate is: a site whose H is borrowed is refused membership outright (members_for), so a borrowed
         pair would never be stacked, and the target's own lags and coherences are measured against the
         record the site itself wrote.
@@ -568,6 +568,28 @@ class Store:
         while len(self._order) > self._max:
             self._rot.pop(self._order.pop(0), None)
         return got
+
+    def alignment_target(self, site: str):
+        """(t0, {'Hx','Hy'}) of the horizontal pair the PASS runs on, decided and rotated.
+
+        h_lender IS applied here, where `rotated` leaves it out, because a member's lag has to line up with
+        the local station the MTH5 carries: at a site with h_lender that station's H is the lender's pair on
+        this site's grid, and a lag measured against the site's own leaky H would align the reference to a
+        record the pass never reads. Where the site borrows nothing this is the pair `rotated` returns.
+        """
+        if not self.lender_of(site):
+            t0, h, _ang, _n = self.rotated(site)
+            return t0, h
+        t0, arrays, _applied, _rec = cache.load_decided(site, self.sv, rate=self.rate)
+        arr = {c: np.asarray(arrays[c], float) for c in H}
+        del arrays
+        if self.rate > 1:
+            arr = {c: gap_edge_screen(arr[c], self.fs) for c in H}
+        dec = self._decision(site)
+        arr, _ang = FR.rotate_to_mean_field(
+            arr, regimes=FR.parse_regimes(dec.get("rot_regimes") if dec is not None else ""),
+            drop=FR.parse_regimes(dec.get("rot_drop") if dec is not None else ""), fs=self.fs)
+        return t0, {c: np.asarray(arr[c], np.float32) for c in H}
 
     def _decision(self, site: str):
         try:
@@ -952,7 +974,9 @@ class Store:
         kept = {d: round(w, 4) for w, d in scored[:n_max]}
         if align_members and kept:
             t0, n = self.window(target)
-            tt, th, _a, _n = self.rotated(target)
+            # the lag is measured against the pair the pass runs on, the lender's where decisions.csv names
+            # one, so the reference lines up with the local station the MTH5 carries
+            _tt, th = self.alignment_target(target)
             keep = TR.keep_mask(t0, n, self.fs, self.events(target))
             fb = (self.cfg.get("floors") or {}).get("align_fallback_s")
             for d in list(kept):
@@ -1045,7 +1069,7 @@ class Store:
     @staticmethod
     def finish(num, den, thin=None) -> tuple:
         """(H, coverage per channel, mask): zero and mask False where no member is sound, and where `thin`
-        says fewer than STACK_MIN SITE members are.
+        says fewer than STACK_MIN site members are.
 
         `thin` is the per-sample form of the floor the member list is judged on, and it counts site members
         in both stack kinds: a sample carried by one of them is a remote site renamed, and one of them with
@@ -1276,7 +1300,7 @@ class Store:
                     steps_per_million_after=round(steps_per_million(x), 1))
                 num[c][m] += w_obs * x[m]
                 den[c][m] += w_obs
-        # the floor counts SITE members only, per sample as per list: one site member and the observatory is
+        # the floor counts site members only, per sample as per list: one site member and the observatory is
         # a remote site and an observatory, not a stack and one (Ben's ruling, 2026-09-17)
         thin = np.asarray(cnt) < n_min
         h, cov, mask = self.finish(num, den, thin=thin)
@@ -1296,7 +1320,7 @@ class Store:
                     note="the observatory enters as one more member at its own fleet weight, is never "
                          "shifted and is not spike-screened, and is set on the members' established level "
                          "one-sidedly, which it never enters; zero and mask False where fewer than n_min "
-                         "SITE members are sound, whatever the observatory holds there")
+                         "site members are sound, whatever the observatory holds there")
         return self._write("stack_obs", target, t0, h, mask, info, extra=spans)
 
     def build_site(self, target: str, kinds=KINDS_WITH_STORE, force=False, verbose=False) -> dict:
@@ -1405,7 +1429,7 @@ def branch_rule(target, cands, n_considered, n_short, own_days, floor, coh_min=C
 
 
 def _floor_rows(thin, n_min) -> dict:
-    """What the per-sample member floor cost: how many samples carried fewer than n_min SITE members."""
+    """What the per-sample member floor cost: how many samples carried fewer than n_min site members."""
     t = np.asarray(thin, bool)
     return dict(n_min=int(n_min), counts="site members only", samples_below=int(t.sum()),
                 frac_below=round(float(t.mean()), 5) if len(t) else 0.0,

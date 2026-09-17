@@ -1,11 +1,8 @@
 """Figures 02-05: band coherence, the coherence maps, the Welch spectra and the spectrograms.
 
-Ported from D:/BEN/MTH5_Aurora_mt-io_2026/student_pack_v2/qld_student.py (PAIRS :431, PAIR_LABEL :432,
-auto_nperseg :435, coherence_map :439, coherence_levels :469, band_from_levels :492, levels_to_grid :514,
-plot_coherence_maps :526, welch :417, power_map :564, power_levels :600, plot_spectrograms :617,
-spectrogram_table :669) and from scripts/processing/wamt_site_figures.py:60-99, which lays out 02 and 04.
-qld_student hard-codes 1 Hz; every function here takes `fs` and every time axis is in seconds, so the same
-code draws a 10 Hz record.
+Every function takes `fs` and every time axis is in seconds, so the same code draws a 1 Hz and a 10 Hz
+record. Every figure goes through figures.common.finish: a short title naming the site and what the figure
+is, and the caller's own sentence beneath it as the caption.
 
 The parameters, which are the same at every survey:
 
@@ -33,6 +30,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .common import finish
 from .record import DAY, day_axis, iso
 
 CHANNELS = ("Hx", "Hy", "Hz", "Ex", "Ey")
@@ -52,6 +50,12 @@ LINE_SMOOTH_H = 12.0
 PMIN_S = 2.0
 PMAX_S = 20000.0
 SPECTRA_NPERSEG = 4096
+
+
+def _short(title, what) -> str:
+    """'<survey> <site>: <what>' from the head of the caller's sentence, or `what` where there is none."""
+    head = str(title or "").split(":", 1)[0].strip()
+    return "%s: %s" % (head, what) if head else what
 
 
 # ---------------------------------------------------------------- the level ladder
@@ -180,8 +184,15 @@ def coherence_maps(t0, arrays, out, fs=1.0, pairs=PAIRS, win_s=3600, step_s=1800
     Returns (figure, {pair: levels}); the levels are what figure 02's band lines are read from.
     """
     import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(len(pairs), 1, figsize=figsize, sharex=True)
-    axes = np.atleast_1d(axes)
+    # the one colour bar is a column of the grid rather than space taken out of the axes, so the axes and the
+    # bar are both subplots and figures.common.finish can lay the whole figure out
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(len(pairs), 2, width_ratios=[60, 1])
+    axes = np.array([fig.add_subplot(gs[i, 0]) for i in range(len(pairs))], dtype=object)
+    for a in axes[:-1]:
+        a.sharex(axes[-1])
+        a.tick_params(labelbottom=False)
+    cax = fig.add_subplot(gs[:, 1])
     n = len(arrays[pairs[0][0]])
     _, ticks, labels = day_axis(t0, n, fs)
     maps = {}
@@ -201,13 +212,14 @@ def coherence_maps(t0, arrays, out, fs=1.0, pairs=PAIRS, win_s=3600, step_s=1800
         ax.set_ylabel("%s\nperiod (s)" % PAIR_LABEL.get((a, b), a + "-" + b))
         for p in GUIDE_S:
             ax.axhline(p, color="w", lw=0.5, ls=":", alpha=0.7)
-    fig.colorbar(pc, ax=axes.tolist(), label="squared coherence", fraction=0.02, pad=0.01)
+    fig.colorbar(pc, cax=cax, label="squared coherence")
     axes[-1].set_xticks(ticks)
     axes[-1].set_xticklabels(labels)
     axes[-1].set_xlabel("days from %s UTC" % iso(t0))
-    if title:
-        fig.suptitle(title)
-    fig.savefig(out, dpi=dpi)
+    finish(fig, _short(title, "the coherence maps"),
+           title or "Squared coherence per pair against time and period, every level of the ladder placed "
+                    "on the base time grid and gouraud shaded, with a %g h running median along time."
+                    % smooth_h, out, dpi=dpi)
     return fig, maps
 
 
@@ -215,8 +227,7 @@ def coherence_bands(t0, maps, out, n, fs=1.0, step_s=1800, win_min=60, pairs=PAI
                     smooth_h=LINE_SMOOTH_H, title="", figsize=(14, 9), dpi=110):
     """Figure 02: the four pairs' band coherence against time, one line per band, 12 h running median.
 
-    Ported from wamt_site_figures.py:66-82. `maps` is what coherence_maps returned, so the lines and the
-    images below them are the same numbers.
+    `maps` is what coherence_maps returned, so the lines and the images below them are the same numbers.
     """
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(len(pairs), 1, figsize=figsize, sharex=True)
@@ -237,10 +248,10 @@ def coherence_bands(t0, maps, out, n, fs=1.0, step_s=1800, win_min=60, pairs=PAI
     axes[-1].set_xticks(ticks)
     axes[-1].set_xticklabels(labels)
     axes[-1].set_xlabel("days from %s UTC" % iso(t0))
-    if title:
-        fig.suptitle(title)
-    fig.tight_layout()
-    fig.savefig(out, dpi=dpi)
+    finish(fig, _short(title, "the band coherence"),
+           title or "The four pairs' band coherence against time, one line per band over %s, with a %g h "
+                    "running median along time."
+                    % (", ".join(b[2] for b in BANDS_S), smooth_h), out, dpi=dpi)
     return fig
 
 
@@ -260,7 +271,7 @@ def band_table(maps, pairs=PAIRS) -> pd.DataFrame:
 # ---------------------------------------------------------------- spectra
 
 def welch(x, fs=1.0, nperseg=SPECTRA_NPERSEG):
-    """The Welch spectrum of the longest finite run of a channel, the DC bin dropped. Ported from :417."""
+    """The Welch spectrum of the longest finite run of a channel, the DC bin dropped."""
     from scipy.signal import welch as _welch
     x = np.asarray(x, float)
     fin = np.isfinite(x)
@@ -317,18 +328,20 @@ def spectra(arrays, out, fs=1.0, channels=CHANNELS, nperseg=SPECTRA_NPERSEG, tit
                          power_at_100s=float(np.median(p[band])) if band.any() else np.nan))
     ax.axvspan(shade[0], shade[1], color="gold", alpha=0.12)
     ax.axvline(2.0 / fs, color="0.5", ls=":", lw=0.8)
-    ax.set(xlabel="period (s)", ylabel="power (nT^2/Hz, (mV/km)^2/Hz)", title=title)
+    ax.set(xlabel="period (s)", ylabel="power (nT^2/Hz, (mV/km)^2/Hz)")
     ax.grid(alpha=0.25, which="both")
     ax.legend(fontsize=8)
-    fig.tight_layout()
-    fig.savefig(out, dpi=dpi)
+    finish(fig, _short(title, "the Welch spectra"),
+           title or "One Welch spectrum per channel over the longest finite run at nperseg %d, the DC bin "
+                    "dropped, on log-log axes; the shaded column is %g-%g s and the dotted line the "
+                    "Nyquist period." % (nperseg, shade[0], shade[1]), out, dpi=dpi)
     return fig, pd.DataFrame(rows).set_index("channel")
 
 
 # ---------------------------------------------------------------- spectrograms
 
 def power_map(x, fs=1.0, win_s=3600, step_s=1800, nperseg=None, per_decade=PER_DECADE, pmin=4.0, pmax=None):
-    """Welch power density per window averaged into log-period bins. Ported from :564.
+    """Welch power density per window averaged into log-period bins.
 
     A window less than half finite is left NaN; the finite samples' mean fills the rest and is removed.
     """
@@ -410,15 +423,16 @@ def spectrograms(t0, arrays, out, fs=1.0, channels=CHANNELS, win_s=3600, step_s=
     axes[-1].set_xticks(ticks)
     axes[-1].set_xticklabels(labels)
     axes[-1].set_xlabel("days from %s UTC" % iso(t0))
-    if title:
-        fig.suptitle(title)
-    fig.savefig(out, dpi=dpi)
+    finish(fig, _short(title, "the spectrograms"),
+           title or "One image per channel in dB of absolute power density, every level of the ladder "
+                    "placed on the base time grid with a %g h running median along time, the colour limits "
+                    "at that channel's own 2nd and 98th percentile." % smooth_h, out, dpi=dpi)
     return fig, maps
 
 
 def spectrogram_table(maps, lo_s=20.0, hi_s=200.0, db_away=10.0) -> pd.DataFrame:
     """Per channel from the base level: the median power in the band in dB and the fraction of windows
-    more than `db_away` = 10 dB below it (quiet or dead) or above it (bursts and storms). Ported from :669."""
+    more than `db_away` = 10 dB below it (quiet or dead) or above it (bursts and storms)."""
     rows = []
     for ch, levels in maps.items():
         tc, per, P = levels[0][:3]

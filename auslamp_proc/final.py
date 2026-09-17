@@ -1,41 +1,41 @@
-"""One EDI per site: the xy rows from one product, the yx rows from another, the tipper from a named one.
+"""One EDI per site: the xy rows from one transfer function, the yx rows from another, the tipper from one.
 
-Ported from scripts/processing/wamt_esp2026_products.py:303-447 and its fill_metadata
+Ported from the campaign's delivery writer and its fill_metadata
 (D:/BEN/MTH5_Aurora_mt-io_2026), with the delivery record of wamt_best_merge.py and wamt_deliver.py.
 
-THE MERGE. The xy product of record supplies the first impedance row (Zxx, Zxy) and the yx product the
-second (Zyx, Zyy), each with its errors; the tipper comes from the product `tipper_from` names. A component
-with no product of record leaves its row empty and the file says so, so a reader cannot take an empty row for
-a measurement. A product on another period grid is aligned by NEAREST PERIOD within NEAREST_PCT and never
-interpolated: an interpolated row is a third curve, not either product.
+The merge. The xy transfer function of record supplies the first impedance row (Zxx, Zxy) and the yx one the
+second (Zyx, Zyy), each with its errors; the tipper comes from the file `tipper_from` names. A component with
+no transfer function of record leaves its row empty and the file says so, so a reader cannot take an empty
+row for a measurement. A source on another period grid is aligned by nearest period within NEAREST_PCT and
+never interpolated: an interpolated row is a third curve, not either source.
 
-THE TRIM. `keep_band` is {component: (lo, hi) in s}, the band each row is delivered over -- the chosen
-product's held band by default. A value outside its component's band is dropped, and a period left carrying
-neither off-diagonal element is dropped from the grid with the tipper on it, so that a delivered file carries
-the measurement and nothing else. Every dropped period is named in the manifest with the band that dropped
+The trim. `keep_band` is {component: (lo, hi) in s}, the band each row is delivered over -- the chosen
+transfer function's held band by default. A value outside its component's band is dropped, and a period left
+carrying neither off-diagonal element is dropped from the grid with the tipper on it, so that a delivered
+file carries the measurement alone. Every dropped period is named in the manifest with the band that dropped
 it. Without `keep_band` every period the sources carry is written and the file says it was not trimmed.
 
-THE CHOICE RECORD. surveys/<survey>/final_choices.csv holds one row per site and component: the product, the
-periods, the join, whether the rule or the analyst chose it, a note and the date. A workbook reads it before
-it proposes anything, so a re-run reproduces a delivery without choosing again, and writes back the rule's
-own rows only where no analyst row stands.
+The choice record. surveys/<survey>/final_choices.csv holds one row per site and component: the transfer
+function, the periods, the join, whether the rule or the analyst chose it, a note and the date. A workbook
+reads it before it proposes anything, so a re-run reproduces a delivery without choosing again, and writes
+back the rule's own rows only where no analyst row stands.
 
-THE FAILURE CRITERION of the merge, which is what `check` measures: the written file must read back with its
+The failure criterion of the merge, which is what `check` measures: the written file must read back with its
 Zxy equal to the xy source's and its Zyx equal to the yx source's at every period to READBACK_RTOL relative,
-and, where the two sources carry different yx rows, its Zyx must DIFFER from the xy source's. The second is
+and, where the two sources carry different yx rows, its Zyx must differ from the xy source's. The second is
 the control that the rows came from two files; it is n/a where the two sources share the row, which happens
-when one product of record is a form merged out of the other.
+when one transfer function of record is a form merged out of the other.
 
-THE INFO BLOCK carries, as processing_parameters lines: which product each row came from (the kind, the run
-and the form), the flags and the notes per component, the frame block (the frame, the declination recorded
-and not applied, and the angle to turn the tensor by for geographic north with the transformation), the
-splice line where a 10 Hz row is in the file, the cache the product was built from, the 10 Hz caveat, and
-the package version and date. Every string comes from survey.yaml, sites.csv and the source products' own
-headers; nothing about a survey is written into this module.
+The info block carries, as processing_parameters lines: which file each row came from (the kind, the run and
+the form), the flags and the notes per component, the frame block (the frame, the declination recorded and
+not applied, and the angle to turn the tensor by for geographic north with the transformation), the splice
+line where a 10 Hz row is in the file, the cache the source was built from, the 10 Hz caveat, and the package
+version and date. Every string comes from survey.yaml, sites.csv and the source files' own headers; nothing
+about a survey is written into this module.
 
-THE DELIVERY RECORD. PRODUCTS_OF_RECORD.csv and READINGS.csv are the tables the choice was made on, written
-beside the files; FINAL_MANIFEST.csv carries the sha256 of every final and of every product it came from, so
-the delivery can be re-read without the files.
+The delivery record. TRANSFER_FUNCTIONS_OF_RECORD.csv and READINGS.csv are the tables the choice was made on,
+written beside the files; FINAL_MANIFEST.csv carries the sha256 of every final and of every source it came
+from, so the delivery can be re-read without the files.
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -49,10 +49,10 @@ import numpy as np
 import pandas as pd
 
 import auslamp_proc
-from . import agreement as AG, products as PR, readings as RD
+from . import agreement as AG, transfer_functions as TFN, readings as RD
 from .process import KIND_WORD, edi as EDI
 
-NEAREST_PCT = 1.0                  # a product on another grid is aligned to a period within this per cent
+NEAREST_PCT = 1.0                  # a source on another grid is aligned to a period within this per cent
 READBACK_RTOL = 1e-9               # the written file must read back equal to its sources within this
 GRID_RTOL = 1e-6                   # two grids count as the same within this
 EDI_FILL = 1e32                    # the EDI empty-data value an undelivered row is written as
@@ -60,8 +60,8 @@ EDI_FILL = 1e32                    # the EDI empty-data value an undelivered row
 MANIFEST_COLUMNS = ["site", "role", "component", "file", "kind", "form", "run", "stamp", "rate_hz",
                     "n_periods", "n_dropped", "dropped_periods_s", "dropped_reason", "bytes", "sha256"]
 
-CHOICE_COLUMNS = ["site", "component", "product", "periods_lo", "periods_hi", "join", "chosen_by", "note",
-                  "date"]
+CHOICE_COLUMNS = ["site", "component", "transfer_function", "periods_lo", "periods_hi", "join", "chosen_by",
+                  "note", "date"]
 CHOSEN_BY = ("rule", "analyst")
 
 
@@ -69,7 +69,7 @@ def clean(text) -> str:
     """One processing_parameters line with nothing in it the EDI reader splits on.
 
     The EDI reader splits a Comment on the pipe and on the newline, so a line carrying either comes back
-    as several and the next read raises on the fragment. Ported from wamt_esp2026_products._txt.
+    as several and the next read raises on the fragment.
     """
     return str(text).replace("|", " ").replace("\n", " ").replace("\r", " ").strip()
 
@@ -93,7 +93,7 @@ def _num(cell, default=float("nan")) -> float:
 
 
 def _load(path):
-    """(TF, period, Z, Z error, T, T error) of one product, read through mt_metadata as written."""
+    """(TF, period, Z, Z error, T, T error) of one file, read through mt_metadata as written."""
     from mt_metadata.transfer_functions.core import TF
     tf = TF(fn=str(path))
     tf.read()
@@ -121,7 +121,7 @@ def _match_index(source_period, period) -> tuple:
 
 
 def align(period, source_period, source_row, source_err):
-    """One product's two-element row on another grid, by nearest period and never interpolated."""
+    """One source's two-element row on another grid, by nearest period and never interpolated."""
     p, pc = np.asarray(period, float), np.asarray(source_period, float)
     if len(pc) == len(p) and np.allclose(pc, p, rtol=GRID_RTOL):
         return np.asarray(source_row), np.asarray(source_err), int(len(p)), "grids identical"
@@ -137,22 +137,23 @@ def align(period, source_period, source_row, source_err):
 
 
 def source_lines(picks: dict, tipper_from: str, record: pd.DataFrame, site) -> list:
-    """The processing_parameters lines naming which product each row came from, with its flags and notes."""
+    """The processing_parameters lines naming which file each row came from, with its flags and notes."""
     out = []
     for comp in RD.COMPONENTS:
         pick = picks.get(comp)
         rows = "Z%s, Z%s" % ("xx" if comp == "xy" else "yx", "xy" if comp == "xy" else "yy")
         if pick is None:
-            out.append("%s_rows=no product of record (%s empty); see PRODUCTS_OF_RECORD.csv" % (comp, rows))
+            out.append("%s_rows=no transfer function of record (%s empty); see "
+                       "TRANSFER_FUNCTIONS_OF_RECORD.csv" % (comp, rows))
             continue
-        out.append("%s_rows=%s from the %s product (%s), run %s_%s%s at %g Hz, bar %.4f over 10-1000 s; "
-                   "file %s"
+        out.append("%s_rows=%s from the %s transfer function (%s), run %s_%s%s at %g Hz, bar %.4f over "
+                   "10-1000 s; file %s"
                    % (comp, rows, pick.get("kind_word") or KIND_WORD.get(pick["kind"], pick["kind"]),
                       pick["kind"], pick.get("run", ""), pick.get("stamp", ""),
                       (", form %s" % pick["form"]) if pick.get("form") else "",
                       float(pick.get("rate_hz") or 0.0), float(pick.get("bar") or np.nan),
                       Path(str(pick["path"])).name))
-    out.append("tipper=from the %s product" % tipper_from)
+    out.append("tipper=from the %s transfer function" % tipper_from)
     if record is not None and len(record):
         for r in record[record.site == site].itertuples():
             note, flag = str(getattr(r, "note", "") or ""), str(getattr(r, "flagged", "") or "")
@@ -162,7 +163,7 @@ def source_lines(picks: dict, tipper_from: str, record: pd.DataFrame, site) -> l
 
 
 def frame_block(site_row, base_meta: dict) -> list:
-    """The three frame lines, built from sites.csv and the base product's own rotation line."""
+    """The three frame lines, built from sites.csv and the base file's own rotation line."""
     dec = _num(site_row.declination_deg, None)
     rot = base_meta.get("parameters", {}).get("h_rotation_deg", "")
     try:
@@ -173,11 +174,10 @@ def frame_block(site_row, base_meta: dict) -> list:
 
 
 def carried_lines(base_meta: dict) -> list:
-    """The cache the product was built from and the 10 Hz caveat, from the source product's own header.
+    """The cache the source was built from and the 10 Hz caveat, from the source file's own header.
 
-    The cache line the processing wrote carries a `notch:` clause, which this package no longer has a notch
-    to fill: it is dropped here rather than delivered as a statement about a method the package does not
-    carry.
+    The cache line the processing wrote carries a `notch:` clause. The package has no notch, so the clause is
+    dropped here rather than delivered as a statement about a method the package does not apply.
     """
     kv = base_meta.get("parameters", {}) or {}
     out = []
@@ -234,7 +234,7 @@ def merge(sv, site, picks: dict, out_path, tipper_from="xy", record=None, extra_
 
     `picks` is {"xy": row, "yx": row} of the record rows chosen, each a mapping carrying `path`, `kind`,
     `form`, `run`, `stamp`, `rate_hz` and `bar`. `tipper_from` is "xy", "yx" or a reference kind; where the
-    named product carries no tipper the other pick supplies it and the file says which. `keep_band` is
+    named source carries no tipper the other pick supplies it and the file says which. `keep_band` is
     {component: (lo, hi) in s}, the band each row is delivered over; None writes every period.
     """
     from mt_metadata.transfer_functions.core import TF
@@ -243,7 +243,8 @@ def merge(sv, site, picks: dict, out_path, tipper_from="xy", record=None, extra_
     out_path.parent.mkdir(parents=True, exist_ok=True)
     picks = {c: v for c, v in (picks or {}).items() if v and Path(str(v.get("path") or "")).exists()}
     if not picks:
-        return dict(site=site, path=None, written=False, reason="no product of record on either component")
+        return dict(site=site, path=None, written=False,
+                    reason="no transfer function of record on either component")
     base_comp = "xy" if "xy" in picks else "yx"
     tf0, p, z0, e0, t0, te0 = _load(picks[base_comp]["path"])
     zm = np.full_like(z0, np.nan + 0j)
@@ -306,8 +307,8 @@ def merge(sv, site, picks: dict, out_path, tipper_from="xy", record=None, extra_
     lines = source_lines(picks, (KIND_WORD.get(str(picks[tip_from]["kind"]), str(picks[tip_from]["kind"]))
                                  if tip_from else "none: no source carries a tipper"), record, site)
     lines += notes
-    lines += frame_block(site_row, PR.read_tf(picks[base_comp]["path"]).meta)
-    lines += carried_lines(PR.read_tf(picks[base_comp]["path"]).meta)
+    lines += frame_block(site_row, TFN.read_tf(picks[base_comp]["path"]).meta)
+    lines += carried_lines(TFN.read_tf(picks[base_comp]["path"]).meta)
     lines += package_lines(sv.cfg)
     lines += [str(x) for x in extra_lines]
     try:
@@ -364,10 +365,10 @@ def check(out_path, period, zm, picks: dict, src: dict) -> dict:
             rel = np.abs(a[m] - c[m]) / np.maximum(np.abs(c[m]), 1e-30)
         worst = max(worst, float(np.nanmax(rel)))
         ok = ok and bool(np.allclose(a[m], c[m], rtol=READBACK_RTOL, atol=0))
-    control = "control n/a (one component has no product of record)"
+    control = "control n/a (one component has no transfer function of record)"
     if "xy" in picks and "yx" in picks:
         # the sources are indexed by nearest period, not by position: a trimmed file is shorter than the
-        # products it came from, and a positional control on it would silently report n/a
+        # files it came from, and a positional control on it would silently report n/a
         ixy, okxy = _match_index(src["xy"]["period"], period)
         iyx, okyx = _match_index(src["yx"]["period"], period)
         zxy, zyx = src["xy"]["z"][ixy], src["yx"]["z"][iyx]
@@ -388,25 +389,25 @@ def check(out_path, period, zm, picks: dict, src: dict) -> dict:
 
 # ------------------------------------------------------------------ the tipper-only delivery
 
-def tipper_only(sv, site, product_path, out_path, kind="", refusal=None, record=None,
+def tipper_only(sv, site, tf_path, out_path, kind="", refusal=None, record=None,
                 extra_lines=()) -> dict:
     """A site with no deliverable impedance delivering its tipper, with the frame block on the file.
 
-    `site.deliver.tipper_only` blanks the impedance rows and writes the two INFO lines that say what the
-    file is; the frame block and the package lines are added here so that a tipper-only file carries the
-    same header as a merged one.
+    `site.deliver.tipper_only` blanks the impedance rows and writes the two info lines that say what the file
+    is; the frame block and the package lines are added here so that a tipper-only file carries the same
+    header as a merged one.
     """
     from .site import deliver as DL
 
     out_path = Path(out_path)
-    base_meta = PR.read_tf(product_path).meta
+    base_meta = TFN.read_tf(tf_path).meta
     lines = (frame_block(sv.site(site), base_meta) + carried_lines(base_meta) + package_lines(sv.cfg)
              + [str(x) for x in extra_lines])
     if record is not None and len(record):
         for r in record[record.site == site].itertuples():
             if str(getattr(r, "note", "") or ""):
                 lines.append("%s_note=%s" % (r.component, r.note))
-    out = DL.tipper_only(product_path, out_path, kind=kind, refusal=refusal)
+    out = DL.tipper_only(tf_path, out_path, kind=kind, refusal=refusal)
     if not out.get("written"):
         return dict(site=site, path=None, written=False, ok=False, reason=out.get("reason", ""))
     from mt_metadata.transfer_functions.core import TF
@@ -420,7 +421,7 @@ def tipper_only(sv, site, product_path, out_path, kind="", refusal=None, record=
         tf.write(fn=str(out_path), file_type="edi", longitude_format="LONG", latlon_format="dd")
     except Exception:
         pass
-    back = PR.read_tf(out_path)
+    back = TFN.read_tf(out_path)
     return dict(site=site, path=str(out_path), written=True, ok=bool(back.t is not None),
                 tipper_from=kind, control="control n/a (a tipper-only delivery has no second source)",
                 reason=out.get("reason", ""), n_periods=int(len(back.period)),
@@ -438,7 +439,7 @@ def resample(final_path, out_path, grid=None) -> dict:
     from mt_metadata.transfer_functions.core import TF
 
     grid = AG.GRID if grid is None else np.asarray(grid, float)
-    src = PR.read_tf(final_path)
+    src = TFN.read_tf(final_path)
     tf0 = TF(fn=str(final_path))
     tf0.read()
     on = AG.on_grid(src, src, periods=grid)
@@ -468,10 +469,10 @@ def resample(final_path, out_path, grid=None) -> dict:
         tn.write(fn=str(out_path), file_type="edi", longitude_format="LONG", latlon_format="dd")
     except TypeError:
         tn.write(fn=str(out_path), file_type="edi")
-    back = PR.read_tf(out_path)
+    back = TFN.read_tf(out_path)
     return dict(path=str(out_path), n_periods=int(len(back.period)),
                 n_finite={c: int(np.isfinite(back.z[:, i, j]).sum())
-                          for c, (i, j) in PR.COMPONENTS.items()})
+                          for c, (i, j) in TFN.COMPONENTS.items()})
 
 
 # ------------------------------------------------------------------ the choice record
@@ -486,7 +487,7 @@ def read_choices(path) -> pd.DataFrame:
     path = Path(path)
     if not path.exists():
         return pd.DataFrame(columns=CHOICE_COLUMNS)
-    d = pd.read_csv(path, dtype={"product": str, "join": str, "chosen_by": str, "note": str,
+    d = pd.read_csv(path, dtype={"transfer_function": str, "join": str, "chosen_by": str, "note": str,
                                  "date": str})
     for c in CHOICE_COLUMNS:
         if c not in d.columns:
@@ -496,10 +497,10 @@ def read_choices(path) -> pd.DataFrame:
     return d[CHOICE_COLUMNS]
 
 
-def choice_row(site, component, product, periods=None, join=None, chosen_by="rule", note="") -> dict:
+def choice_row(site, component, tf, periods=None, join=None, chosen_by="rule", note="") -> dict:
     """One final_choices.csv row. `periods` is (lo, hi) in s or None, `join` a period in s or None."""
     lo, hi = (periods if periods is not None else (np.nan, np.nan))
-    return dict(site=str(site), component=str(component), product=str(product),
+    return dict(site=str(site), component=str(component), transfer_function=str(tf),
                 periods_lo=(float(lo) if lo is not None and np.isfinite(float(lo)) else np.nan),
                 periods_hi=(float(hi) if hi is not None and np.isfinite(float(hi)) else np.nan),
                 join=("" if join is None else ("%g" % float(join))), chosen_by=str(chosen_by),
@@ -531,8 +532,9 @@ def write_choices(path, rows, keep_analyst=True) -> dict:
 def manifest_check(manifest: pd.DataFrame) -> pd.DataFrame:
     """One row per delivered file: whether it is there, reads as a transfer function, and matches its sha256.
 
-    The three are read from the files themselves and not from the table that names them, so a manifest row
-    written against a file that has since changed is what this reports.
+    The release check calls this over FINAL_MANIFEST.csv to read a delivery back off disk before it is
+    published. The three columns are read from the files themselves and not from the table that names them,
+    so a manifest row written against a file that has since changed is what this reports.
     """
     rows = []
     for r in manifest[manifest.role == "final"].itertuples():
@@ -542,7 +544,7 @@ def manifest_check(manifest: pd.DataFrame) -> pd.DataFrame:
         readable = False
         if exists:
             try:
-                readable = bool(len(PR.read_tf(p).period))
+                readable = bool(len(TFN.read_tf(p).period))
             except Exception:
                 readable = False
         rows.append(dict(site=r.site, file=str(p), exists=exists, readable=readable,
@@ -578,7 +580,7 @@ def _carry_other_sites(path, table: pd.DataFrame, sites) -> pd.DataFrame:
 
 def write_record(out_dir, record: pd.DataFrame, readings: pd.DataFrame, merges, splice=None,
                  sites=None) -> dict:
-    """PRODUCTS_OF_RECORD.csv, READINGS.csv, SPLICE.csv and FINAL_MANIFEST.csv under `out_dir`.
+    """TRANSFER_FUNCTIONS_OF_RECORD.csv, READINGS.csv, SPLICE.csv and FINAL_MANIFEST.csv under `out_dir`.
 
     `sites` are the sites this run delivered: their rows replace the old ones and every other site's rows
     stay, so a one-site run adds to the survey's tables rather than replacing them.
@@ -586,7 +588,7 @@ def write_record(out_dir, record: pd.DataFrame, readings: pd.DataFrame, merges, 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = {}
-    for name, table in (("PRODUCTS_OF_RECORD.csv", record), ("READINGS.csv", readings),
+    for name, table in (("TRANSFER_FUNCTIONS_OF_RECORD.csv", record), ("READINGS.csv", readings),
                         ("SPLICE.csv", splice)):
         if table is None:
             continue
@@ -597,8 +599,8 @@ def write_record(out_dir, record: pd.DataFrame, readings: pd.DataFrame, merges, 
     for m in merges:
         if not m.get("written") or not m.get("path"):
             continue
-        # the delivered file is the spliced one where a 10 Hz row was joined and the merge itself where
-        # none was: a manifest naming the unspliced base would carry the sha256 of a file nobody delivers
+        # the delivered file is the spliced one where a 10 Hz row was joined and the merge itself where none
+        # was: a manifest naming the unspliced base would carry the sha256 of a file nobody delivers
         p = Path(m.get("delivered") or m["path"])
         gone = list(np.asarray(m.get("dropped_periods_s", []), float))
         rows.append(dict(site=m["site"], role="final", component="", file=str(p), kind="", form="",

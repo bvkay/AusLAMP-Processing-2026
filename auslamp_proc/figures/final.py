@@ -1,45 +1,41 @@
-"""One site's products, the rule's proposal, and the delivered file: the three pages of workbook 06.
+"""One site's transfer functions, the rule's proposal, and the delivered file: the three pages of workbook 06.
 
-The panel conventions are the ones figures/products.py sets: period on a log x axis, apparent resistivity on
-a log axis in Ohm.m, the phase 0-90 deg with the yx panel labelled `+ 180 deg`, the tipper -0.8..0.8 with the
-real part as filled circles and the imaginary part as open triangles on a dotted line.
+The panel conventions are the ones figures/transfer_functions.py sets: period on a log x axis, apparent
+resistivity on a log axis in Ohm.m, the phase 0-90 deg with the yx panel labelled `+ 180 deg`, the tipper
+-0.8..0.8 with the real part as filled circles and the imaginary part as open triangles on a dotted line.
 
 A figure is drawn where it shows a curve, a record or a distribution over many items (Ben, 2026-09-17). A
-criterion that yields one or two numbers per site is a line in a table and in a verdict, not a figure, so
-the split-half departures and the per-row step at the join are printed and scored and never plotted.
+criterion that yields one or two numbers per site is a line in a table and in a verdict, not a figure, so the
+split-half departures and the per-row step at the join are printed and scored and never plotted.
 
 Workbook 06 delivers one site per run, so nothing here draws a survey.
 
-`curves_page` draws every four- or six-panel page and the three callers differ only in what they hand it:
-the products of a site coloured by reference kind, the rule's proposal against the products it rejected, and
-the delivered file with its error bars and the join marked. A curve a response test refused is drawn grey
-and carries the test's name at its long end, and it does not set the y limits: a refused row is often the
-one that leaves the panel, and letting it set the axes squeezes the curve the page is about into a line.
+`curves_page` draws every four- or six-panel page and the three callers differ only in what they hand it: the
+transfer functions of a site coloured by reference kind, the rule's proposal against the curves it rejected,
+and the delivered file with its error bars and the join marked. A curve a response test refused is drawn grey
+and carries the test's name at its long end, and it does not set the y limits: a refused row is often the one
+that leaves the panel, and letting it set the axes squeezes the curve the page is about into a line.
 
-Every figure is finished by figures.common.finish, which sets a short title, wraps the caption under the
-axes and saves at dpi 110.
+Every figure is finished by figures.common.finish, which sets a short title, wraps the caption under the axes
+and saves at dpi 110.
 
 @author: ben kay (ben@auscope.org.au)
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
-import pandas as pd
 
-from ..process import KIND_WORD
-from ..products import rho_phase
+from ..transfer_functions import rho_phase
 from ..readings import KINDS
 from .common import finish
-from .products import _dress, tf_panels
+from .transfer_functions import _dress, tf_panels
 
 FINAL_COLOUR = "C3"                # the delivered curve, drawn on top
-REJECTED_COLOUR = "0.65"           # a product the rule did not choose, and a quantity scored by nothing
+REJECTED_COLOUR = "0.65"           # a curve the rule did not choose, and a quantity scored by nothing
 FAILED_COLOUR = "0.80"             # ... and one a response test refused
 FIGSIZE = (13.0, 12.5)
 
-# the four reference kinds a product may be delivered on; the colours are workbook 04's
+# the four reference kinds a transfer function may be delivered on; the colours are workbook 04's
 KIND_COLOUR = {k: "C%d" % i for i, k in enumerate(KINDS)}
 RATE_STYLE = {1: "-", 10: "--"}    # a form is drawn dotted whatever its rate
 
@@ -49,7 +45,7 @@ def kind_colour(kind) -> str:
 
 
 def curve_style(kind, rate_hz, form="", passes=True) -> dict:
-    """The colour and line style of one product: the kind is the colour, the rate the line, a form dotted."""
+    """The colour and line style of one curve: the kind is the colour, the rate the line, a form dotted."""
     return dict(colour=(kind_colour(kind) if passes else FAILED_COLOUR),
                 ls=(":" if str(form or "") else RATE_STYLE.get(int(float(rate_hz)), "-.")))
 
@@ -109,9 +105,9 @@ def curves_page(site, curves, out, title="", caption="", period_range=None, tipp
     return finish(fig, title or "%s: the transfer functions" % site, caption, out)
 
 
-def products_page(site, rows, out, title="", caption="", period_range=None, tipper=True,
+def transfer_functions_page(site, rows, out, title="", caption="", period_range=None, tipper=True,
                   figsize=FIGSIZE):
-    """Every product of one site: colour by kind, 10 Hz dashed, forms dotted, a refused product grey.
+    """Every transfer function of one site: colour by kind, 10 Hz dashed, forms dotted, a refused row grey.
 
     `rows` is a list of mappings carrying `tf`, `label`, `kind`, `rate_hz`, `form`, `passes` and `fails`.
     """
@@ -125,13 +121,13 @@ def products_page(site, rows, out, title="", caption="", period_range=None, tipp
                            zorder=(3 if r.get("passes", True) else 2), bars=False,
                            limits=bool(r.get("passes", True)),
                            note=("" if r.get("passes", True) else r.get("fails", ""))))
-    return curves_page(site, curves, out, title=(title or "%s: every product of this site" % site),
+    return curves_page(site, curves, out, title=(title or "%s: every transfer function" % site),
                        caption=caption, period_range=period_range, tipper=tipper, figsize=figsize)
 
 
 def over_rejected(site, chosen, rejected, out, title="", caption="", period_range=None, tipper=True,
                   bars=True, figsize=FIGSIZE):
-    """The chosen curves over the products they were chosen against, each rejected curve named in grey.
+    """The chosen curves over the ones they were chosen against, each rejected curve named in grey.
 
     `chosen` is a list of (label, kind, TFData) and `rejected` a list of (label, TFData).
     """
@@ -142,7 +138,7 @@ def over_rejected(site, chosen, rejected, out, title="", caption="", period_rang
         curves.append(dict(tf=tf, label=label, kind=kind, colour=kind_colour(kind), ls="-", marker="o",
                            lw=1.4, ms=3.5, alpha=1.0, zorder=5, bars=bars, limits=True))
     return curves_page(site, curves, out,
-                       title=(title or "%s: the choice over the products it was made against" % site),
+                       title=(title or "%s: the choice and the curves it was made against" % site),
                        caption=caption, period_range=period_range, tipper=tipper, figsize=figsize)
 
 
@@ -154,8 +150,3 @@ def delivered_page(site, final, out, title="", caption="", period_range=None, ti
     return curves_page(site, curves, out, title=(title or "%s: the delivered transfer function" % site),
                        caption=caption, period_range=period_range, tipper=tipper, figsize=figsize,
                        join_s=join_s)
-
-
-def kind_key(kinds=KINDS) -> pd.DataFrame:
-    """The colour key a page's legend abbreviates: the word, the code key and the colour of each kind."""
-    return pd.DataFrame([dict(word=KIND_WORD.get(k, k), key=k, colour=kind_colour(k)) for k in kinds])

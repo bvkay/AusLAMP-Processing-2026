@@ -1,15 +1,16 @@
 # AusLAMP-Processing-2026
 
 Long-period magnetotelluric processing for the AusLAMP surveys recorded on Earth Data Logger PR6-24 (with a
-Bartington Mag-03 fluxgate, 10 Hz) or LEMI-424 (1 Hz) instruments, as six Jupyter workbooks on one Python package.
-The workbooks take a survey from a folder of raw time series to one transfer function per site; every function lives
-in `auslamp_proc`, so a batch run and a single-site run share one code path and any cell can be re-run. Built on the
-IAGA-DVI-DataStandards packages mt-metadata, mt-io and mth5, with Aurora as the estimator.
+Bartington Mag-03 fluxgate, 10 Hz) or LEMI-424 (1 Hz) instruments, as five Jupyter workbooks on one Python
+package. The workbooks take a survey from a folder of raw time series to one transfer function per site;
+every function lives in `auslamp_proc`, so the batch entry and a single-site run share one code path and any
+cell can be re-run. Built on the IAGA-DVI-DataStandards packages mt-metadata, mt-io and mth5, with Aurora as
+the estimator.
 
-The worked example is AusLAMP Queensland Phase 1 (23 EDL sites, September-November 2025), the survey the workbooks
-open on; Phases 2 (18 sites, March-May 2026) and 3 (15 sites, June-July 2026) are kept as executed examples under
-`workbooks/examples/`. The raw time series are not in this repository: point `raw_root` and `work_root` in
-`surveys/<survey>/survey.yaml` at where they live on your machine. To run your own survey, copy `surveys/_template/`.
+The worked example is AusLAMP Queensland Phase 1 (23 EDL sites, September-November 2025), the survey the
+workbooks open on. The raw time series are not in this repository: point `raw_root` and `work_root` in
+`surveys/<survey>/survey.yaml` at where they live on your machine. To run your own survey, copy
+`surveys/_template/` and point it at your own raw folder.
 
 Author: Ben Kay (bvkay). Started 2026-09-13; re-cut for the workbook layout 2026-09-16.
 
@@ -22,47 +23,73 @@ Author: Ben Kay (bvkay). Started 2026-09-13; re-cut for the workbook layout 2026
 The readers are the released packages (mt-io 0.0.5, mth5 0.6.9, mt-metadata 1.0.11); nothing depends on a fork.
 
 Launch the workbooks as `python -m jupyterlab`, and run the runner as `python workbooks/run_workbooks.py 01`,
-with the environment's own interpreter. The `jupyter` dispatcher resolves its subcommands from PATH, which on a
-machine with a base Anaconda install is a different nbconvert from the environment's, so `python -m jupyter ...`
-silently escapes the environment where `python -m jupyterlab` and `python -m nbconvert` do not.
+with the environment's own interpreter. The `jupyter` dispatcher resolves its subcommands from PATH, which on
+a machine with a base Anaconda install is a different nbconvert from the environment's, so `python -m jupyter
+...` silently escapes the environment where `python -m jupyterlab` and `python -m nbconvert` do not.
 
 ## The workbooks
+
+Workbook 01 is survey-wide; workbooks 02 to 05 work on one site at a time, named in each one's `SITE`
+parameter, because one site is processed at a time.
 
 | workbook | what it does |
 |---|---|
 | `01_survey` | reads the raw folder into a site table (instrument, serial, dipoles, positions from the logger's own GPS, dates with the EDL week rollover, declination), draws the map and the deployment register, and checks or fetches the observatory record for the span |
-| `02_records` | builds each site's cache (every file placed on one absolute axis, gaps NaN, no sign or frame) and draws its record, band coherence, coherence maps, spectra and spectrograms, with the magnetometer DC test and the per-day state of each electric line -- look before processing |
-| `03_process` | Aurora over the chosen sites and the four reference kinds (remote site, fleet stack, observatory, stack + observatory): at 1 Hz over the record, at 10 Hz on the most coherent hours with a random selection as the control; one folder per run with its provenance, and a figure for what each step did |
-| `04_products` | every product of a site, group or survey on one page; kind against kind, rate against rate, run against run; each curve's smoothness; the survey gallery |
-| `05_site` | one site in depth: the magnetics day by day, the fleet and clock tests, day masks, windows and best hours each with a random control, the arm diagonal for a shared centre, the 10 Hz short end, a magnetic channel borrowed from a neighbour, and the recipe that composes them -- one frame and, per impedance row, which hours at which rate -- into one product |
-| `06_final` | one site's final transfer function: every product put to the three response tests (phase in quadrant, the slope bound, the error bar), the rule's proposal, the analyst's choice recorded, the 10 Hz join, one EDI per site |
+| `02_records` | builds each chosen site's cache quietly (every file placed on one absolute axis, gaps NaN, no sign or frame) and draws one site's record, band coherence, coherence maps, spectra and spectrograms, with the magnetometer DC test and the per-day state of each electric line -- look before processing |
+| `03_site` | one site: its frame, its clean-pool row, its remote site, its fleet stack, the observatory, the references written, the bands, the MTH5 check, Aurora at 1 Hz over the four reference kinds and at 10 Hz on the longest coherent stretch with a control of the same length, then every transfer function of the site on one page with kind against kind, rate against rate and run against run beneath it |
+| `04_site` | one site in depth: the magnetics day by day, the daily and clock tests, a window per impedance row with its control, the arm diagonal for a shared centre, the 10 Hz short end, a magnetic channel borrowed from a neighbour, and the recipe that composes them -- one frame and, per impedance row, which hours at which rate -- into one transfer function |
+| `05_final` | one site's final transfer function: every one the site has put to the three response tests (phase in quadrant, the slope bound, the error bar), the rule's proposal, the analyst's choice recorded, the 10 Hz join, one EDI per site |
 
-Each workbook is generated from `workbooks/make_workbooks.py`, which holds it as one Python list of markdown and
-code cells, and is executed in place by `workbooks/run_workbooks.py`, which fails on a non-zero nbconvert exit, on
-any cell carrying an error output and on any code cell that was not run: edit the generator and re-run it, never
-the notebook itself.
+A survey is processed by the batch entry, which runs workbook 03's own code path one lane per site:
+
+    python -m auslamp_proc.process.batch --survey queensland_phase1 --sites all --lanes 3
+
+`--redo --sites Q49 Q84` rebuilds those sites' references and remakes every transfer function of theirs, and
+leaves every other site alone.
+
+Each workbook is generated from its own module -- `workbooks/wb01_survey.py` to `workbooks/wb05_final.py`,
+each holding that workbook as one Python list of markdown and code cells -- which
+`workbooks/make_workbooks.py` imports and writes. A workbook is executed in place by
+`workbooks/run_workbooks.py`, which fails on a non-zero nbconvert exit, on any cell carrying an error output
+and on any code cell that was not run: edit the generator and re-run it, never the notebook itself.
 
 ## Frame and units
 
-Products are processed and served in geomagnetic north: each site's horizontal magnetics are rotated so the mean Hy
-is zero, which removes the hand-compass misalignment. The IGRF declination is recorded in every file and not applied.
-Magnetics in nT, electrics in mV/km, periods in s.
+A transfer function is estimated and served in geomagnetic north: each site's horizontal magnetics are
+rotated so the mean Hy is zero, which removes the hand-compass misalignment. The IGRF declination is recorded
+in every file and not applied. Magnetics in nT, electrics in mV/km, periods in s.
+
+## Which hours a pass is run on
+
+The 1 Hz pass is the whole record. The 10 Hz pass is not, and one rule chooses its hours
+(`auslamp_proc.process.selection`): each whole UTC hour of the 1 Hz cache is scored by the median squared
+coherence over 20-200 s (Welch, 1,024 s segments) of Ex with Hy and of Ey with Hx; a stretch is a contiguous
+run of hours in which both lines read above 0.5; the selection is the longest stretch, cut to its best 48
+contiguous hours where it runs longer; and the control is a stretch of the same length placed at random
+elsewhere in the record, not overlapping the selection. A selection that does not beat its control bought
+efficiency, not a different answer. The same rule chooses workbook 04's per-row windows, on that row's own
+electric line.
 
 ## Layout
 
-    auslamp_proc/     the package (survey tables, raw readers and placement, cache, look, geo, observatory, register, figures, processing, products and agreement)
+    auslamp_proc/     the package (survey tables, raw readers and placement, cache, look, geo, observatory, register, figures, processing, transfer functions and agreement)
     auslamp_proc/bands/   the two EMTF band files with the level count and window length each belongs to
-    workbooks/        the generator, the runner, the six workbooks, and examples/<survey>/ with the executed copies
+    workbooks/        one module per workbook, the generator, the runner and the five workbooks
     surveys/          one folder per survey: survey.yaml, sites.csv, decisions.csv, SITES_COLUMNS.md in _template/
     tools/            one-off builders: the coastline the map draws, the sheet cells merged into a survey's tables
-    tests/            pytest over the raw readers and the register, and the regression the products must reproduce
+    tests/            pytest over the raw readers, the register, the selection rule and the regression the delivery must reproduce
 
 ## Status
 
-2026-09-17: the six workbooks run end to end on Queensland Phase 1 (23 sites) and as examples on Phases 2 and 3,
-with every check reporting; the times each step took are printed in the notebooks. Workbook 03 processes the
-23 sites at 1 Hz over the four reference kinds (92 products) and at 10 Hz on the best 5, 10 and 25 per cent of
-hours with a random 25 per cent as the control. The single station is not a kind of this package: a noisy H
-biases it low with no sign of it in the error bars. The raw readers were checked bit for bit against the
-released mt-io on the GA Victoria release. The repository's history before this date is an April 2026
-exploration of the Victoria MTH5 files, retired in the first commit of the package.
+A verdict a run reports honestly over a condition the survey itself carries is named in that survey's
+`survey.yaml` under `checks.retained_failures`, with the workbook, the site and the reason. The conventions
+test reads them and excuses no other FAIL.
+
+2026-09-17: the five workbooks are cut from the six that preceded them -- the survey, the records, one site's
+references and transfer functions, one site in depth, and one site's final transfer function -- and the
+survey-wide pages of the old fourth workbook are gone with it. Workbook 03 processes one site at a time over
+the four reference kinds at 1 Hz and over the remote site and the fleet stack at 10 Hz on the coherent
+stretch and its control. The single station is not a kind of this package: a noisy H biases it low with no
+sign of it in the error bars. The raw readers were checked bit for bit against the released mt-io on the GA
+Victoria release. The repository's history before 2026-09-13 is an April 2026 exploration of the Victoria
+MTH5 files, retired in the first commit of the package.

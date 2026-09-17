@@ -23,11 +23,11 @@ The rules applied:
                    result in their master's ex_polarity and ey_polarity columns and it is read from there;
                    Phase 2 has no such column and the rule is applied here to the sheet direction.
     OPEN           Q85N sign_ey, Q63 sign_ey and Q65 sign_hx/sign_hy stay `decide` and carry the open
-                   question in flags; the sign is Ben's to rule.
+                   question in flags.
     remote_site    the remote the campaign chose, from the phase's own remotes table, with remote_source
                    naming that table.
 
-The sheet latitude and longitude are NOT written: the position of record is the logger's own GPS, and the
+The sheet latitude and longitude are not written: the position of record is the logger's own GPS, and the
 sheet position is compared in workbook 01 through survey.yaml `comparison_positions`.
 
 Run once per phase, after workbook 01 has created sites.csv and decisions.csv.

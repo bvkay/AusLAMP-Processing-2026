@@ -1,9 +1,9 @@
-"""The figures of workbook 03: what each step of the processing did, beside the table that decided it.
+"""The figures of workbook 03: what each step of one site's processing did, beside the table that decided it.
 
-One helper per figure, each taking what its section already computed and writing a PNG at dpi 110 under the
-run's work root. Nothing is estimated here: every number drawn is one the section printed.
+One helper per figure, each taking what its section already computed and writing a PNG at dpi 110 under
+the run's work root. Nothing is estimated here: every number drawn is one the section printed.
 
-Each figure carries a SHORT title -- the site or the survey and what the figure is, one line that fits at any
+Each figure carries a SHORT title -- the site and what the figure is, one line that fits at any
 width -- and a CAPTION under the axes in smaller text, wrapped to the figure's width, naming the parameters a
 student would change and what changing them does. Both go through figures.common.finish, which reserves the
 caption's space before the save.
@@ -11,8 +11,8 @@ caption's space before the save.
 The conventions are the package's. Period is a log x axis labelled `period (s)`; apparent resistivity is log
 in Ohm.m; phase runs 0-90 deg with the yx panel labelled `+ 180 deg`; time series carry `channel (unit)` in
 nT and mV/km against `days from <t0> UTC`; series are C0..C9, refused or excluded items grey, masked spans
-grey; grids at alpha 0.25. The transfer-function panels are drawn through figures.products.tf_panels and
-dressed by its own _dress, so a workbook 03 page and a workbook 04 page read the same way.
+grey; grids at alpha 0.25. The transfer-function panels are drawn through figures.transfer_functions.tf_panels and
+dressed by its own _dress, so every transfer-function panel of the series reads the same way.
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from .common import finish
-from .products import _dress, tf_panels
+from .transfer_functions import _dress, tf_panels
 from .record import minute_stats
 
 DPI = 110
@@ -57,12 +57,20 @@ def _txt(v, fmt="%.0f") -> str:
 # ---------------------------------------------------------------- 1 the frame
 
 def frame_hodogram(h_before, h_after, angle, site, table, out, fs=1.0, figsize=(13, 5.5)):
-    """The horizontal pair before and after the turn, and the angle of every site against its declination.
+    """The horizontal pair before and after the turn, with the angles of a set of sites beside it.
 
     `h_before` and `h_after` are {'Hx','Hy'} of the site as read and as turned; `table` carries one row per
-    site with site, angle_deg and declination_deg.
+    site with site, angle_deg and declination_deg. A table of one site carries no distribution to draw, so
+    the bars are dropped and the hodogram takes the whole figure; the angle and the declination are then a
+    line of the caption and of the table above the figure.
     """
-    fig, ax = _fig(1, 2, figsize=figsize, gridspec_kw=dict(width_ratios=[1, 1.6]))
+    import matplotlib.pyplot as plt
+    bars = len(table) > 1
+    if bars:
+        fig, ax = _fig(1, 2, figsize=figsize, gridspec_kw=dict(width_ratios=[1, 1.6]))
+    else:
+        fig = plt.figure(figsize=(figsize[0] * 0.55, figsize[1]))
+        ax = [fig.add_subplot(1, 1, 1), None]
     per = max(1, int(round(60 * float(fs))))
     xs, ys, means = [], [], []
     for h, label, colour in ((h_before, "as read", "C7"), (h_after, "turned", "C0")):
@@ -76,7 +84,7 @@ def frame_hodogram(h_before, h_after, angle, site, table, out, fs=1.0, figsize=(
         ys.append(y[g])
         means.append((mx, my, colour))
     # the mean vector runs from the origin, which sits tens of thousands of nT away from the cloud, so it
-    # is drawn as the ray through the mean rather than as an arrow that would leave nothing else visible
+    # is drawn as the ray through the mean rather than as an arrow that would fill the whole panel
     allx = np.concatenate(xs) if xs else np.zeros(1)
     ally = np.concatenate(ys) if ys else np.zeros(1)
     px = 0.08 * max(1.0, float(np.ptp(allx)))
@@ -97,6 +105,20 @@ def frame_hodogram(h_before, h_after, angle, site, table, out, fs=1.0, figsize=(
     ang = np.array([_num(v) for v in table.angle_deg], float)
     dec = np.array([_num(v) for v in table.declination_deg], float)
     xi = np.arange(len(sites))
+    if not bars:
+        n_reg = int(sum(1 for v in table.angle_deg if not np.isfinite(_num(v))))
+        return finish(fig, "%s: the horizontal pair before and after the turn" % site,
+                      "The per-minute mean of the pair as read (grey) and turned (blue), each with its own "
+                      "mean marked and the ray from the origin through that mean drawn dashed; the angle "
+                      "between the two rays is the turn, theta = %s, and it puts the mean Hy at zero. The "
+                      "turn is rigid, so the cloud moves and does not change shape. The IGRF declination "
+                      "here is %s: the angle is the sensor's own misalignment and the declination is the "
+                      "field's, and neither is the other. What to change: rot_regimes in decisions.csv "
+                      "splits the record where the sensor was moved and one angle no longer fits, and "
+                      "rot_drop trims the stretches the angle is not measured over; this site carries %d "
+                      "regime list(s) rather than one angle."
+                      % (a_txt, ("%+.2f deg" % dec[0]) if np.isfinite(dec).any() else "not computed",
+                         n_reg), out)
     ax[1].bar(xi, ang, color=["C3" if s == site else "C0" for s in sites], width=0.72,
               label="the rotation angle (the sensor's)")
     ax[1].plot(xi, dec, "kv", ms=5, label="the IGRF declination (the field's)")
@@ -133,55 +155,7 @@ def frame_hodogram(h_before, h_after, angle, site, table, out, fs=1.0, figsize=(
                      np.nanmax(dec) if np.isfinite(dec).any() else np.nan, n_reg), out)
 
 
-# ---------------------------------------------------------------- 2 the clean pool
-
-def pool_bars(table, out, event_frac_max=0.02, baseline_max=10.0, survey="", figsize=(13, 6)):
-    """The event fraction and the baseline of every scanned site against the two clean-pool thresholds.
-
-    `table` carries site, event_frac, baseline and clean. An excluded site is drawn grey and the limb it
-    failed is written beside it: E for the event fraction, B for the baseline, EB for both.
-    """
-    t = table.sort_values("site")
-    sites = list(t.site)
-    ev = np.array([_num(v) for v in t.event_frac], float)
-    bl = np.array([_num(v) for v in t.baseline], float)
-    clean = np.array([bool(v) for v in t.clean], bool)
-    letter = ["".join(("E" if e > event_frac_max else "", "B" if b > baseline_max else ""))
-              for e, b in zip(np.nan_to_num(ev, nan=0.0), np.nan_to_num(bl, nan=0.0))]
-    xi = np.arange(len(sites))
-    fig, ax = _fig(2, 1, figsize=figsize, sharex=True)
-    colour = ["C0" if c else "0.65" for c in clean]
-    for a, v, line, label, logy in ((ax[0], ev, event_frac_max, "event fraction", False),
-                                    (ax[1], bl, baseline_max, "baseline / survey median", True)):
-        a.bar(xi, v, color=colour, width=0.72)
-        a.axhline(line, color="C3", ls="--", lw=1.2, label="%s = %g" % (label, line))
-        if logy:
-            a.set_yscale("log")
-        a.set(ylabel=label)
-        a.grid(alpha=GRID_ALPHA, axis="y")
-        a.legend(fontsize=8, loc="upper left")
-    top = float(np.nanmax(ev)) if np.isfinite(ev).any() else 1.0
-    ax[0].set_ylim(0, top * 1.2)
-    for i, (lt, c) in enumerate(zip(letter, clean)):
-        if lt and not c:
-            ax[0].text(i, top * 1.08, lt, ha="center", va="bottom", fontsize=7, color="C3")
-    ax[1].set_xticks(xi)
-    ax[1].set_xticklabels(sites, rotation=90, fontsize=7)
-    n_clean = int(clean.sum())
-    return finish(fig, "%s: the clean pool" % (survey or "the survey"),
-                  "Each site's tail scan over 20-200 s: the fraction of its 600 s chunks flagged as events, "
-                  "and its median band power over the survey median. A site is clean where both sit under "
-                  "the dashed lines, and an excluded site is grey with the limb it failed beside it -- E "
-                  "the event fraction, B the baseline, EB both. %d of %d site(s) are clean and only a clean "
-                  "site may be another's reference. What to change: EVENT_FRAC_MAX = %g admits or refuses a "
-                  "site that spikes, BASELINE_MAX = %g one that is loud all the time; raising either widens "
-                  "the pool every remote and every stack is drawn from. The band is 20-200 s because a "
-                  "1 Hz cache decimated from 10 Hz reads each unit's own noise floor at 2-20 s, which is "
-                  "not comparable between sites."
-                  % (n_clean, len(sites), event_frac_max, baseline_max), out)
-
-
-# ---------------------------------------------------------------- 3 the remote site
+# ---------------------------------------------------------------- 2 the remote site
 
 def remote_scatter(scores, choice, site, out, branches=None, coh_min=0.5, coh_relax=0.3,
                    overlap_fraction=0.9, named=None, figsize=(13, 5.5)):
@@ -250,7 +224,7 @@ def remote_scatter(scores, choice, site, out, branches=None, coh_min=0.5, coh_re
                   % (site, 100 * overlap_fraction, coh_min, coh_relax), out)
 
 
-# ---------------------------------------------------------------- 4 the fleet stack
+# ---------------------------------------------------------------- 3 the fleet stack
 
 def stack_weights(kept, refused, lags, site, out, series=(), t_start=None, cutoff=0.5, n_max=8, n_min=2,
                   fs=1.0, hours=6.0, bridged=(), steps=None, screen_k=30.0, screen_floor_nt=3.0,
@@ -315,7 +289,7 @@ def stack_weights(kept, refused, lags, site, out, series=(), t_start=None, cutof
             "The stack's steps above %g nT per million samples and its screened members' median are written "
             "to the sidecar and scored by the check below the figure." % step_nt)
     return finish(fig, "%s: the stack members and what the stack looks like" % site,
-                  "Left: each member's weight, which is its median coherence with the FLEET at 100-1000 s "
+                  "Left: each member's weight, which is its median coherence with the fleet at 100-1000 s "
                   "and never its coherence with the target, against the cutoff; the refused members are "
                   "hatched and each kept bar carries the lag the alignment measured, in seconds. Right: %g "
                   "hours of one quiet day with the target's Hx, two members' Hx and the stack's Hx drawn "
@@ -333,7 +307,7 @@ def stack_weights(kept, refused, lags, site, out, series=(), t_start=None, cutof
                      screen_k, screen_floor_nt, edge_s, level_win_s), out)
 
 
-# ---------------------------------------------------------------- 5 the observatory
+# ---------------------------------------------------------------- 4 the observatory
 
 def observatory_bars(table, out, series=(), t_start=None, code="", site="", fs=1.0, hours=6.0,
                      figsize=(13, 5.5)):
@@ -377,6 +351,34 @@ def observatory_bars(table, out, series=(), t_start=None, code="", site="", fs=1
                   "archive in survey.yaml choose which record this is; nothing here has a threshold."
                   % (code or "observatory", len(good), np.min(good) if len(good) else np.nan,
                      np.max(good) if len(good) else np.nan, hours), out)
+
+
+# ---------------------------------------------------------------- 5 the bands
+
+def band_ladder(tables, files, out, params="", figsize=(13, 3.6)):
+    """One panel per band file: each band as a bar over its own period range, at its decimation level.
+
+    `tables` is {key: the band table aurora_run.band_table returns} and `files` is {key: the file name}.
+    """
+    fig, axes = _fig(1, len(tables), figsize=figsize)
+    axes = np.atleast_1d(axes)
+    for ax, (k, tab) in zip(axes, sorted(tables.items())):
+        for r in tab.itertuples():
+            ax.plot([r.lower_s, r.upper_s], [r.level, r.level], lw=6, solid_capstyle="butt",
+                    color="C%d" % (r.level % 10), alpha=0.8)
+            ax.plot(r.centre_s, r.level, "k|", ms=8)
+        ax.set(xscale="log", xlabel="period (s)", ylabel="decimation level",
+               title="%s: %s, %d bands" % (k, files.get(k, ""), len(tab)),
+               yticks=range(tab.level.nunique()))
+        ax.grid(alpha=GRID_ALPHA, which="both")
+    return finish(fig, "the band files, level by level",
+                  "Each band drawn as a bar over its own lower and upper period at the decimation level it "
+                  "belongs to, with its centre marked. The lines of a band file are FFT harmonics of the "
+                  "window and not of the record, so the file, the level count and the window are one object "
+                  "in the package and these tables are read through Aurora's own band machinery rather than "
+                  "off the text file. The cascade is [1] + [4] x (levels - 1): the rate falls by four at "
+                  "each level after the first. What to change: PARAMS = %s selects the Aurora parameter set, "
+                  "and the band file of a rate is fixed with it." % (params or "the parameter set"), out)
 
 
 # ---------------------------------------------------------------- 6 the mask
@@ -442,114 +444,22 @@ def mask_record(t0, arrays, keep, out, site="", spans=(), fs=1.0, min_segment_s=
                      100 * (int(k.sum()) - written) / max(1, len(k)), min_segment_s), out)
 
 
-# ---------------------------------------------------------------- 7 the run
-
-def run_timeline(led, out, lanes=3, survey="", figsize=(13, 6.5)):
-    """The products of a run as a bar per product on its site's lane, and the seconds per product by kind.
-
-    The ledger records what each product cost and not when it started, so a product is drawn from the sum of
-    the seconds of the products before it on the same site: the products of one site run in sequence in one
-    lane, so the bar is that site's own elapsed time and not the wall clock of the run.
-    """
-    from ..process import KINDS
-    t = led.copy()
-    t["seconds"] = [_num(v, 0.0) for v in t.seconds]
-    sites = sorted(set(t.site))
-    colour = {k: "C%d" % i for i, k in enumerate(KINDS)}
-    fig, ax = _fig(1, 2, figsize=figsize, gridspec_kw=dict(width_ratios=[1.7, 1]))
-    seen = set()
-    for j, s in enumerate(sites):
-        rows = t[t.site == s]
-        start = 0.0
-        for r in rows.itertuples():
-            secs = _num(r.seconds, 0.0) / 60.0
-            ax[0].barh(j, secs, left=start, height=0.7, color=colour.get(r.kind, "C7"),
-                       label=(r.kind if r.kind not in seen else None))
-            seen.add(r.kind)
-            start += secs
-        peak = np.nanmax([_num(v) for v in rows.peak_rss_mb]) if len(rows) else np.nan
-        if np.isfinite(peak):
-            ax[0].text(start + 1.0, j, "%.1f GB" % (peak / 1024.0), va="center", fontsize=6, color="0.25")
-    ax[0].set(yticks=np.arange(len(sites)), xlabel="minutes on the site's own lane", ylabel="site")
-    ax[0].set_yticklabels(sites, fontsize=7)
-    ax[0].grid(alpha=GRID_ALPHA, axis="x")
-    ax[0].legend(fontsize=7, loc="lower right", ncol=2)
-
-    kinds = [k for k in KINDS if k in set(t.kind)]
-    data = [[_num(v) for v in t.seconds[t.kind == k] if np.isfinite(_num(v))] for k in kinds]
-    if any(len(d) for d in data):
-        bp = ax[1].boxplot(data, tick_labels=kinds, patch_artist=True, widths=0.6)
-        for patch, k in zip(bp["boxes"], kinds):
-            patch.set_facecolor(colour.get(k, "C7"))
-            patch.set_alpha(0.7)
-    ax[1].set(ylabel="seconds a product", title="seconds per product by kind")
-    ax[1].tick_params(axis="x", rotation=90, labelsize=7)
-    ax[1].grid(alpha=GRID_ALPHA, axis="y")
-    peaks = [_num(v) for v in t.peak_rss_mb]
-    peaks = [v for v in peaks if np.isfinite(v)]
-    return finish(fig, "%s: what the run cost" % (survey or "the run"),
-                  "Left: one bar per product on its site's lane, coloured by reference kind, laid from the "
-                  "start of that site's own work; the peak resident memory the lane reached is written at "
-                  "the end of each site. Right: the seconds a product took, by kind. %d product(s) over %d "
-                  "site(s) cost %.1f machine-minutes between them and the largest peak was %.1f GB. What to "
-                  "change: LANES = %d is how many sites run at once and the memory a pass peaks at is per "
-                  "lane, so three lanes want three times the peak; REDO False leaves a product whose EDI is "
-                  "already on disk alone, which is what makes a stopped run resumable by re-running the "
-                  "cell."
-                  % (len(t), len(sites), t.seconds.sum() / 60.0,
-                     (max(peaks) / 1024.0) if peaks else np.nan, lanes), out)
-
-
-# ---------------------------------------------------------------- 8 a first look
-
-def first_look(curves, site, out, period_range=(1.0, 20000.0), figsize=(13, 10)):
-    """Every kind and rate of one site on one set of panels.
-
-    `curves` is [(label, TFData, colour, linestyle)], the reference kind carried by the colour and the rate
-    by the line style.
-    """
-    import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(3, 2, figsize=figsize, sharex=True)
-    ax_rho_xy, ax_rho_yx = axes[0]
-    ax_ph_xy, ax_ph_yx = axes[1]
-    ax_tzx, ax_tzy = axes[2]
-    rho = []
-    for label, tf, colour, ls in curves:
-        if tf is None:
-            continue
-        rho += tf_panels(ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx, ax_tzx, ax_tzy, tf, label,
-                         colour=colour, ls=ls, marker="o", period_range=period_range, bars=True)
-    _dress((ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx, ax_tzx, ax_tzy), rho, period_range)
-    ax_rho_xy.legend(fontsize=7, loc="best", ncol=2)
-    return finish(fig, "%s: every kind and rate on one set of panels" % site,
-                  "Every product of %s -- the reference kind is the colour, the rate the line style, 1 Hz "
-                  "solid and 10 Hz dashed -- with apparent resistivity, phase and the tipper, the tipper's "
-                  "real part filled and its imaginary part open on a dotted line. Two kinds sitting on each "
-                  "other over a band are two measurements of the same field made against different "
-                  "references; a band where they part is a band to look at on workbook 04's page for the "
-                  "site. This is a reading and not a check. At 10 Hz Aurora reads about 8 per cent low at "
-                  "4-32 s against its own 1 Hz product (AusLAMP Victoria, 2026-09-11), so the dashed curves "
-                  "are not spliced onto the solid ones here. What to change: KINDS decides which curves "
-                  "exist at all and PARAMS the Aurora parameter set every one of them was estimated under."
-                  % site, out)
-
-
-# ---------------------------------------------------------------- 9 the 10 Hz selection
+# ---------------------------------------------------------------- 7 the 10 Hz stretch
 
 NO_TEN_HZ = "the 10 Hz pass was not run for this site: RATES holds no 10 Hz"
 
 
 def hour_selection(table, sel, curves, site, out, join_s=16.0, bands=((8.0, 16.0), (32.0, 100.0)),
-                   period_range=(0.6, 2000.0), band_s=(1.0, 30.0), seed=20260916, figsize=(13, 11),
-                   no_ten_hz=NO_TEN_HZ):
-    """The hour score with the selections as rows of spans, and the products those selections made.
+                   period_range=(0.6, 2000.0), band_s=(20.0, 200.0), coh_min=0.5, seed=20260916,
+                   figsize=(13, 11), no_ten_hz=NO_TEN_HZ):
+    """The two hourly coherences with the stretch and its control as spans, and what they estimated.
 
-    `table` is the hour score table, `sel` the selection record keyed by tag, and `curves` is
-    [(label, TFData, colour, linestyle)] with the 1 Hz baseline solid and the 10 Hz selections dashed.
+    `table` is the hour score table, `sel` the selection record keyed by tag (`stretch` and `control`), and
+    `curves` is [(label, TFData, colour, linestyle)] with the 1 Hz baseline solid and the 10 Hz stretches
+    dashed.
 
-    Where `curves` holds no dashed curve the site has no 10 Hz selection product, and the lower panels carry
-    `no_ten_hz` in place of a curve rather than the 1 Hz product alone: a panel headed "the products those
-    selections made" showing one curve that is not one of them says the opposite of what is true.
+    Where `curves` holds no dashed curve the site has no 10 Hz transfer function of the stretch, and the
+    lower panels carry `no_ten_hz` in place of a curve rather than the 1 Hz row alone.
     """
     import matplotlib.pyplot as plt
     fig = plt.figure(figsize=figsize)
@@ -559,14 +469,17 @@ def hour_selection(table, sel, curves, site, out, join_s=16.0, bands=((8.0, 16.0
     ax_ph_xy, ax_ph_yx = fig.add_subplot(gs[2, 0]), fig.add_subplot(gs[2, 1])
     t0 = float(np.min(table.t_start)) if len(table) else 0.0
     d = (np.asarray(table.t_start, float) - t0) / DAY
-    score = np.asarray(table.score, float)
-    ax_s.plot(d, score, color="0.4", lw=0.5, label="the hour score")
-    top = float(np.nanmax(score)) * 1.05 if np.isfinite(score).any() else 1.0
-    tags = [k for k in ("f05", "f10", "f25", "r25") if k in (sel or {})]
+    for col, colour, label in (("coh_xy", "C0", "Ex with Hy"), ("coh_yx", "C1", "Ey with Hx")):
+        if col in table.columns:
+            ax_s.plot(d, np.asarray(table[col], float), color=colour, lw=0.5, label=label)
+    ax_s.axhline(float(coh_min), color="0.3", ls="--", lw=0.9,
+                 label="the threshold both lines must hold, %.2f" % float(coh_min))
+    top = 1.0
+    tags = [k for k in ("stretch", "control") if k in (sel or {})]
     row_h, gap = 0.10 * top, 0.02 * top
     for j, tag in enumerate(tags):
         item = sel[tag]
-        colour = "C%d" % j if not item.get("random") else "0.45"
+        colour = "0.45" if item.get("random") else "C2"
         lo = top * 1.06 + j * (row_h + gap)
         hi = lo + row_h
         first = True
@@ -577,13 +490,10 @@ def hour_selection(table, sel, curves, site, out, join_s=16.0, bands=((8.0, 16.0
             first = False
         ax_s.text(1.005, 0.5 * (lo + hi), tag, transform=ax_s.get_yaxis_transform(), fontsize=7,
                   va="center", ha="left", color=colour)
-        thr = item.get("threshold")
-        if thr is not None and not item.get("random"):
-            ax_s.axhline(float(thr), color=colour, ls="--", lw=0.8)
     ax_s.set(ylabel="%g-%g s E-H coherence" % band_s, xlabel="days from %s UTC" % _iso(t0),
              ylim=(0, top * 1.06 + max(1, len(tags)) * (row_h + gap)))
     ax_s.grid(alpha=GRID_ALPHA)
-    ax_s.legend(fontsize=7, loc="lower right", ncol=6)
+    ax_s.legend(fontsize=7, loc="lower right", ncol=4)
     lower = (ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx)
     drawn = [c for c in curves if c[1] is not None and c[3] == "--"]
     if not drawn:
@@ -608,22 +518,22 @@ def hour_selection(table, sel, curves, site, out, join_s=16.0, bands=((8.0, 16.0
         ax_rho_xy.legend(fontsize=7, loc="best", ncol=2)
     kept = ", ".join("%s %d h" % (k, sel[k]["n_hours"]) for k in tags)
     return finish(fig, "%s: the hours the 10 Hz pass was run on" % site,
-                  "Top: the coherence of the two impedance pairs over %g-%g s, one value per whole UTC "
-                  "hour, with the selections drawn as rows of spans above it, each named at the right, and "
-                  "each ranked selection's score threshold as a dashed line; the top row, r25, is the "
-                  "random control, the same number of hours drawn from the same pool under seed %d. The "
-                  "hours kept are %s. Bottom: %s. What to change: SELECT10 sets the fractions, SEED the "
-                  "control's draw, and a kept hour is 3,600 s = 36,000 samples at 10 Hz, exactly the run "
-                  "floor, so an isolated kept hour survives as one Aurora run and adjacent kept hours merge "
-                  "into one longer one."
-                  % (band_s[0], band_s[1], seed, kept or "none",
-                     (("the products those selections made, dashed, against the 1 Hz product of the same "
-                       "kind, solid, with the %g s join marked and the two bands a splice step is scored on "
-                       "shaded. A selection that does not beat its random control buys nothing, which is "
-                       "what the control is there to say. The departure of the 10 Hz row from the 1 Hz row "
-                       "is the survey's own, measured on its whole-record products and written into every "
-                       "10 Hz file, so an offset common to all four selections is the rate and not the "
-                       "choosing" % join_s) if drawn else
-                      ("%s, so the panels carry no curve. The hours above are scored and selected whatever "
-                       "the rate asked for, because the score is a property of the record" % no_ten_hz))),
+                  "Top: the squared coherence of Ex with Hy and of Ey with Hx over %g-%g s, one value per "
+                  "whole UTC hour of the 1 Hz cache, with the threshold both lines must hold drawn as a "
+                  "dashed line and the chosen stretch and its control drawn as rows of spans above, each "
+                  "named at the right. The hours kept are %s. Bottom: %s. What to change: WINDOW_COH sets "
+                  "the threshold, STRETCH_MAX_H the longest stretch taken, and SEED the control's draw. A "
+                  "kept hour is 3,600 s = 36,000 samples at 10 Hz, exactly the run floor, so an isolated "
+                  "kept hour survives as one Aurora run and adjacent kept hours merge into one longer one."
+                  % (band_s[0], band_s[1], kept or "none",
+                     (("the transfer functions the stretch and its control made, dashed, against the 1 Hz "
+                       "row of the same kind, solid, with the %g s join marked and the two bands a splice "
+                       "step is scored on shaded. A stretch that does not beat its control buys efficiency "
+                       "and not a different answer, which is what the control is there to show. The "
+                       "departure of the 10 Hz row from the 1 Hz row is the survey's own, measured on its "
+                       "whole-record passes and written into every 10 Hz file, so an offset common to both "
+                       "is the rate and not the choosing" % join_s) if drawn else
+                      ("%s, so the panels carry no curve. The hours above are scored and the stretch chosen "
+                       "whatever the rate asked for, because the score is a property of the record"
+                       % no_ten_hz))),
                   out)

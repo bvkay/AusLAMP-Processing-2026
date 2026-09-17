@@ -1,10 +1,10 @@
 """IGRF declination, great-circle distance and the INTERMAGNET observatory list.
 
-The declination is recorded in every product's header and never applied. Products are served in geomagnetic
-north, with each site's horizontal magnetics rotated so the mean Hy is zero; applying IGRF as well would
-rotate them twice.
+The declination is recorded in every transfer function's header and never applied. Transfer functions are
+served in geomagnetic north, with each site's horizontal magnetics rotated so the mean Hy is zero; applying
+IGRF as well would rotate them twice.
 
-ppigrf.igrf takes longitude FIRST, height in KILOMETRES, and returns (Be, Bn, Bu) = east, north, up. The
+ppigrf.igrf takes longitude first, height in kilometres, and returns (Be, Bn, Bu) = east, north, up. The
 convention used here is X = north, Y = east, Z = down, so Z = -Bu. igrf() applies both conversions.
 Ported from D:/BEN/MTH5_Aurora_mt-io_2026/scripts/processing/vic_figures.py:31-36 (igrf).
 
@@ -45,7 +45,7 @@ def igrf(lat, lon, elev_m, when):
     # datetime. All times in this package are UTC, so the tzinfo is dropped.
     if getattr(when, "tzinfo", None) is not None:
         when = when.replace(tzinfo=None)
-    Be, Bn, Bu = ppigrf.igrf(lon, lat, float(elev_m) / 1000.0, when)   # lon FIRST, height in km
+    Be, Bn, Bu = ppigrf.igrf(lon, lat, float(elev_m) / 1000.0, when)   # longitude first, height in km
     X, Y, Z = float(np.squeeze(Bn)), float(np.squeeze(Be)), float(-np.squeeze(Bu))
     return dict(X=X, Y=Y, Z=Z,
                 H=float(np.hypot(X, Y)),
@@ -70,25 +70,7 @@ def distance_km(a, b) -> float:
     return float(2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(h)))
 
 
-def nearest_observatory(lat, lon):
-    """(code, km) of the closest observatory in OBSERVATORIES."""
-    d = {c: distance_km((lat, lon), (v[1], v[2])) for c, v in OBSERVATORIES.items()}
-    code = min(d, key=d.get)
-    return code, d[code]
-
-
 def observatory_distances(lat, lon):
     """[(code, name, km)] for every observatory, nearest first."""
     out = [(c, v[0], distance_km((lat, lon), (v[1], v[2]))) for c, v in OBSERVATORIES.items()]
     return sorted(out, key=lambda t: t[2])
-
-
-def scatter_m(lats, lons) -> float:
-    """95th percentile spread of a cloud of fixes about its own median, in metres."""
-    la = np.asarray(lats, float)
-    lo = np.asarray(lons, float)
-    if la.size < 2:
-        return float("nan")
-    dy = (la - np.median(la)) * 111320.0
-    dx = (lo - np.median(lo)) * 111320.0 * np.cos(np.radians(np.median(la)))
-    return float(np.percentile(np.hypot(dx, dy), 95))

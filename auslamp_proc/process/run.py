@@ -4,27 +4,28 @@
         --kinds remote stack obs stack_obs --rates 1 --params kaiser20_75 [--redo]
 
 Everything lands in <work_root>/<site>/<RUN>_<stamp>/, where the stamp is the launch time in UTC of the whole
-run and is passed in with --stamp so every site of one run shares a folder name. Each product writes
+run and is passed in with --stamp so every site of one run shares a folder name. Each pass writes
 <site>_<kind>_<rate>hz_<params>.edi and .xml beside log.txt and provenance.json, and appends one row to
 <work_root>/survey/runs.csv.
 
-The CLI is resumable: with --redo absent, a product whose EDI is already on disk is left alone and reported
-as `exists`. A product that fails is caught, its error is written into its ledger row, and the next product
-runs.
+The CLI is resumable: with --redo absent, a transfer function whose EDI is already on disk is left alone and
+reported as `exists`. A pass that fails is caught, its error is written into its ledger row, and the next
+one runs.
 
 A decisions.csv `keep_mask` cell naming a boolean .npy applies that selection of hours on top of the
 transient mask. A cell naming a file that is not there is said loudly and the pass runs on the whole record,
-because a selection silently ignored produces a whole-record product in a folder named after the selection.
+because a selection silently ignored produces a whole-record transfer function in a folder named after
+the selection.
 
-`--selections` names the hour selections of process.selection a pass is run on, one product each: f05, f10
-and f25 are the best 5, 10 and 25 per cent of the scored hours and r25 is the random 25 per cent that is
-their control (Ben's ruling, 2026-09-17: the 10 Hz product only needs the most coherent parts). A selected
-product carries its tag between the rate and the parameter set, `<site>_<kind>_10hz_<sel>_<params>.edi`, and
-its tag in the ledger's `selection` column and in the EDI's own `selection=` line. The default is the whole
+`--selections` names the stretches of process.selection a pass is run on, one transfer function each:
+`stretch` is the longest run of whole UTC hours in which both recorded lines read above 0.5 at 20-200 s, and
+`control` is a run of the same length placed at random elsewhere in the record. A selected transfer function
+carries its tag between the rate and the parameter set, `<site>_<kind>_10hz_<tag>_<params>.edi`, and the same
+tag in the ledger's `selection` column and in the EDI's own `selection=` line. The default is the whole
 record, whose name carries no tag, so the 1 Hz names and the 1 Hz path are unchanged.
 
 `single` is refused as a kind: noise in H biases the single station low and its error bars carry no sign of
-that bias (Ben's ruling, 2026-09-17). The key stays in process.KINDS so a product already written under it
+that bias (Ben's ruling, 2026-09-17). The key stays in process.KINDS so a file already written under it
 still reads.
 
 The BLAS thread count is pinned to 3 before numpy is imported. A lane that takes every core makes three
@@ -72,8 +73,8 @@ def stamp_now() -> str:
 def rss_mb() -> tuple:
     """(resident, peak resident) of this lane in MB, or (nan, nan) where psutil cannot say.
 
-    The peak is the process's own peak since it started, so the second product of a site reports the peak of
-    the first as well: the column is what the lane cost by then, not what that one product cost alone.
+    The peak is the process's own peak since it started, so the second pass of a site reports the peak of
+    the first as well: the column is what the lane cost by then, not what that one pass cost alone.
     """
     try:
         import psutil
@@ -133,7 +134,7 @@ def _external_mask(dec_row, work, site, n, fs, say):
     The cell is a path to a boolean .npy, absolute or relative to the work root, and a selection of hours
     made outside this run -- the best hours by coherence, a hand-drawn window. A cell that names a file that
     is not there is said loudly and the pass runs on the whole record: a selection silently ignored produces
-    a whole-record product sitting in a folder named after the selection.
+    a whole-record transfer function sitting in a folder named after the selection.
 
     A mask built at 1 Hz is repeated over each second's samples where the pass runs faster.
     """
@@ -159,11 +160,11 @@ def _external_mask(dec_row, work, site, n, fs, say):
 
 
 def _selection_mask(work, site, tag, t0, n, fs, say):
-    """(the sample mask of one named hour selection, its record), or (None, {}) for the whole record.
+    """(the sample mask of one named stretch, its record), or (None, {}) for the whole record.
 
-    The hours are read from <work_root>/<site>/hour_selection_10hz.json, which process.selection wrote, and
-    the mask is rebuilt from their intervals. A tag with no entry there is raised rather than passed over: a
-    selection silently ignored produces a whole-record product under a name that says otherwise.
+    The stretch is read from <work_root>/<site>/hour_selection.json, which process.selection wrote, and the
+    mask is rebuilt from its interval. A tag with no entry there is raised rather than passed over: a
+    selection silently ignored produces a whole-record transfer function under a name that says otherwise.
     """
     tag = str(tag or "").strip()
     if not tag or tag == WHOLE:
@@ -171,11 +172,11 @@ def _selection_mask(work, site, tag, t0, n, fs, say):
     d = SEL.read_selection(work, site)
     item = (d.get("selections") or {}).get(tag)
     if item is None:
-        raise FileNotFoundError("%s carries no %s selection in %s; build the hour scores first"
+        raise FileNotFoundError("%s carries no %s stretch in %s; build the hour scores first"
                                 % (site, tag, SEL.selection_path(work, site)))
     m = SEL.mask_from_hours(item["hours"], t0, n, fs)
-    say("   %s: selection %s keeps %d hour(s), %.2f %% of the record, score threshold %s"
-        % (site, tag, item["n_hours"], 100 * m.mean(), item.get("threshold")))
+    say("   %s: %s keeps %d hour(s), %.2f %% of the record, from %s UTC"
+        % (site, tag, item["n_hours"], 100 * m.mean(), item.get("t_start")))
     return m, item
 
 
@@ -191,7 +192,7 @@ def load_local(sv, site, rate):
     reference store goes through, so a site's own H and its H as somebody's reference are one record. It
     only widens what is already missing, so it cannot break a continuous stretch into pieces the 3,600 s
     run floor would then drop. The electric lines are not screened: their bursts are masked by interval
-    from the tail scan, which is the mask the product's header reports.
+    from the tail scan, which is the mask the file's own header reports.
     """
     dec = sv.decision(site)
     t0, arrays, decisions_applied, rec = cache.load_decided(site, sv, rate)
@@ -209,10 +210,10 @@ def load_local(sv, site, rate):
 
 def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None, redo=False,
              work_root=None, verbose=True, selections=None) -> list:
-    """Every asked-for product of one site. Returns the ledger rows it wrote.
+    """Every asked-for transfer function of one site. Returns the ledger rows it wrote.
 
-    `selections` is the hour selections each kind is run on, one product each: None or an empty list is the
-    whole record, whose product carries no tag in its name.
+    `selections` is the stretches each kind is run on, one transfer function each: None or an empty list is
+    the whole record, whose file carries no tag in its name.
     """
     refused = [k for k in kinds if k in REFUSED_KINDS]
     if refused:
@@ -238,15 +239,15 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
             print(line, flush=True)
 
     sels = [str(s) for s in (selections or [])] or [""]
-    rows, ref_info_all, mask_all, products = [], {}, {}, []
+    rows, ref_info_all, mask_all, tfs = [], {}, {}, []
     site_row = sv.site(site)
     dec_row = sv.decision(site)
     sidecar = cache.sidecar(site, work)
-    # a resumed run rewrites this folder's provenance, so what an earlier pass recorded about a product
+    # a resumed run rewrites this folder's provenance, so what an earlier pass recorded about a file
     # already on disk is carried over rather than blanked
     prev = PROV.read(out_dir / "provenance.json")
-    prev_products = {(p.get("kind"), float(p.get("rate_hz", 0)), p.get("selection") or WHOLE): p
-                     for p in (prev.get("products") or [])}
+    prev_tfs = {(p.get("kind"), float(p.get("rate_hz", 0)), p.get("selection") or WHOLE): p
+                     for p in (prev.get("transfer_functions") or [])}
     try:
         for rate in rates:
             t0, local, ang, applied, undecided, rec = load_local(sv, site, rate)
@@ -283,17 +284,17 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
                         row.update(status="exists", xml=str(edi_out.with_suffix(".xml"))
                                    if edi_out.with_suffix(".xml").exists() else None)
                         rows.append(row)
-                        old = prev_products.get((kind, float(rate), sel or WHOLE))
+                        old = prev_tfs.get((kind, float(rate), sel or WHOLE))
                         if old:
-                            products.append(old)
+                            tfs.append(old)
                         else:
                             # a pass over a subset of the kinds rewrites this folder's provenance, and a
-                            # product it did not iterate would drop out of `products` and be lost from the
+                            # file it did not iterate would drop out of `tfs` and be lost from the
                             # record. What the file itself can still say is written instead of nothing.
-                            products.append(dict(kind=kind, rate_hz=float(rate), params=params_name,
-                                                 selection=(sel or WHOLE), edi=str(edi_out),
-                                                 xml=row["xml"], tipper=EDI.has_tipper(edi_out),
-                                                 carried="read off the product; this pass did not make it"))
+                            tfs.append(dict(kind=kind, rate_hz=float(rate), params=params_name,
+                                            selection=(sel or WHOLE), edi=str(edi_out),
+                                            xml=row["xml"], tipper=EDI.has_tipper(edi_out),
+                                            carried="read off the file; this pass did not make it"))
                         if key in (prev.get("mask") or {}):
                             mask_all[key] = prev["mask"][key]
                         if key in (prev.get("references") or {}):
@@ -312,11 +313,12 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
                         pass_mask, pass_name = extra_mask, extra_name
                         if sel_mask is not None:
                             pass_mask = sel_mask if extra_mask is None else (extra_mask & sel_mask)
-                            pass_name = "%s: the best %.0f per cent of the scored hours by %g-%g s E-H " \
-                                        "coherence, %d hour(s)%s" \
-                                        % (sel, 100 * sel_meta["fraction"], SEL.SCORE_BAND_S[0],
-                                           SEL.SCORE_BAND_S[1], sel_meta["n_hours"],
-                                           (" drawn at random under seed %d as the control"
+                            pass_name = "%s: %d contiguous hour(s) from %s, chosen on the %g-%g s E-H " \
+                                        "coherence of both recorded lines above %s%s" \
+                                        % (sel, sel_meta["n_hours"], sel_meta.get("t_start"),
+                                           SEL.SCORE_BAND_S[0], SEL.SCORE_BAND_S[1],
+                                           sel_meta.get("threshold"),
+                                           (" -- placed at random under seed %d as the control"
                                             % sel_meta["seed"]) if sel_meta["random"] else "")
                         ev_rem = []
                         if kind == "remote":
@@ -384,7 +386,7 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
                                    error=(None if not xml_err else "xml: %s" % xml_err))
                         mask_all[key] = dict(stats, runs=len(segs),
                                              floor_dropped_frac=round(float(floor), 5))
-                        products.append(dict(kind=kind, rate_hz=float(rate), params=params_name,
+                        tfs.append(dict(kind=kind, rate_hz=float(rate), params=params_name,
                                              selection=(sel or WHOLE), selection_detail=sel_meta,
                                              edi=str(edi_out), xml=(str(xml) if xml else None),
                                              seconds=row["seconds"], peak_rss_mb=row["peak_rss_mb"],
@@ -406,7 +408,7 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
         pool = json.loads(pool_file.read_text(encoding="utf-8")) if pool_file.exists() else {}
         PROV.write(out_dir / "provenance.json", sv.cfg, site_row, dec_row, ref_info_all,
                    aurora_run.bands_for(rates[0]), params_name,
-                   aurora_run.AURORA_PARAMS[params_name], rates[0], run_name, stamp, products, mask_all,
+                   aurora_run.AURORA_PARAMS[params_name], rates[0], run_name, stamp, tfs, mask_all,
                    sidecar, "Aurora", aurora.__version__,
                    extra_caveats=PROV.caveats(site_row, applied, undec, ref_info_all, max(rates),
                                               work_root=work, open_decisions=open_decisions),
@@ -433,9 +435,10 @@ def main(argv=None) -> int:
     ap.add_argument("--rates", nargs="+", type=int, default=[1])
     ap.add_argument("--params", default=aurora_run.DEFAULT_PARAMS, choices=sorted(aurora_run.AURORA_PARAMS))
     ap.add_argument("--work-root", default="", help="override survey.yaml work_root")
-    ap.add_argument("--selections", nargs="+", default=[],
-                    help="the hour selections each kind is run on: f05 f10 f25 r25; none = the whole record")
-    ap.add_argument("--redo", action="store_true", help="remake a product whose EDI is already on disk")
+    ap.add_argument("--selections", nargs="+", default=[], choices=list(SEL.TAGS) + [SEL.WHOLE],
+                    help="the stretches each kind is run on: stretch control; none = the whole record")
+    ap.add_argument("--redo", action="store_true",
+                    help="remake a transfer function whose EDI is already on disk")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
     refused = [k for k in a.kinds if k in REFUSED_KINDS]

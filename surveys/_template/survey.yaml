@@ -3,7 +3,7 @@
 name: TEMPLATE
 release: ""                 # who released the raw data, the eCat or DOI, and when
 raw_root: ""                # the folder the release's site folders live under (read-only)
-work_root: ""               # caches, stores, run trees and products (written by the package)
+work_root: ""               # caches, stores, run trees and transfer functions (written here)
 
 # The years the survey recorded, earliest first. The EDL GPS week-rollover test compares against these: a file
 # stamped before the first of them is 1024 weeks (7168 days) early and is corrected. No file on disk holds the
@@ -48,13 +48,13 @@ instruments:
     sensor_manufacturer: LEMI LLC
     sensor_model: LEMI-424
 
-# Products are processed and served in geomagnetic north (the horizontal magnetics rotated so the mean Hy is
-# zero). The IGRF declination is recorded in every file and NOT applied.
+# A transfer function is estimated and served in geomagnetic north (the horizontal magnetics rotated so the
+# mean Hy is zero). The IGRF declination is recorded in every file and not applied.
 frame: geomagnetic
 declination_source: "IGRF via ppigrf, at the site, at the record midpoint"
 
-# The identity every product's header carries. survey_id is the EDI SURVEY id, project its name,
-# geographic_name the region named beside each station, author the person the products are processed by.
+# The identity every transfer function's header carries. survey_id is the EDI SURVEY id, project its name,
+# geographic_name the region named beside each station, author the person who processed them.
 survey_id: decide
 project: decide
 geographic_name: decide
@@ -83,6 +83,10 @@ checks: {}
 #   first_data_file: {}     # site: the name its first data file must start with, where the logger wrote that
 #                           # hour under a previous deployment's name; the discovery must read headers and not
 #                           # glob on the site name
+#   retained_failures:      # a verdict a run reports honestly over a condition the survey itself carries
+#     - workbook: 02_records
+#       site: Q00
+#       reason: "what the survey carries, and why the package does not repair it"
 
 # Where a dipole length is not recorded anywhere, the value written as assume:<value> and why.
 dipole_default: {}

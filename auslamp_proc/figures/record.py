@@ -1,8 +1,5 @@
 """Figure 01: the whole record as laid, in eight panels, with the IGRF values beside the measured medians.
 
-Ported from D:/BEN/MTH5_Aurora_mt-io_2026/scripts/processing/vic_figures.py:31-92 (igrf, minute_stats,
-record_figure), with `fs` a parameter and the IGRF call taken from auslamp_proc.geo.
-
 Panels: Hx, Hy, Hz, Ex, Ey, then H = sqrt(Hx^2 + Hy^2), F = sqrt(Hx^2 + Hy^2 + Hz^2), then the hourly sensor
 angle atan2(Hy, Hx). Each of the first seven is the per-minute mean drawn over the per-minute range, its
 y-limits the 1st to 99th percentile of the channel with a 5 per cent pad, and its median printed with the
@@ -22,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 
 from ..geo import igrf as igrf_at
+from .common import finish
 
 DAY = 86400
 CHANNELS = ("Hx", "Hy", "Hz", "Ex", "Ey")
@@ -35,7 +33,7 @@ def iso(t) -> str:
 
 
 def day_axis(t0, n, fs=1.0):
-    """(days since t0 per sample, tick positions in days, tick labels as MM-DD). Ported from qld_student:265."""
+    """(days since t0 per sample, tick positions in days, tick labels as MM-DD)."""
     days = np.arange(n) / (fs * DAY)
     start = datetime.fromtimestamp(int(t0), timezone.utc)
     n_days = int(days[-1]) + 1 if n else 1
@@ -46,7 +44,7 @@ def day_axis(t0, n, fs=1.0):
 
 
 def minute_stats(x, m=60):
-    """(mean, min, max) of each block of m samples. Ported from vic_figures.minute_stats (:38)."""
+    """(mean, min, max) of each block of m samples."""
     n = len(x) // m * m
     a = np.asarray(x[:n], float).reshape(-1, m)
     with np.errstate(all="ignore"):
@@ -111,7 +109,7 @@ def record(t0, arrays, out, site="", survey="", lat=np.nan, lon=np.nan, elev_m=0
     ax.axhline(0, color="0.6", lw=0.5)
     txt = "sensor angle atan2(Hy, Hx), hourly: median %+.2f deg (0 = laid to the field's north)" % amed
     if ig is not None:
-        txt += "   |   IGRF declination %+.2f deg (a sensor laid to TRUE north)" % ig["D"]
+        txt += "   |   IGRF declination %+.2f deg (a sensor laid to true north)" % ig["D"]
         ax.axhline(ig["D"], color="tab:red", lw=0.6, ls="--")
     ax.text(0.005, 0.93, txt, transform=ax.transAxes, ha="left", va="top", fontsize=7.5, color="0.2",
             bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.75))
@@ -123,11 +121,14 @@ def record(t0, arrays, out, site="", survey="", lat=np.nan, lon=np.nan, elev_m=0
     axes[-1].set_xticks(ticks)
     axes[-1].set_xticklabels(labels)
     axes[-1].set_xlabel("days from %s UTC" % iso(t0))
-    fig.suptitle("%s %s: the whole %g Hz record as laid, %.1f days from %s UTC; per-minute mean over the "
-                 "per-minute range; H and F the field strengths; the sensor angle per hour"
-                 % (survey, site, fs, n / fs / DAY, iso(t0)), fontsize=10)
-    fig.tight_layout(rect=(0, 0, 1, 0.975))
-    fig.savefig(out, dpi=dpi)
+    finish(fig, "%s %s: the whole record as laid" % (survey, site),
+           "The %g Hz cache as laid over %.1f days from %s UTC, with no sign, no rotation and no notch. "
+           "Each of the first seven panels is the per-minute mean drawn over the per-minute range, its y "
+           "limits the 1st to 99th percentile of the channel with a 5 per cent pad and its median printed "
+           "with the channel's range; H = sqrt(Hx^2 + Hy^2) and F = sqrt(Hx^2 + Hy^2 + Hz^2) are the field "
+           "strengths, and the last panel is the sensor angle atan2(Hy, Hx) per hour. The magnetic panels "
+           "carry the IGRF value at the site at the record midpoint and the ratio of the median to it."
+           % (fs, n / fs / DAY, iso(t0)), out, dpi=dpi)
     line = ("%s: %.1f d; median Hx %.0f Hy %.0f Hz %.0f nT, H %.0f F %.0f nT, Ex %.2f Ey %.2f mV/km, "
             "angle %+.1f deg" % (site, n / fs / DAY, np.nanmedian(arr["Hx"]), np.nanmedian(arr["Hy"]),
                                  np.nanmedian(arr["Hz"]), np.nanmedian(H), np.nanmedian(F),

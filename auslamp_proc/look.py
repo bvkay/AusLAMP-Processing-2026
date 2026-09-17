@@ -149,13 +149,6 @@ def prepare(x, b, a, min_finite: float = MIN_FINITE):
     idx = np.arange(len(x))
     x = np.interp(idx, idx[fin], x[fin])
     return signal.filtfilt(b, a, x - x.mean()), frac, n_blanked
-
-
-def segment(x, b, a, min_finite: float = MIN_FINITE):
-    """One stretch despiked, interpolated, demeaned and high-passed, or None. Ported from vic_windows:113."""
-    return prepare(x, b, a, min_finite)[0]
-
-
 def band_coherence(x, y, fs: float = 1.0, lo_s: float = BAND_S[0], hi_s: float = BAND_S[1],
                    nperseg: int = NPERSEG, noverlap: int = NOVERLAP) -> float:
     """The median squared coherence of two series over lo_s..hi_s. Ported from vic_windows.cmd_elines coh."""

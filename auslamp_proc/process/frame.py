@@ -3,18 +3,19 @@
 The cache is the record as laid, so this module is where decisions.csv acts. The order is fixed:
 apply_decisions, then the rotation, then the reference built from the rotated members, then the MTH5.
 
-apply_decisions is the ONE PLACE. Every reader of a site's own channels calls it and nothing applies a
+apply_decisions is the one place. Every reader of a site's own channels calls it and nothing applies a
 decision anywhere else: the transfer function path (process.run.load_local through raw.cache.load_decided),
 the members and remotes of a reference (process.references.Store.rotated) and workbook 05's forms
 (site.forms.load_local). Its order is fixed and tested: e_exchange, h_exchange, h_gain, e_shift_s, the
 signs, then the lender's channels. The wiring exchanges come first because they say which line a channel
 carried; the gain is a calibration of the channel as wired; the shift is a delay of the E line as wired; the
-signs are of the LINE and not of the channel it was recorded on, so they come after the exchanges; the
-lender's channels come last because they arrive carrying the LENDER's own decisions and must not take the
+signs are of the line and not of the channel it was recorded on, so they come after the exchanges; the
+lender's channels come last because they arrive carrying the lender's own decisions and must not take the
 borrowing site's.
 
 Signs. Each channel is multiplied by the decisions.csv cell sign_hx/hy/hz/ex/ey where that cell reads +1 or
--1. A cell reading `decide` is used as +1 and recorded as undecided, and every product built from it carries
+-1. A cell reading `decide` is used as +1 and recorded as undecided, and every transfer function built from
+it carries
 a processing_parameters line naming the channels.
 
 Rotation. The target's (Hx, Hy) pair is turned by theta = atan2(mean Hy, mean Hx), which puts the mean Hy at
@@ -25,11 +26,10 @@ rot_regimes from decisions.csv splits the record into stretches rotated one at a
 field, because the field did not move and the instrument did; rot_drop days come back NaN and are excluded
 from the mean. The angle used is recorded as h_rotation_deg and the IGRF declination is recorded and not
 applied.
-Ported from qld_campaign.rotate (:306-309) and wamt_remotes.rot_h (:556-615).
 
 The turn-back. A tensor served in the mean-field frame is turned to another frame by Z' = R Z R^T and
-T' = T R^T with R = [[cos, sin], [-sin, cos]]; turn_tensor by the negative of the declination gives
-geographic north.
+T' = T R^T with R = rotation_matrix(angle) = [[cos, sin], [-sin, cos]]; the negative of the declination
+gives geographic north.
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -159,7 +159,7 @@ def dipole_pair(site_row) -> tuple[float, float]:
     """(the north arm, the east arm) in metres from a sites.csv row; NaN where the cell says nothing.
 
     An `assume:<value>` cell is used, as raw.cache.dipole_value uses it: the assumption is already carried
-    into the cache and into every product's provenance.
+    into the cache and into every transfer function's provenance.
     """
     out = []
     for col in ("dipole_n_m", "dipole_e_m"):
@@ -190,7 +190,7 @@ def to_sensor_frame(pair, angle_deg):
 def apply_decisions(arrays: dict, decision_row, site_row=None, lender_arrays=None, fs: float = 1.0):
     """(the arrays with every decisions.csv decision applied, the applied decisions as strings, a record).
 
-    THE ONE PLACE. The order is fixed and tested:
+    The one place. The order is fixed and tested:
 
         e_exchange   the two recorded E lines were wired to each other's channel. The channels are swapped
                      and each is rescaled by the ratio of the arm length the cache was built with to the
@@ -207,10 +207,10 @@ def apply_decisions(arrays: dict, decision_row, site_row=None, lender_arrays=Non
                      factor, so Z = E/H is low by it until the division.
         e_shift_s    the E lines are advanced by this many seconds with the Lanczos delay of align.shift:
                      out[t] takes the recorded value at t + s, which is the correction for an E line that
-                     LAGS H by s. Both electric channels are shifted at the site's own rate.
+                     lags H by s. Both electric channels are shifted at the site's own rate.
         the signs    apply_signs, on the lines as they now stand.
         h_lender     the channels of h_lender_channels are taken from `lender_arrays`, which the caller has
-                     already decided, rotated into the LENDER's own mean-field frame and placed on this
+                     already decided, rotated into the lender's own mean-field frame and placed on this
                      site's grid. The horizontal pair is turned into the borrowing site's sensor frame by
                      R(-t) with t the site's own mean-field angle, so that the rotation downstream leaves
                      the lender's own mean-field pair; Hz is substituted as it stands. The lender's channels
@@ -319,7 +319,7 @@ def apply_decisions(arrays: dict, decision_row, site_row=None, lender_arrays=Non
                            "sensor frame by R(%+.4f deg), so the rotation downstream leaves the lender's "
                            "mean-field pair" % (name, ", ".join(chans), name, name, -ang))
             if all(c in chans for c in H_PAIR):
-                applied.append("h_lender=%s: BOTH horizontal channels are borrowed, so the tensor is this "
+                applied.append("h_lender=%s: both horizontal channels are borrowed, so the tensor is this "
                                "site's E on the field %s measured -- an inter-site impedance "
                                "(site/replace.py:29-34)" % (name, name))
     for note in rec["notes"]:
@@ -413,20 +413,3 @@ def rotation_matrix(angle_deg: float) -> np.ndarray:
     a = np.radians(float(angle_deg))
     c, s = np.cos(a), np.sin(a)
     return np.array([[c, s], [-s, c]], float)
-
-
-def turn_tensor(z, t=None, angle_deg: float = 0.0):
-    """(Z', T') turned by angle_deg: Z' = R Z R^T and T' = T R^T.
-
-    `z` is (n_periods, 2, 2) and `t` is (n_periods, 1, 2) or (n_periods, 2), or None. Turning by minus the
-    declination takes a tensor served in geomagnetic north to geographic north.
-    """
-    r = rotation_matrix(angle_deg)
-    zz = np.asarray(z)
-    zt = np.einsum("ij,njk,lk->nil", r, zz, r) if zz.ndim == 3 else r @ zz @ r.T
-    if t is None:
-        return zt, None
-    tt = np.asarray(t)
-    flat = tt.reshape(tt.shape[0], -1) if tt.ndim == 3 else tt
-    turned = flat @ r.T
-    return zt, turned.reshape(tt.shape)

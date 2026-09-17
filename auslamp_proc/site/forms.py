@@ -1,10 +1,10 @@
-"""One form of one site as a product in the run layout, and the merge of a windowed row into the whole.
+"""One form of one site as a transfer function in the run layout, and the merge of a windowed row.
 
 A form is one pass over the same site with one thing changed: a day mask, a window, a selection of hours, a
 variant cache, a borrowed magnetic channel. Every form lands in the same run folder as
-<site>_<form>_<kind>_<rate>hz_<params>.edi, carries the same header a workbook 03 product carries, and adds
+<site>_<form>_<kind>_<rate>hz_<params>.edi, carries the same header a workbook 03 pass writes, and adds
 processing_parameters lines naming the form, the mask or window it was built on, the seed of its control and
-the control products it is read against. provenance.json in the run folder holds one entry per form.
+the control it is read against. provenance.json in the run folder holds one entry per form.
 
 The passes are the ones the package already runs: the frame and the signs from decisions.csv
 (process.frame), the transient and E-burst mask (process.transients.build_keep), one Aurora run per kept
@@ -15,14 +15,14 @@ or the local magnetics differ, so two forms are comparable.
 The windowed pass (ported from wamt_run.window_slice :472-476, windowed_local :514-537, window_pass :781-807
 and the rule at :447-455). Everything is sliced to the window, H included: the point of a window is that this
 component's estimate sees only the days its electrode was alive, and an estimator handed a longer H than E
-would be given NaN over the rest. The whole record supplies the healthy row and the tipper, the window supplies the
-other row, and BOTH windows are in the provenance. A window shorter than survey.yaml
+would be given NaN over the rest. The whole record supplies the healthy row and the tipper, the window
+supplies the other row, and both windows are in the provenance. A window shorter than survey.yaml
 `floors.min_window_days` is refused.
 
 merge_component (ported from wamt_run.merge_component :540-584) replaces exactly the two impedance rows of
 one component in the whole-record file from the windowed file: the station block, the position, the tipper
-and every other row carry across untouched. Both products come off the same band file, so the expected answer
-is the identity, and the grid is checked because a silent half-period shift is what a band file can produce.
+and every other row carry across untouched. Both files come off the same band file, so the expected answer is
+the identity, and the grid is checked because a silent half-period shift is what a band file can produce.
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -37,7 +37,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .. import survey as SV  # noqa: F401  (the caller's Survey object type)
 from ..process import aurora_run, edi as EDI, frame as FR, mth5_build
 from ..process import provenance as PROV, references as REF, transients as TR
 from ..raw.cache import CHANNELS
@@ -123,7 +122,7 @@ def mean_angle(ang) -> float:
         return float("nan")
 
 
-def product_name(site, form, kind, rate, params) -> str:
+def tf_name(site, form, kind, rate, params) -> str:
     return "%s_%s_%s_%dhz_%s.edi" % (site, form, kind, int(rate), params)
 
 
@@ -131,7 +130,7 @@ def record_form(out_dir, entry: dict) -> Path:
     """Append one form's entry to the run folder's provenance.json, keeping what is already there."""
     p = Path(out_dir) / "provenance.json"
     doc = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-    forms = [f for f in (doc.get("forms") or []) if f.get("product") != entry.get("product")]
+    forms = [f for f in (doc.get("forms") or []) if f.get("transfer_function") != entry.get("transfer_function")]
     forms.append(entry)
     doc["forms"] = forms
     doc.setdefault("built_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -184,7 +183,7 @@ def coverage(sv, site, kind="remote", rate=1, variant="", apply_e_signs=True, ke
 
 
 def refusal_sentence(cov: dict, whole: dict, what="the screen") -> str:
-    """The sentence a form refused by the floor carries in place of a product."""
+    """The sentence a form refused by the floor carries in place of a file."""
     return ("refused: %s leaves %d run(s) of %g s against the %s (the whole record keeps %.2f d over %d "
             "run(s))" % (what, cov.get("n_runs", 0), cov.get("min_segment_s", TR.MIN_SEGMENT_S),
                          cov.get("kind", ""), whole.get("days", float("nan")), whole.get("n_runs", 0)))
@@ -192,17 +191,17 @@ def refusal_sentence(cov: dict, whole: dict, what="the screen") -> str:
 
 def refused_row(sv, site, form, out_dir, kind, rate, params, reason, cov=None, controls=(),
                 criterion="") -> dict:
-    """The forms-table row of a form that was NOT passed, with the numbers that refused it.
+    """The forms-table row of a form that was not passed, with the numbers that refused it.
 
     `refused` is not `FAILED`: the first is the method's own floor stating what the cache leaves, measured
     before Aurora is called, and the second is an exception out of the estimator.
     """
     row = dict(site=site, form=form, kind=kind, rate_hz=float(rate), params=params,
-               product="", controls=";".join(controls), criterion=criterion, seed=None,
+               transfer_function="", controls=";".join(controls), criterion=criterion, seed=None,
                status="refused", error="", reason=reason, seconds=None,
                days=(None if cov is None else cov.get("days")),
                n_runs=(None if cov is None else cov.get("n_runs")))
-    record_form(out_dir, dict(row, product=str(Path(out_dir) / product_name(site, form, kind, rate, params))))
+    record_form(out_dir, dict(row, transfer_function=str(Path(out_dir) / tf_name(site, form, kind, rate, params))))
     return row
 
 
@@ -210,7 +209,7 @@ def run_form(sv, site, form, out_dir, kind="remote", rate=1, params="kaiser20_75
              keep_extra=None, keep_name="", window=None, variant="", apply_e_signs=True,
              local_h=None, correction=None, turn_ne=False, turn_angle_deg=None, seed=None, controls=(),
              criterion="", extra_lines=(), lender=None, redo=False, verbose=True) -> dict:
-    """One form of one site as a product. Returns the row the forms table is built from.
+    """One form of one site as a transfer function. Returns the row the forms table is built from.
 
     `keep_extra` is a boolean over the record's samples -- a day mask, a selection of hours -- applied on top
     of the transient mask and reported on its own line. `window` is (t_start, t_end) in unix seconds and
@@ -225,18 +224,19 @@ def run_form(sv, site, form, out_dir, kind="remote", rate=1, params="kaiser20_75
     work = Path(sv.cfg["work_root"])
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    edi_out = out_dir / product_name(site, form, kind, rate, params)
+    edi_out = out_dir / tf_name(site, form, kind, rate, params)
+    # `transfer_function` is the key forms.csv and provenance.json already carry for the file this pass wrote
     row = dict(site=site, form=form, kind=kind, rate_hz=float(rate), params=params,
-               product=str(edi_out), controls=";".join(controls), criterion=criterion,
+               transfer_function=str(edi_out), controls=";".join(controls), criterion=criterion,
                seed=(None if seed is None else int(seed)), status=None, error=None, seconds=None)
     if edi_out.exists() and not redo:
-        # what the pass measured when it made this product is carried forward from the run folder's
+        # what the pass measured when it wrote this file is carried forward from the run folder's
         # provenance, so a resumed run reports the same numbers rather than blanks: without it the
         # turn-back invariants of a form already on disk would come back empty and the check that reads
         # them could not fail
         row["status"] = "exists"
         for old in (PROV.read(out_dir / "provenance.json").get("forms") or []):
-            if old.get("product") == str(edi_out):
+            if old.get("transfer_function") == str(edi_out):
                 for k in ("turn", "n_runs", "days", "record_days", "kept_frac", "mask_dropped_frac",
                           "selection_dropped_frac", "floor_dropped_frac", "rotation_deg", "remote",
                           "seconds"):
@@ -394,7 +394,7 @@ def _match(pf, pe, rtol=GRID_RTOL):
 
 
 def _interp_to(pf, pe, ze, ee):
-    """(Z, error, inside) of the windowed product on the whole-record grid, linear in log period."""
+    """(Z, error, inside) of the windowed file on the whole-record grid, linear in log period."""
     pf, pe = np.asarray(pf, float), np.asarray(pe, float)
     inside = (pf >= pe.min()) & (pf <= pe.max())
     zi = np.full((len(pf), 2, 2), np.nan + 1j * np.nan, complex)
@@ -413,7 +413,7 @@ def merge_component(base_edi, win_edi, comp, out_edi=None, verbose=True) -> dict
 
     The whole-record file is the base, so the station block, the position and the tipper carry across
     untouched and only the row the dead electrode ruined is replaced. Returns the row count changed, the
-    grid note and the rows that were NOT touched, so the check can score the merge on what it left alone.
+    grid note and the rows that were not touched, so the check can score the merge on what it left alone.
     """
     from mt_metadata.transfer_functions.core import TF
     base_edi = Path(base_edi)
@@ -500,11 +500,11 @@ def write_run_provenance(sv, site, out_dir, run_name, stamp, rate, params, kind,
     p = Path(out_dir) / "provenance.json"
     # what an earlier pass measured about a form is kept where this run only found it on disk, so the
     # measurements a form was made with survive a resumed run
-    stored = {f.get("product"): f for f in (PROV.read(p).get("forms") or [])}
+    stored = {f.get("transfer_function"): f for f in (PROV.read(p).get("forms") or [])}
     rows = []
     for r in forms_rows:
         r = dict(r)
-        old = stored.get(r.get("product")) or {}
+        old = stored.get(r.get("transfer_function")) or {}
         for k, v in old.items():
             if r.get(k) is None and v is not None:
                 r[k] = v

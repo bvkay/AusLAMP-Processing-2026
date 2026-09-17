@@ -3,16 +3,17 @@
 One helper per figure, each taking what its section already computed and writing a PNG at dpi 110 into the
 run folder. Nothing is estimated here: every number drawn is one the section printed.
 
-Each figure carries a SHORT title -- the site and what the figure is, one line that fits at any width -- and
-a CAPTION under the axes in smaller text, wrapped to the figure's width, carrying what was done and with
+Each figure carries a short title -- the site and what the figure is, one line that fits at any width -- and
+a caption under the axes in smaller text, wrapped to the figure's width, carrying what was done and with
 which values. Both go through figures.common.finish, which reserves the caption's space before the save.
 
 The rest of the conventions are the package's. Period is a log x axis labelled `period (s)`; apparent
 resistivity is log in Ohm.m; phase runs 0-90 deg with the yx panel labelled `+ 180 deg`; time series carry
 `channel (unit)` in nT and mV/km against `days from <t0> UTC`, drawn as a per-minute mean over a per-minute
 envelope; series are C0..C9, masked spans grey, the xy and yx component spans blue and red at low alpha;
-grids at alpha 0.25. The transfer-function panels are drawn through figures.products.tf_panels and dressed by
-its own _dress, so a form page and a workbook 04 page read the same way.
+grids at alpha 0.25. The transfer-function panels are drawn through
+figures.transfer_functions.tf_panels and dressed by its own _dress, so a form page and a workbook 04 page
+read the same way.
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -23,7 +24,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from .common import finish
-from .products import _dress, tf_panels
+from .transfer_functions import _dress, tf_panels
 from .record import minute_stats
 
 DPI = 110
@@ -80,57 +81,6 @@ def daily_magnetics(dm, site, out, neighbours=(), f_tolerance=0.05, factor=3.0):
                   "sound and %d were judged against a neighbour."
                   % (", ".join(neighbours) or "no neighbour", 100 * f_tolerance, factor,
                      int(ok.sum()), len(dm), int(judged.sum())), out)
-
-
-def fleet_bars(ft, site, out, near_km=150.0, floor=0.3):
-    """One bar per pair of the fleet table, with the shifted pair of each neighbour beside it."""
-    t = ft.get("table")
-    fig, ax = _fig(2, 1, figsize=(13, 7), sharex=False)
-    if t is None or not len(t):
-        ax[0].text(0.5, 0.5, "no pair scored", ha="center")
-        return finish(fig, "%s: the fleet" % site,
-                      "No other site within %g km covers the stretch." % near_km, out)
-    mine = t[(t.a == site) | (t.b == site)]
-    ctrl = t[(t.a != site) & (t.b != site)]
-    order = list(mine.itertuples()) + list(ctrl.itertuples())
-    labels = ["%s-%s" % (r.a, r.b) for r in order]
-    x = np.arange(len(order))
-    shifted = {r["site"]: r for r in (ft.get("shifted_table").to_dict("records")
-                                      if ft.get("shifted_table") is not None
-                                      and len(ft["shifted_table"]) else [])}
-    shift_h = float(ft.get("shift_s", 43200.0)) / 3600.0
-    for k, chan in enumerate(("Hx", "Hy")):
-        a = ax[k]
-        vals = [getattr(r, chan) for r in order]
-        cols = ["C0" if (r.a == site or r.b == site) else "0.65" for r in order]
-        a.bar(x - 0.2, vals, width=0.4, color=cols, label="the pair")
-        sh = []
-        for r in order:
-            other = r.b if r.a == site else (r.a if r.b == site else None)
-            sh.append(shifted.get(other, {}).get(chan, np.nan) if other else np.nan)
-        a.bar(x + 0.2, sh, width=0.4, color="C3", alpha=0.75, hatch="//",
-              label="shifted %g h" % shift_h)
-        a.axhline(floor, color="C3", ls=":", lw=1)
-        a.axhline(0.8 * (ctrl[chan].median() if len(ctrl) else np.nan), color="C2", ls="--", lw=1)
-        a.set(ylabel="%s coherence" % chan, ylim=(0, 1))
-        a.grid(alpha=GRID_ALPHA)
-        a.set_xticks(x)
-        a.set_xticklabels(labels, rotation=90, fontsize=7)
-        if k == 0:
-            a.legend(fontsize=8, loc="lower left", ncol=2)
-    return finish(fig, "%s: the fleet at 100-1000 s" % site,
-                  "Every pair of the site and the sites covering %s .. %s, blue where the site is in the "
-                  "pair and grey for the control pairs. The hatched bar beside each of the site's own pairs "
-                  "is that same pair with the neighbour's record taken %g h later, which is the negative "
-                  "control: two records of the same fleet that cannot share a field. The dotted line is the "
-                  "%.1f the shifted pairs must stay under and the dashed line the 0.8 of the control pairs' "
-                  "median the site's own must reach. The site reads Hx %.2f and Hy %.2f; the shifted pairs "
-                  "read Hx %.2f and Hy %.2f over %d pair(s)."
-                  % (_iso(ft.get("t_start", 0)), _iso(ft.get("t_end", 0)), shift_h, floor,
-                     ft.get("site_hx", np.nan), ft.get("site_hy", np.nan), ft.get("shifted_hx", np.nan),
-                     ft.get("shifted_hy", np.nan), ft.get("n_shifted", 0)), out)
-
-
 def clock_lags(ck, site, out, pass_s=10.0, edge_fraction=0.95, peak_ratio=1.5, maxlag_s=43200.0):
     """The per-day lag, the peak correlation and the peak's stand above that day's own other lags.
 
@@ -182,37 +132,7 @@ def clock_lags(ck, site, out, pass_s=10.0, edge_fraction=0.95, peak_ratio=1.5, m
                   % (band[0], band[1], ck.get("ref"), maxlag_s / 3600.0, peak_ratio, pass_s,
                      int(ck.get("n_days", 0)), len(t),
                      (", median %+.2f s" % ck["median_lag_s"]) if ck.get("judged")
-                     else ", which is under the 5 the test needs and leaves the clock UNJUDGED"), out)
-
-
-# ---------------------------------------------------------------- section 3
-
-def quality_images(qm, site, out, thr=0.5):
-    """The quality map as two images: hourly 4-50 s, and daily 50-1000 s local and observatory."""
-    fig, ax = _fig(2, 1, figsize=(13, 7))
-    h = np.asarray(qm["hourly"], float).T
-    im = ax[0].imshow(h, aspect="auto", origin="lower", vmin=0, vmax=1, cmap="viridis",
-                      extent=[0, len(qm["hourly"]) / 24.0, -0.5, 1.5])
-    ax[0].set(yticks=[0, 1], yticklabels=["Ex with Hy", "Ey with Hx"],
-              ylabel="hourly 4-50 s", xlabel="")
-    fig.colorbar(im, ax=ax[0], pad=0.01)
-    d = np.asarray(qm["daily"], float).T
-    im2 = ax[1].imshow(d, aspect="auto", origin="lower", vmin=0, vmax=1, cmap="viridis",
-                       extent=[0, len(qm["daily"]), -0.5, 3.5])
-    ax[1].set(yticks=[0, 1, 2, 3],
-              yticklabels=["Ex local", "Ey local", "Ex %s" % qm["observatory"],
-                           "Ey %s" % qm["observatory"]],
-              ylabel="daily 50-1000 s", xlabel="days from %s UTC" % _iso(qm["t0"]))
-    fig.colorbar(im2, ax=ax[1], pad=0.01)
-    return finish(fig, "%s: the quality map" % site,
-                  "Above, the bias-corrected coherence of each electric line with the H it couples to over "
-                  "4-50 s, one value an hour across %d hour(s). Below, the bias-corrected multiple coherence "
-                  "of each line with the local pair and with %s over 50-1000 s, one value a UTC day across "
-                  "%d day(s). The day mask of the next cell is taken on the two %s rows, which carry no "
-                  "local magnetic noise, at or above %.2f."
-                  % (qm["hours"], qm["observatory"], qm["n_days"], qm["observatory"], thr), out)
-
-
+                     else ", which is under the 5 the test needs and leaves the clock unjudged"), out)
 def record_spans(t0, arrays, out, site="", channels=("Hx", "Ex", "Ey"), spans=(), title="", caption="",
                  fs=1.0, figsize=(13, 7)):
     """The record as a per-minute mean over its per-minute envelope, with named spans drawn over it.
@@ -244,25 +164,15 @@ def record_spans(t0, arrays, out, site="", channels=("Hx", "Ex", "Ey"), spans=()
         ax[0].legend(fontsize=8, loc="upper right", ncol=len(spans))
     ax[-1].set_xlabel("days from %s UTC" % _iso(t0))
     return finish(fig, title or "%s: the record and the selections" % site, caption, out)
-
-
-def mask_spans(keep, t0, fs=1.0, max_spans=400):
-    """[(t_a, t_b)] of the True runs of a keep mask, in unix seconds."""
-    k = np.asarray(keep, bool)
-    d = np.diff(np.concatenate(([0], k.view(np.int8), [0])))
-    st, en = np.flatnonzero(d == 1), np.flatnonzero(d == -1)
-    out = [(t0 + a / fs, t0 + b / fs) for a, b in zip(st, en)]
-    return out[:max_spans]
-
-
-# ---------------------------------------------------------------- the product panels
+# -------------------------------------------------------- the transfer-function panels
 
 def form_panels(curves, site, out, title="", caption="", period_range=None, figsize=(13, 8),
                 tipper=False):
     """Several transfer functions on the rho and phase panels of a page.
 
     `curves` is [(label, TFData, colour, linestyle)]. The panels and their limits are workbook 04's, so a
-    form page and a product page read the same way.
+    form page and a transfer-function page read the same way. A form is drawn for comparison; not a
+    transfer function.
     """
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(2 + (1 if tipper else 0), 2, figsize=figsize, sharex=True)
@@ -285,9 +195,10 @@ def rate_panels(curves, site, out, join_s=16.0, bands=((8.0, 16.0), (32.0, 100.0
     """The 10 Hz forms against the 1 Hz baseline, with the join period and the two ruled bands drawn.
 
     `curves` is [(label, TFData, colour, linestyle)] as for form_panels -- the 1 Hz baseline solid and the
-    10 Hz forms dashed. The vertical line is the period the short end would join the 1 Hz row at and the
-    shaded columns are the two bands the step at that join is scored on, so the figure shows the 10 Hz
-    product over the part of the spectrum a splice would ever use.
+    10 Hz forms dashed, each drawn for comparison; not a transfer function. The vertical line is the period
+    the short end would join the 1 Hz row at and the shaded columns are the two bands the step at that join
+    is scored on, so the figure shows the 10 Hz transfer function over the part of the spectrum a splice
+    would ever use.
     """
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(2, 2, figsize=figsize, sharex=True)
@@ -306,54 +217,6 @@ def rate_panels(curves, site, out, join_s=16.0, bands=((8.0, 16.0), (32.0, 100.0
         a.axvline(join_s, color="0.3", ls="-.", lw=1)
     ax_rho_xy.legend(fontsize=8, loc="best")
     return finish(fig, title or "%s: the 10 Hz forms against the 1 Hz baseline" % site, caption, out)
-
-
-# ---------------------------------------------------------------- section 5
-
-def hour_scores(hours, site, out, comps=("xy", "yx"), contig_pick=None, figsize=(13, 7)):
-    """The hour score per component with the kept, random and contiguous selections as three rows of spans."""
-    comps = [c for c in comps if c in hours]
-    fig, ax = _fig(max(1, len(comps)), 1, figsize=figsize, sharex=True)
-    ax = np.atleast_1d(ax)
-    band, frac, seed, n_sel = (0, 0), 0.0, 0, 0
-    for k, comp in enumerate(comps):
-        b = hours[comp]
-        band, frac, seed, n_sel = b["band_s"], b["fraction"], b["seed"], b["n_selected"]
-        a = ax[k]
-        t = np.asarray(b["centres"], float) / DAY
-        a.plot(t, b["score"], color="0.4", lw=0.5, label="the hour score")
-        if np.isfinite(b["threshold"]):
-            a.axhline(b["threshold"], color="C0", ls="--", lw=1, label="threshold %.3f" % b["threshold"])
-        a.set(ylabel="%s coherence" % comp, ylim=(0, max(0.2, float(np.nanmax(b["score"])) * 1.05)))
-        a.grid(alpha=GRID_ALPHA)
-        top = a.get_ylim()[1]
-        rows = [("kept", b["keep"], SPAN_COLOUR[comp], None),
-                ("random", b["random_keep"], "0.4", None)]
-        h = (contig_pick or {}).get(comp)
-        if h and h in b["contiguous"]:
-            rows.append(("contiguous %d h" % h, b["contiguous"][h]["keep"], "C2", "//"))
-        for j, (label, keep, colour, hatch) in enumerate(rows):
-            lo = top * (0.97 - 0.05 * j)
-            hi = top * (1.0 - 0.05 * j)
-            kk = np.asarray(keep, bool)
-            d = np.diff(np.concatenate(([0], kk.view(np.int8), [0])))
-            first = True
-            for s0, s1 in zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1)):
-                a.fill_between([s0 / DAY, s1 / DAY], lo, hi, color=colour, alpha=0.7, lw=0, hatch=hatch,
-                               label=(label if first else None))
-                first = False
-        a.legend(fontsize=7, loc="lower left", ncol=5)
-    ax[-1].set_xlabel("days from the record start")
-    return finish(fig, "%s: the best hours and their controls" % site,
-                  "The coherence of each component's pair over %g-%g s, one value an hour on "
-                  "non-overlapping windows, with three rows of spans above it: the best %.0f per cent of the "
-                  "candidate hours, the same number drawn at random from the same pool under seed %d, and "
-                  "the contiguous windows tiled to the same duration. The three cost the same and only the "
-                  "top row was chosen on the score, so what separates their products is the choosing. %d "
-                  "window(s) were selected."
-                  % (band[0], band[1], 100 * frac, seed, n_sel), out)
-
-
 # ---------------------------------------------------------------- section 6
 
 def residual_panels(sv, site, me, built, out, days=3, elines=None, band_s=(20.0, 200.0), nperseg=4096,
@@ -568,7 +431,7 @@ def forms_bars(table, site, out, band=(10, 1000), margin=0.2, figsize=(13, 8)):
 def recipe_spans(coh, rows, site, out, coh_min=0.5, title="", caption="", figsize=(13, 7)):
     """The hourly coherence of each recorded line with its H, and each row's stretch drawn over it.
 
-    `coh` is site.recipe.hour_coherence's table and `rows` is [(label, colour, hatch, [(t_a, t_b), ...])] in
+    `coh` is process.selection.site_scores's table and `rows` is [(label, colour, hatch, [(t_a, t_b), ...])] in
     unix seconds, the rows of spans drawn above the series in the order given.
     """
     pairs = (("xy", "Ex with Hy"), ("yx", "Ey with Hx"))
@@ -598,13 +461,13 @@ def recipe_spans(coh, rows, site, out, coh_min=0.5, title="", caption="", figsiz
                   caption, out)
 
 
-def recipe_product(curves, site, out, join_s=None, title="", caption="", period_range=(1, 50000),
+def recipe_transfer_function(curves, site, out, join_s=None, title="", caption="", period_range=(1, 50000),
                    figsize=(13, 8)):
-    """The assembled product against the baseline and the controls, with the y row's last period marked.
+    """The assembled transfer function against the baseline and the controls, with the y row's last period.
 
     `curves` is [(label, TFData, colour, linestyle)] as for form_panels. The vertical line is the longest
     period the y row reaches: above it the assembled file carries the EDI empty value on that row, and the
-    two rows of the product stop being the same measurement of the same span of time.
+    two rows stop being the same measurement of the same span of time.
     """
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(2, 2, figsize=figsize, sharex=True)

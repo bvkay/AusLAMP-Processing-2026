@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import os
 import re
-import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -326,10 +325,3 @@ def dropped_count(dropped: str, reason: str) -> int:
         if k == reason:
             return int(v)
     return 0
-
-
-def zipped_day_names(site_dir, day: str) -> list[str]:
-    """The names inside one day's zip, for a tree that ships zipped day folders beside the folders themselves."""
-    p = Path(site_dir) / ("%s.zip" % day)
-    with zipfile.ZipFile(p) as z:
-        return z.namelist()

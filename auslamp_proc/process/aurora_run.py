@@ -1,14 +1,12 @@
 """The Aurora pass: the band files, the parameter sets, and the call itself.
 
-Ported from mundi_process.run_aurora (:508-583) and qld_campaign.AURORA_PARAMS (:265-271).
-
 The engine is RME for a single station and RME_RR wherever a reference station is present. The tipper comes
 out of the same pass, because hz is in the local station.
 
 Two traps the call handles. mth5 recomputes the sample rate from the time index and the rounding depends on
 record length, so two runs written at the same rate can differ in the twelfth decimal; Aurora then counts
 them as mixed rates and refuses the kernel dataset, so the rates are snapped to nine decimals, which leaves
-any real difference intact. And Aurora stores the window overlap in SAMPLES, so an override that changes the
+any real difference intact. And Aurora stores the window overlap in samples, so an override that changes the
 window length after a fraction has been converted leaves the old count behind -- 512 samples at an overlap of
 192 is 37.5 per cent, not the 75 asked for, silently -- so the overlap is re-derived after every override.
 
@@ -16,7 +14,7 @@ Aurora's default window is a boxcar with 32 of 256 samples of overlap. Boxcar le
 12.5 per cent overlap throws away most of the averaging the record could give, so the default parameter set
 here is kaiser20_75: a Kaiser window of beta 20 at 75 per cent overlap.
 
-A band file's indices are FFT harmonics of the WINDOW, so a file read at another window length names
+A band file's indices are FFT harmonics of the window, so a file read at another window length names
 different periods and nothing says so. File, level count and window are therefore one object, BANDS.
 
 @author: ben kay (ben@auscope.org.au)
@@ -157,7 +155,7 @@ def run_aurora(paths, station, remote, bands, levels, out_edi, first_dec=1, wind
 
 
 def run_pass(h5, site, remote_id, rate, params, out_edi, out_xml=None, bandset=None):
-    """One Aurora product. Returns (edi, xml or None, the parameter set used, the band set used)."""
+    """One Aurora transfer function. Returns (edi, xml or None, the parameter set, the band set)."""
     bs = bandset or bands_for(rate)
     p = AURORA_PARAMS[params]
     edi, xml, _tf = run_aurora([Path(h5)], site, remote_id, bs.file, bs.levels, Path(out_edi),

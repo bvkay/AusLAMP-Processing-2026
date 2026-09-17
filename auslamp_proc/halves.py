@@ -1,22 +1,21 @@
-"""Reproducibility on halves: the same product re-estimated on each half of its record, and their agreement.
+"""Reproducibility on halves: one transfer function re-estimated on each half of its record, and the two
+compared.
 
     python -m auslamp_proc.halves --survey queensland_phase1 --site Q49 --kind remote --rate 1 \
         --run halves --stamp 20260917_0600
 
-The check the frozen tools made with re-runs (wamt_esp2026_readings.py and vic_collect.py read the readings
-of several run folders and applied one rule across them; D:/BEN/MTH5_Aurora_mt-io_2026/scripts/processing).
-Here it is run rather than read: a candidate product of record is re-estimated twice, once on each half of
-its own record, and the two are put through the agreement rule of `readings.agree` over the quality band. A
-product whose two halves disagree was estimated on something that changed inside the record.
+A candidate transfer function of record is re-estimated twice, once on each half of its own record, and the
+two are put through the agreement rule of `readings.agree` over the quality band. A pair whose two halves
+disagree was estimated on something that changed inside the record.
 
 The record is not cut. Each half is a keep mask handed to the estimator on top of the transient mask -- the
 same `keep_extra` a workbook 05 form uses -- so the mask is applied inside the pass and one Aurora run is
-written per kept stretch, exactly as the whole-record product was. The split is by SAMPLE INDEX at the
-midpoint of the record, so the two halves are the same length whatever the gaps hold; the days each half
-actually keeps after the transient mask are reported beside the verdict, because a record whose second half
-is mostly masked reproduces on a shorter record than its first.
+written per kept stretch, exactly as the whole-record pass was. The split is by sample index at the midpoint
+of the record, so the two halves are the same length whatever the gaps hold; the days each half actually
+keeps after the transient mask are reported beside the verdict, because a record whose second half is mostly
+masked reproduces on a shorter record than its first.
 
-The cost is two passes per candidate. The two products land in <work_root>/<site>/halves_<stamp>/ as
+The cost is two passes per candidate. The two files land in <work_root>/<site>/halves_<stamp>/ as
 <site>_half1_<kind>_<rate>hz_<params>.edi and <site>_half2_..., with the run folder's provenance.json and
 halves.csv naming what each was built on.
 
@@ -39,7 +38,7 @@ from pathlib import Path                                                     # n
 import numpy as np                                                           # noqa: E402
 import pandas as pd                                                          # noqa: E402
 
-from . import products as PR, readings as RD, survey as SV                   # noqa: E402
+from . import transfer_functions as TFN, readings as RD, survey as SV                   # noqa: E402
 from .raw import cache                                                       # noqa: E402
 
 RUN_NAME = "halves"
@@ -80,10 +79,10 @@ def run_dir(work_root, site, stamp) -> Path:
 
 def reproducible(a, b, comp: str, band=RD.QUALITY_BAND, agree_rho=RD.AGREE_RHO,
                  agree_phase=RD.AGREE_PHASE) -> dict:
-    """The agreement of one component's two half products over the quality band.
+    """The agreement of one component's two half curves over the quality band.
 
     The rule is `readings.agree` read over `band` rather than over the agreement band: the question is
-    whether the product reproduces where it is delivered, which is 10-1000 s.
+    whether the estimate reproduces where it is delivered, which is 10-1000 s.
     """
     s = RD.agree(a, b, comp, band[0], band[1], agree_rho, agree_phase)
     s["reproducible"] = bool(s["agrees"])
@@ -100,7 +99,7 @@ def reproducible(a, b, comp: str, band=RD.QUALITY_BAND, agree_rho=RD.AGREE_RHO,
 def split_half(sv, site, kind, rate=1, run=RUN_NAME, stamp=None, params="kaiser20_75", redo=False,
                band=RD.QUALITY_BAND, agree_rho=RD.AGREE_RHO, agree_phase=RD.AGREE_PHASE,
                verbose=True) -> dict:
-    """Run both half passes of one product and score them. Returns the run record.
+    """Run both half passes of one transfer function and score them. Returns the run record.
 
     The two passes go through `site.forms.run_form`, which is the pass workbook 03's CLI runs -- the same
     frame, signs, transient mask, reference store, band file and parameter set -- with one extra keep mask.
@@ -127,7 +126,8 @@ def split_half(sv, site, kind, rate=1, run=RUN_NAME, stamp=None, params="kaiser2
                           extra_lines=["half=%s of the record, %d of %d samples, applied as a keep mask "
                                        "inside the estimator and not as a cut" % (name, int(mask.sum()), n)])
         rows[name] = row
-        paths[name] = row.get("product")
+        # run_form names the file it wrote in its own `transfer_function` key, which is that row's spelling
+        paths[name] = row.get("transfer_function")
     out = dict(site=site, kind=kind, rate_hz=float(rate), params=params, stamp=stamp,
                run_dir=str(out_dir), seconds=round(time.time() - t_start, 1),
                half1_status=rows["half1"].get("status"), half2_status=rows["half2"].get("status"),
@@ -137,7 +137,7 @@ def split_half(sv, site, kind, rate=1, run=RUN_NAME, stamp=None, params="kaiser2
                components={})
     ok = all(rows[k].get("status") in ("made", "exists") and Path(str(paths[k])).exists() for k in HALVES)
     if ok:
-        a, b = PR.read_tf(paths["half1"]), PR.read_tf(paths["half2"])
+        a, b = TFN.read_tf(paths["half1"]), TFN.read_tf(paths["half2"])
         for comp in RD.COMPONENTS:
             out["components"][comp] = reproducible(a, b, comp, band, agree_rho, agree_phase)
     return out
@@ -173,14 +173,14 @@ def halves_table(records, out_path=None) -> pd.DataFrame:
 def read_existing(work_root, site, kind, rate=1, params="kaiser20_75", stamp=None,
                   band=RD.QUALITY_BAND, agree_rho=RD.AGREE_RHO, agree_phase=RD.AGREE_PHASE) -> dict | None:
     """The record of a half pass already on disk, or None. What HALVES = False reads instead of running."""
-    from .site.forms import product_name
+    from .site.forms import tf_name
 
     work = Path(work_root)
     folders = sorted((work / str(site)).glob("%s_*" % RUN_NAME))
     if stamp:
         folders = [f for f in folders if f.name.endswith(stamp)]
     for folder in reversed(folders):
-        paths = {k: folder / product_name(site, k, kind, rate, params) for k in HALVES}
+        paths = {k: folder / tf_name(site, k, kind, rate, params) for k in HALVES}
         if not all(p.exists() for p in paths.values()):
             continue
         # what each half kept is in the run folder's provenance, written when the pass ran: a record whose
@@ -188,7 +188,7 @@ def read_existing(work_root, site, kind, rate=1, params="kaiser20_75", stamp=Non
         stored = {}
         try:
             doc = json.loads((folder / "provenance.json").read_text(encoding="utf-8"))
-            stored = {f.get("product"): f for f in (doc.get("forms") or [])}
+            stored = {f.get("transfer_function"): f for f in (doc.get("forms") or [])}
         except Exception:
             stored = {}
         rec = dict(site=site, kind=kind, rate_hz=float(rate), params=params,
@@ -199,7 +199,7 @@ def read_existing(work_root, site, kind, rate=1, params="kaiser20_75", stamp=Non
                    half1_days=stored.get(str(paths["half1"]), {}).get("days"),
                    half2_days=stored.get(str(paths["half2"]), {}).get("days"),
                    half1=str(paths["half1"]), half2=str(paths["half2"]), error="", components={})
-        a, b = PR.read_tf(paths["half1"]), PR.read_tf(paths["half2"])
+        a, b = TFN.read_tf(paths["half1"]), TFN.read_tf(paths["half2"])
         for comp in RD.COMPONENTS:
             rec["components"][comp] = reproducible(a, b, comp, band, agree_rho, agree_phase)
         return rec

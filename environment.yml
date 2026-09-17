@@ -19,7 +19,8 @@ dependencies:
   - pyarrow
   - pyyaml
   - requests
-  - openpyxl
+  - loguru
+  - psutil
   - jupyterlab
   - ipykernel
   - nbformat
@@ -28,6 +29,8 @@ dependencies:
   - pytest
   - git
   - pip
+  # geopandas and shapely are NOT listed: tools/build_coastline.py is the only file that imports them,
+  # it was run once to build auslamp_proc/data/coastline_au.npz, and the map reads that array.
   - pip:
       - mt-io==0.0.5
       - mth5==0.6.9

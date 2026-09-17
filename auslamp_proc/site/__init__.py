@@ -3,17 +3,14 @@
 The modules are ordered as workbook 05 reads them: masks (the magnetics by day, the fleet and clock tests,
 the quality map, the day masks, the component masks, the best hours and the windows), centre (the shared
 centre and the arm diagonal, with the arm-diagonal cache variant), replace (a magnetic channel borrowed per
-channel), forms (one product per form in the run layout), deliver (the tipper-only product and the forms
-table) and recipe (one frame and one rule per impedance row, composed into one product).
+channel), forms (one transfer function per form in the run layout), deliver (the tipper-only delivery and the
+forms table) and recipe (one frame and one rule per impedance row, composed into one transfer function).
 
 The control rule every selection in this package obeys: a selection of hours or days carries a random
 selection of the same size drawn without replacement from the same scored pool under a named seed, a
-matched-duration contiguous selection, the selecting statistic scored kept against dropped, and the
-delivered product scored against both controls.
+matched-duration contiguous selection, the selecting statistic scored kept against dropped, and the delivered
+transfer function scored against both controls.
 
 @author: ben kay (ben@auscope.org.au)
 """
 from __future__ import annotations
-
-FORMS = ("whole", "window", "daymask", "hours", "diagonal", "whole10",
-         "replace", "lender", "tipper_only", "recipe")

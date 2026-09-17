@@ -1,13 +1,13 @@
 """What every figure of the package does last: a short title, a wrapped caption, and the file.
 
 A title that carries the method, its parameters and the reading runs off both ends of the canvas at any
-figure width, so the two are separated (Ben, 2026-09-17): the SUPTITLE is one short line naming the site and
-what the figure is, and the CAPTION sits under the axes in smaller text, wrapped to the figure's own width,
-carrying what was done and with which values.
+figure width, so the two are separated: the suptitle is one short line naming the site and what the figure
+is, and the caption sits under the axes in smaller text, wrapped to the figure's own width, carrying what was
+done and with which values.
 
 The wrap width is taken from the figure: at CAPTION_SIZE = 9 pt a proportional face averages about
 CHARS_PER_INCH = 12.5 characters to the inch, so a 13 in figure takes about 162 characters a line. The space
-is reserved by GROWING the canvas -- CAPTION_LINE_IN per caption line at the bottom, TITLE_PAD_IN at the top
+is reserved by growing the canvas -- CAPTION_LINE_IN per caption line at the bottom, TITLE_PAD_IN at the top
 -- and putting the axes back where tight_layout left them in inches, so neither the panels nor an axes title
 is squeezed and the suptitle sits in a strip no axes reaches into.
 
@@ -42,20 +42,30 @@ def finish(fig, title, caption, out, dpi=DPI, chars_per_inch=CHARS_PER_INCH):
     `title` is one line -- the site and what the figure is. `caption` is the sentence that would otherwise
     have been the title: what was done, with which parameters, and what the numbers were.
     """
-    fig.tight_layout()
+    # a figure built with a layout engine is laid out once and the engine is then turned off, so the strips
+    # reserved below are not re-laid over; a figure without one is laid out by tight_layout here
+    engine = getattr(fig, "get_layout_engine", lambda: None)()
+    if engine is None:
+        fig.tight_layout()
+    else:
+        fig.canvas.draw()
+        fig.set_layout_engine("none")
     w_in, h_in = fig.get_size_inches()
     lines = wrap(caption, w_in, chars_per_inch)
-    # the axes keep the size and the margins tight_layout gave them, in INCHES: the figure grows by the strip
-    # the caption needs at the bottom and the strip the title needs at the top, and the axes are placed back
-    # where they were inside the taller canvas. Nothing is squashed, and an axes title cannot meet the
-    # suptitle because the suptitle is drawn in a strip no axes reaches into.
+    # every axes keeps the size and the position the layout gave it, in inches: the figure grows by the strip
+    # the caption needs at the bottom and the strip the title needs at the top, and each axes is placed back
+    # where it was inside the taller canvas. Nothing is squashed, and an axes title cannot meet the suptitle
+    # because the suptitle is drawn in a strip no axes reaches into.
     pad_b = (CAPTION_PAD_IN + CAPTION_LINE_IN * len(lines)) if lines else 0.0
     pad_t = TITLE_PAD_IN if title else 0.0
-    ax_lo, ax_hi = h_in * fig.subplotpars.bottom, h_in * fig.subplotpars.top
     h2 = h_in + pad_b + pad_t
     if pad_b or pad_t:
+        boxes = [(a, a.get_position()) for a in fig.axes]
         fig.set_size_inches(w_in, h2, forward=True)
-        fig.subplots_adjust(bottom=(pad_b + ax_lo) / h2, top=(pad_b + ax_hi) / h2)
+        for ax, box in boxes:
+            y0 = (pad_b + box.y0 * h_in) / h2
+            y1 = (pad_b + box.y1 * h_in) / h2
+            ax.set_position([box.x0, y0, box.width, y1 - y0])
     if title:
         fig.suptitle(str(title), fontsize=TITLE_SIZE, y=1.0 - 0.3 * pad_t / h2, va="top")
     if lines:

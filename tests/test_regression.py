@@ -1,6 +1,7 @@
-"""The regression that gates every port: a ported stage must reproduce the Victoria products of record.
+"""The regression that gates every port: a ported stage must reproduce the Victoria
+transfer functions of record.
 
-Definition (2026-09-13): for every row of the wave's PRODUCTS_OF_RECORD table, the ported path rebuilds the product
+Definition (2026-09-13): for every row of the wave's TRANSFER_FUNCTIONS_OF_RECORD table, the ported path rebuilds the transfer function
 from the same inputs (sites.csv row, windows, keep mask, reference store) and the impedance and tipper agree with the
 delivered EDI to 1e-9 relative at every period, or -- where an engine's arithmetic is knowingly changed -- within the
 stated tolerance with the change named in the test. A stage is 'ported' only when this passes for every wave.

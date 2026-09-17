@@ -1,6 +1,4 @@
-"""The product's header: the survey, the station, the frame and the processing parameters.
-
-Ported from wamt_run.finish_edi (:921-1021) and the frame block of wamt_esp2026_products.py (:41-181).
+"""The transfer function's header: the survey, the station, the frame and the processing parameters.
 
 The EDI writer accepts station_metadata.comments and then drops them, so everything a reader has to see is a
 processing_parameters line. The lines carry the kind and its members with their weights and lags, the
@@ -9,7 +7,7 @@ mask statistics, the signs applied and those still undecided, the rotation angle
 the cache's builder stamp and notch record, and at 10 Hz the short-end caveat.
 
 The frame is stated in three lines (Ben's ruling, 2026-09-11): the tensor is served in the frame it was
-processed in, the IGRF declination is recorded and NOT applied, and the angle to turn the tensor by for true
+processed in, the IGRF declination is recorded and not applied, and the angle to turn the tensor by for true
 geographic north is given with the transformation (Z' = R Z R^T, T' = T R^T, R = [[cos, sin], [-sin, cos]]).
 
 The XML twin is written from the same object after the EDI. The EMTFXML writer builds its Survey id from
@@ -33,10 +31,33 @@ import numpy as np
 # another survey is written here. process.rate.caveat builds the sentence from the survey's own measurement
 # where it has one, and this is what stands where it has none.
 TEN_HZ_CAVEAT = ("the departure of this survey's 10 Hz row from its own 1 Hz row has not been measured, "
-                 "because the survey carries no whole-record 10 Hz product to measure it on; not spliced")
+                 "because the survey carries no whole-record 10 Hz transfer function to measure it on; "
+                 "not spliced")
 # what mt_metadata accepts in an id, and so in the survey name the EMTFXML writer builds one from
 XML_ID_BAD = re.compile(r"[^A-Za-z0-9_\- ]")
+# The characters an EDI processing_parameters line does not survive. The reader splits a Comment on the pipe
+# and on the newline, so a line carrying either comes back as several and the next read raises on the
+# fragment; and it drops the apostrophe, so a line carrying one comes back one character shorter than it was
+# written. Every line the package writes is put through clean_parameter first, so what is written is what is
+# read back.
+PARAMETER_SPACE = ("|", "\n", "\r")     # replaced by a space: the reader splits a Comment on each
+PARAMETER_CUT = ("'",)                  # dropped: the reader drops the apostrophe where it finds one
 AZIMUTH = {"ex": 0.0, "ey": 90.0, "hx": 0.0, "hy": 90.0, "hz": 0.0}
+
+
+def clean_parameter(text) -> str:
+    """One processing_parameters line with nothing in it the EDI round trip would change.
+
+    The pipe and the newline become a space, because the reader splits a Comment on either and the next
+    read raises on the fragment. The apostrophe is dropped, because the reader drops it and a line that
+    reads back one character shorter than it was written is not the line the file carries.
+    """
+    s = str(text)
+    for ch in PARAMETER_SPACE:
+        s = s.replace(ch, " ")
+    for ch in PARAMETER_CUT:
+        s = s.replace(ch, "")
+    return s.strip()
 
 
 def _iso(t) -> str:
@@ -186,7 +207,7 @@ def finish_edi(edi_in, out, site_row, decision_row, cfg, kind, info, params_line
         except Exception:
             pass
     dn, de = _num(site_row.dipole_n_m), _num(site_row.dipole_e_m)
-    # the rate the product was processed at, which on a 10 Hz recorder decimated to 1 Hz is not the
+    # the rate the transfer function was processed at, which on a 10 Hz recorder decimated to 1 Hz is
     # recorder's own rate in sites.csv
     fs = float(rate) if rate else _num(site_row.sample_rate_hz, 1.0)
     for run in st.runs:
@@ -212,13 +233,14 @@ def finish_edi(edi_in, out, site_row, decision_row, cfg, kind, info, params_line
                 _set(ch, "sensor.model", const.get("sensor_model", ""))
 
     tfm = st.transfer_function
-    plist = list(params_lines)
+    plist = [clean_parameter(x) for x in params_lines]
     plist += ["record.start=%s" % _iso(a), "record.end=%s" % _iso(b),
               "record.days=%.2f" % ((b - a) / 86400.0),
               "site.dipole_n_m=%s" % site_row.dipole_n_m, "site.dipole_e_m=%s" % site_row.dipole_e_m,
               "site.dipole_source=%s" % str(site_row.dipole_source)[:200],
               "site.position_source=%s" % str(site_row.position_source)[:200]]
     plist += frame_lines(dec_deg, rotation_deg)
+    plist = [clean_parameter(x) for x in plist]
     for k, v in (("id", str(site_row.site)),
                  ("processed_by.author", cfg.get("author") or ""),
                  ("processed_date", datetime.now(timezone.utc).date().isoformat()),
@@ -261,8 +283,8 @@ def read_parameter(edi_path, key) -> str:
     """The value of one processing_parameters line of a written EDI, or "".
 
     The writer emits the line under its full dotted name, `transfer_function.processing_parameters.<key>=`,
-    so a reader that expects the line to begin with the key alone finds nothing and says the product does
-    not carry it. The key is matched where it sits, after the last dot or at the start of the line.
+    so a reader that expects the line to begin with the key alone finds nothing and says the transfer
+    function does not carry it. The key is matched where it sits, after the last dot or at the line's start.
     """
     want = str(key)
     for line in Path(edi_path).read_text(encoding="utf-8", errors="ignore").splitlines():

@@ -1,8 +1,8 @@
 """The shared centre electrode, and the arm diagonal that cancels it at any pair of arm lengths.
 
 The EDL L layout is three electrodes: a shared centre C, a north arm of length L_N and an east arm of length
-L_E, so Ex = (V_N - V_C)/L_N and Ey = (V_E - V_C)/L_E. A noisy centre puts ONE VOLTAGE on both lines, and
-because the two lines divide that voltage by different lengths it does not arrive as the same FIELD on both.
+L_E, so Ex = (V_N - V_C)/L_N and Ey = (V_E - V_C)/L_E. A noisy centre puts one voltage on both lines, and
+because the two lines divide that voltage by different lengths it does not arrive as the same field on both.
 With the lines physically signed and a centre voltage n,
 
     Ex = Ex_true + c,   Ey = Ey_true + s c (L_N / L_E),   c = -n / L_N,
@@ -11,21 +11,20 @@ with s = +1 for arms N+E or S+W and -1 where one arm is reversed. The E signs pr
 (Ex -1, Ey -1) is N+E, each departure to +1 reverses an arm, so s = +1 for an even number of departures and
 -1 for an odd one. An undecided sign is never filled by convention: the site is UNJUDGED on the prediction.
 
-The residual test (ported from vic_centre_test.day_stats :80-99, criteria :6-24, with the lengths carried
-through -- Ben and Fable, 2026-09-17; the frozen tool is Victoria's, where every arm is 50 m and the lengths
-cancel). On the days of highest Ex-Ey coherence, at 20-200 s, the part of each line explained by (Hx, Hy) is
-removed per frequency bin from the cross-spectra and the residuals are read. The complex gain
-g = S_ry,rx / S_rx,rx is then s L_N / L_E, so the model holds where the residual coherence is at least 0.9
-AND |g| divided by the EXPECTED L_N / L_E lies in 0.85-1.18; sign(Re g) is still the observed s. The lengths
-come from sites.csv dipole_n_m and dipole_e_m, and an assume: cell is used and named. The clean diagonal is
-the one whose multiple coherence with (Hx, Hy) is the higher. The three criteria:
+The residual test, ported from vic_centre_test.day_stats :80-99 and criteria :6-24 with the arm lengths
+carried through the gain. On the days of highest Ex-Ey coherence, at 20-200 s, the part of each line
+explained by (Hx, Hy) is removed per frequency bin from the cross-spectra and the residuals are read. The
+complex gain g = S_ry,rx / S_rx,rx is then s L_N / L_E, so the model holds where the residual coherence is at
+least 0.9 and |g| divided by the expected L_N / L_E lies in 0.85-1.18; sign(Re g) is still the observed s.
+The lengths come from sites.csv dipole_n_m and dipole_e_m, and an assume: cell is used and named. The clean
+diagonal is the one whose multiple coherence with (Hx, Hy) is the higher. The three criteria:
 
     A  where the model holds and both E signs are decided, the prediction must agree with the observed sign
-    B  a CONTROL that cannot share a centre must NOT hold the model
+    B  a control that cannot share a centre must not hold the model
     C  the remedy applies only where the model holds and the clean diagonal by H is the observed one
 
 The remedy (ported from vic_ne_cache :6-13 and vic_ne_rotate :6-21, generalised to unequal arms). The
-voltage between the two ARM electrodes carries no centre at any lengths:
+voltage between the two arm electrodes carries no centre at any lengths:
 
     V_N - V_E = L_N Ex - L_E Ey,   d = sqrt(L_N^2 + L_E^2),   E_d = (L_N Ex - L_E Ey) / d,
 
@@ -33,12 +32,12 @@ which is the field along the unit vector (L_N, -L_E)/d in (north, east), that is
 theta = atan2(-L_E, L_N) from north. The orthogonal row E_v = (L_E Ex + L_N Ey) / d carries the centre and is
 kept for the record. Equal arms give theta = -45 deg and the pair reduces to (Ex - Ey)/sqrt 2 and
 (Ex + Ey)/sqrt 2 exactly. The pair is E in the frame turned by theta, so a pass on the variant cache gives
-R(theta) Z; turning the H columns as well gives Z' = (R Z) R^T and T' = T R^T at THAT theta. The x' row is
-the clean one and the y' row is kept for the record.
+R(theta) Z; turning the H columns as well gives Z' = (R Z) R^T and T' = T R^T at that same theta. The x' row
+is the clean one and the y' row is kept for the record.
 
 The turn-back is checked on three invariants of a column-only turn: the elements to 1e-6 relative (an EDI
 carries seven significant digits), |det Z' - det Z| <= 1e-5 ||Z||^2 scaled by the norm because the relative
-form is meaningless at a near-singular period, and the Frobenius norm to 1e-6. The trace is NOT an invariant
+form is meaningless at a near-singular period, and the Frobenius norm to 1e-6. The trace is not an invariant
 of a column-only turn and is reported as the counter-example.
 
 @author: ben kay (ben@auscope.org.au)
@@ -53,7 +52,7 @@ import pandas as pd
 
 from ..look import highpass
 from ..process import frame as FR
-from .masks import DAY, load_raw, prepare
+from .masks import load_raw, prepare
 
 NPERSEG = 4096
 BAND_S = (20.0, 200.0)
@@ -61,7 +60,6 @@ CENTRE_DAYS = 3
 RESID_COH_MIN = 0.9
 GAIN_LO, GAIN_HI = 0.85, 1.18   # the bounds on |g| divided by the expected L_N / L_E
 CONTROL_EX_EY_MAX = 0.35        # a control site's source Ex-Ey coherence on every scored day
-SQ2 = float(np.sqrt(2.0))
 THETA_NE = -45.0                # the equal-arm diagonal; diagonal_angle gives the site's own
 
 # the tolerances of the turn-back, vic_ne_rotate.py:12-21
@@ -74,8 +72,8 @@ def arm_lengths(sv, site) -> dict:
     """(L_N, L_E) from sites.csv dipole_n_m and dipole_e_m, with the source of each named.
 
     An `assume:<value>` cell is used and flagged, as everywhere else in the package: the expected gain and
-    the diagonal's direction both scale with these numbers, so a product built on an assumed arm carries the
-    assumption into its provenance.
+    the diagonal's direction both scale with these numbers, so a transfer function built on an assumed arm
+    carries the assumption into its provenance.
     """
     from ..raw.cache import dipole_value
     row = sv.site(site)
@@ -288,20 +286,20 @@ def read_elines(sv, site) -> pd.DataFrame:
 
 def built_control(sv, site, neighbour=None, days=CENTRE_DAYS, elines=None, band_s=BAND_S,
                   nperseg=NPERSEG, rate=1, members=None) -> dict:
-    """The residual test on a pair of lines that CANNOT share a centre electrode, as the control.
+    """The residual test on a pair of lines that cannot share a centre electrode, as the control.
 
     The site's own Ex is paired with the nearest sound site's Ey, both read against the site's own (Hx, Hy)
     over the same days, and the residual test is run on that pair. Two electrodes tens of kilometres apart
-    have no common voltage, so the model must NOT hold: a residual coherence at or above 0.9 with a gain
+    have no common voltage, so the model must not hold: a residual coherence at or above 0.9 with a gain
     within 0.85-1.18 of the site's own expected L_N / L_E there would mean the test finds a shared centre
     wherever it looks. The control is judged against the site's own expected gain, because the question it
-    answers is whether THIS site's test can fire on a pair that cannot have a shared centre.
+    answers is whether this site's test can fire on a pair that cannot have a shared centre.
 
-    This is the control the section is judged on (Ben, after the Q53N run of 2026-09-17). A site whose own
-    Ex-Ey coherence stays under 0.35 on every day need not exist in a survey -- a one-dimensional earth
-    correlates the two lines through the source field alone, and no AusLAMP Queensland Phase 1 site clears
-    that ceiling, the lowest daily maximum being 0.354 -- so a criterion written on finding one is UNJUDGED
-    wherever the survey is layered. The built pair exists at every site with a neighbour.
+    This is the control the section is judged on. A site whose own Ex-Ey coherence stays under
+    CONTROL_EX_EY_MAX = 0.35 on every day need not exist in a survey -- a one-dimensional earth correlates
+    the two lines through the source field alone, and no AusLAMP Queensland Phase 1 site clears that ceiling,
+    the lowest daily maximum being 0.354 (Ben, 2026-09-17) -- so a criterion written on finding one is
+    UNJUDGED wherever the survey is layered. The built pair exists at every site with a neighbour.
     """
     if elines is None:
         elines = read_elines(sv, site)
@@ -351,7 +349,7 @@ def built_control(sv, site, neighbour=None, days=CENTRE_DAYS, elines=None, band_
                     **_arm_fields(arms, g_expected))
     med = {k: float(np.median([d[k] for d in stats]))
            for k in ("coh_r", "gain", "mcoh_diff", "mcoh_sum", "coh_ExEy")}
-    # the control is judged by the SITE's own expected gain, because the question it answers is whether this
+    # the control is judged by the site's own expected gain, because the question it answers is whether this
     # site's test can fire on a pair that cannot have a shared centre
     ratio = med["gain"] / g_expected if np.isfinite(g_expected) and g_expected else np.nan
     holds = bool(med["coh_r"] >= RESID_COH_MIN and np.isfinite(ratio) and GAIN_LO <= ratio <= GAIN_HI)
@@ -368,10 +366,10 @@ def built_control(sv, site, neighbour=None, days=CENTRE_DAYS, elines=None, band_
 def control_site(sv, site, members=None) -> dict:
     """The member of the site's group with the lowest Ex-Ey coherence, and its numbers.
 
-    A READING beside built_control, not the criterion. The control is chosen on the MAXIMUM of its daily
-    Ex-Ey coherence with the median as the tie-break, and `qualifies` says whether that maximum clears the
-    0.35 ceiling; the ceiling is not raised to find one (vic_centre_test :171-175). Where no site qualifies
-    the reading says so and the section is judged on the built control instead.
+    A reading beside built_control, not the criterion. The control is chosen on the maximum of its daily
+    Ex-Ey coherence with the median as the second key, and `qualifies` says whether that maximum clears the
+    CONTROL_EX_EY_MAX = 0.35 ceiling; the ceiling is not raised to find one (vic_centre_test :171-175). Where
+    no site qualifies the reading says so and the section is judged on the built control instead.
     """
     pool = [s for s in (members if members is not None else list(sv.sites.site)) if s != site]
     rows = []
@@ -407,7 +405,7 @@ def ne_variant(sv, site, rate=1, force=False) -> dict:
     the orthogonal row and carries the centre. The pair is E turned by theta = atan2(-L_E, L_N), which at
     equal arms is -45 deg and reduces to (Ex - Ey)/sqrt 2 and (Ex + Ey)/sqrt 2 exactly.
 
-    The combination is taken on the PHYSICALLY SIGNED lines -- the decisions.csv sign of each is applied
+    The combination is taken on the physically signed lines -- the decisions.csv sign of each is applied
     first -- because the model Ex = Ex_true + c, Ey = Ey_true + s c L_N/L_E is stated for signed lines; the
     sidecar records that, and a pass on this cache does not sign E again. The check is on the algebra alone:
     the written Ex' equals (L_N Ex - L_E Ey)/d of the signed source at every finite sample. The coherence

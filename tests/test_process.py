@@ -79,7 +79,7 @@ def test_e_exchange_swaps_the_channels_and_rescales_by_the_arm_lengths():
 
 def test_e_exchange_without_arm_lengths_swaps_and_does_not_rescale():
     """Fails if a site whose arm lengths are unknown has its levels moved by a made-up ratio, or if the
-    product is not told."""
+    transfer function is not told."""
     row = pd.Series(dict(site="TST", dipole_n_m="decide", dipole_e_m=""))
     out, _applied, rec = FR.apply_decisions(_five(), _decision_row(e_exchange="yes"), row, None, 1.0)
     assert np.allclose(out["Ex"], 5.0) and np.allclose(out["Ey"], 4.0)
@@ -106,7 +106,7 @@ def test_h_gain_divides_every_magnetic_channel_and_no_electric_one():
 def test_e_shift_advances_both_electric_channels_by_the_lanczos_delay():
     """Fails if the shift is not align.shift of the same channel, or if it reaches a magnetic one.
 
-    Positive is ADVANCED: out[t] takes the recorded value at t + s, the correction for an E line that lags
+    Positive is advanced: out[t] takes the recorded value at t + s, the correction for an E line that lags
     H. The same convention as process.align.shift and as the campaign's qld_align.py:14-16.
     """
     from auslamp_proc.process import align as AL
@@ -131,8 +131,8 @@ def test_e_shift_advances_both_electric_channels_by_the_lanczos_delay():
 
 
 def test_the_order_is_exchange_then_gain_then_shift_then_signs():
-    """Fails if the order moves: the signs are of the LINE and not of the channel it was recorded on, so a
-    site with e_exchange and sign_ex -1 must negate the line that ENDS on Ex, not the one that started
+    """Fails if the order moves: the signs are of the line and not of the channel it was recorded on, so a
+    site with e_exchange and sign_ex -1 must negate the line that ends on Ex, not the one that started
     there. Applying the signs first would negate the other line."""
     out, _applied, _rec = FR.apply_decisions(_five(), _decision_row(e_exchange="yes", sign_ex="-1",
                                                                     h_exchange="yes", h_gain="2",
@@ -142,7 +142,7 @@ def test_the_order_is_exchange_then_gain_then_shift_then_signs():
     assert np.allclose(out["Ey"], 4.0 * 0.5)
     assert np.allclose(out["Hx"], -(2.0 / 2.0))          # the Hy channel, divided by the gain, then negated
     assert np.allclose(out["Hy"], 1.0 / 2.0)
-    # the control: signs first would have negated the OTHER line and left Ex at +10
+    # the control: signs first would have negated the other line and left Ex at +10
     signed, _s, _u = FR.apply_signs(_five(), _decision_row(sign_ex="-1"))
     assert np.allclose(signed["Ex"], -4.0), "the control does not hold, so the test proves nothing"
 
@@ -219,20 +219,6 @@ def test_rotate_regimes_and_drop():
     assert abs(float(np.nanmean(out["Hy"][:86400]))) < 1e-6
     assert abs(float(np.nanmean(out["Hy"][86400:2 * 86400]))) < 1e-6
     assert np.all(~np.isfinite(out["Hx"][2 * 86400:]))
-
-
-def test_turn_tensor_is_its_own_inverse():
-    """Fails if turning a tensor by an angle and back does not reproduce it to 1e-12."""
-    rng = np.random.default_rng(11)
-    z = rng.standard_normal((7, 2, 2)) + 1j * rng.standard_normal((7, 2, 2))
-    t = rng.standard_normal((7, 1, 2)) + 1j * rng.standard_normal((7, 1, 2))
-    zr, tr = FR.turn_tensor(z, t, 37.5)
-    zb, tb = FR.turn_tensor(zr, tr, -37.5)
-    assert np.max(np.abs(zb - z)) < 1e-12
-    assert np.max(np.abs(tb - t)) < 1e-12
-    assert np.max(np.abs(zr - z)) > 1e-6                 # the turn is not the identity
-
-
 # ------------------------------------------------------------- mask and segments
 
 def test_segments_and_keep_mask_drop_the_short_piece():
@@ -439,7 +425,7 @@ def test_mth5_read_back_equals_the_input(tmp_path):
 def test_band_objects_read_through_aurora():
     """Fails if either band file does not give the periods the package states for it.
 
-    The indices in a band file are harmonics of the WINDOW, so a file paired with the wrong window length
+    The indices in a band file are harmonics of the window, so a file paired with the wrong window length
     names different periods and nothing says so. This reads both through Aurora's own band machinery.
     """
     t1 = aurora_run.band_table(aurora_run.BANDS["1hz"])
@@ -472,11 +458,13 @@ def _pair_record(t0, hours, fs=10.0, seed=7):
     return t0, {"Hx": hx, "Hy": hy, "Ex": ex, "Ey": ey}
 
 
-def test_selection_tags_are_the_four_the_package_names():
-    """Fails if a fraction does not key to its documented tag."""
-    assert [SEL.key_for(f) for f in SEL.SELECT10] == ["f05", "f10", "f25"]
-    assert SEL.key_for(SEL.RANDOM_FRACTION, True) == "r25"
-    assert SEL.nperseg_for(10) == SEL.SCORE_NPERSEG_10HZ and SEL.nperseg_for(1) == 205
+def test_selection_tags_are_the_two_the_package_names():
+    """Fails if a tag is not the one the ledger and the file name carry, or the Welch segment moves off
+    SCORE_SEGMENT_S = 1,024 s."""
+    assert SEL.TAGS == (SEL.STRETCH, SEL.CONTROL) == ("stretch", "control")
+    assert SEL.WHOLE == "whole"
+    assert SEL.nperseg_for(10) == 10 * SEL.SCORE_SEGMENT_S
+    assert SEL.nperseg_for(1) == SEL.SCORE_SEGMENT_S
 
 
 def test_hour_grid_starts_on_a_whole_utc_hour():
@@ -489,38 +477,56 @@ def test_hour_grid_starts_on_a_whole_utc_hour():
     assert int(starts[-1]) + int(SEL.HOUR_S * 10) <= n
 
 
-def test_score_hours_reads_the_coherent_hours_and_drops_a_dead_line():
-    """Fails if a coherent hour does not outscore a noise hour, or a `dead` line is still in the average."""
+def test_score_hours_reads_the_coherent_hours_on_both_lines():
+    """Fails if a coherent hour does not outscore a noise hour on Ex with Hy and on Ey with Hx over
+    SCORE_BAND_S = 20-200 s."""
     t0 = 1759017600
     t0, arrays = _pair_record(t0, 6)
     table = SEL.score_hours(t0, arrays, 10.0)
-    assert len(table) == 6 and table.pairs.max() == 2
+    assert len(table) == 6 and list(table.columns) == SEL.SCORE_COLUMNS
     assert float(table.score.iloc[-1]) > 0.8 > float(table.score.iloc[0])
-
-    days = pd.DataFrame([dict(t_start=t0, t_end=t0 + 86400, Ex_state="dead", Ey_state="sound")])
-    dead = SEL.score_hours(t0, arrays, 10.0, elines=days)
-    assert set(dead.pairs) == {1}
-    assert np.allclose(dead.score.to_numpy(float), table.score_yx.to_numpy(float), equal_nan=True)
+    assert float(table.coh_xy.iloc[-1]) > 0.8 and float(table.coh_yx.iloc[-1]) > 0.8
+    assert float(table.coh_xy.iloc[0]) < SEL.WINDOW_COH and float(table.coh_yx.iloc[0]) < SEL.WINDOW_COH
 
 
-def test_selection_keeps_whole_hours_and_the_control_costs_the_same():
-    """Fails if a kept hour is not one whole 3,600 s run, or the control keeps a different number of hours."""
+def test_the_selection_is_the_longest_stretch_and_the_control_costs_the_same():
+    """Fails if the selection is not the longest contiguous run of hours with both lines above
+    WINDOW_COH = 0.5, if it is not whole 3,600 s hours, or if the control is a different length or overlaps
+    the selection."""
     t0 = 1759017600
     t0, arrays = _pair_record(t0, 24)
     n = len(arrays["Hx"])
     table = SEL.score_hours(t0, arrays, 10.0)
-    sel = SEL.selections(table, t0, n, 10.0, fractions=(0.25,), random_fraction=0.25, seed=11)
-    assert sorted(sel) == ["f25", "r25"]
-    assert sel["f25"]["n_hours"] == sel["r25"]["n_hours"] == 6
-    assert sel["r25"]["threshold"] is None and sel["f25"]["threshold"] is not None
-    keep = SEL.mask_from_hours(sel["f25"]["hours"], t0, n, 10.0)
-    runs = TR.segments(keep, int(TR.MIN_SEGMENT_S * 10))
-    assert len(runs) == len({tuple(h) for h in sel["f25"]["hours"]}) or all(
-        L % int(TR.MIN_SEGMENT_S * 10) == 0 for _o, L in runs)
-    assert int(keep.sum()) == 6 * int(SEL.HOUR_S * 10)
-    # the ranked selection takes the coherent third and the random control cannot
-    assert float(np.mean([table.score[table.t_start == h[0]].iloc[0] for h in sel["f25"]["hours"]])) > \
-        float(np.mean([table.score[table.t_start == h[0]].iloc[0] for h in sel["r25"]["hours"]]))
+    sel = SEL.longest_stretch(table)
+    assert sel["rule"] == SEL.STRETCH and sel["hours"] == 8 and sel["cut"] is False
+    assert sel["t_start"] == int(table.t_start.iloc[16]) and sel["t_end"] == int(table.t_end.iloc[23])
+
+    keep = SEL.stretch_mask(t0, n, sel, 10.0)
+    assert int(keep.sum()) == 8 * int(SEL.HOUR_S * 10)
+    assert len(TR.segments(keep, int(TR.MIN_SEGMENT_S * 10))) == 1
+
+    ctrl = SEL.control_stretch(t0, n, sel, seed=11, fs=10.0)
+    assert ctrl["rule"] == SEL.CONTROL and ctrl["hours"] == sel["hours"]
+    assert ctrl["t_end"] <= sel["t_start"] or ctrl["t_start"] >= sel["t_end"]
+    assert int(SEL.stretch_mask(t0, n, ctrl, 10.0).sum()) == int(keep.sum())
+    # the stretch takes the coherent third and the control, placed elsewhere, cannot
+    inside = (table.t_start >= sel["t_start"]) & (table.t_start < sel["t_end"])
+    outside = (table.t_start >= ctrl["t_start"]) & (table.t_start < ctrl["t_end"])
+    assert outside.any(), "the control covers no scored hour, so the test proves nothing"
+    assert float(table.score[inside].mean()) > float(table.score[outside].mean())
+
+
+def test_no_hour_above_the_threshold_is_a_reason_and_not_a_stretch():
+    """Fails if a record whose lines never reach WINDOW_COH returns a stretch rather than an empty one with
+    the reason that says so."""
+    rng = np.random.default_rng(3)
+    n = int(4 * 3600 * 10.0)
+    arrays = {c: rng.standard_normal(n) for c in ("Hx", "Hy", "Ex", "Ey")}
+    table = SEL.score_hours(1759017600, arrays, 10.0)
+    sel = SEL.longest_stretch(table)
+    assert sel["hours"] == 0 and sel["t_start"] is None and sel["n_runs"] == 0
+    assert "no hour reads above" in sel["reason"] and "20-200 s" in sel["reason"]
+    assert not SEL.stretch_mask(1759017600, n, sel, 10.0).any()
 
 
 def test_widen_ledger_adds_the_column_and_keeps_the_rows(tmp_path):
@@ -582,7 +588,7 @@ def test_rate_caveat_carries_the_survey_number_or_says_there_is_none():
     assert rec["n_sites"] == 2 and rec["n_scored"]["xy"] == 2
     assert rec["median_ratio"]["xy"] == pytest.approx(0.95, rel=1e-3)
     said = RATE.caveat(rec)
-    assert "4-32 s" in said and "2 whole-record 10 Hz remote product(s)" in said
+    assert "4-32 s" in said and "2 whole-record 10 Hz remote transfer function(s)" in said
     assert "-5.0 per cent" in said and "Victoria" not in said
 
 
@@ -641,7 +647,7 @@ def test_rewrite_caveat_refuses_what_it_cannot_place(tmp_path):
 
 
 def test_rewrite_is_recorded_in_the_run_folder(tmp_path):
-    """Fails if a rewritten product leaves no record of the sentence it carried before."""
+    """Fails if a rewritten transfer function leaves no record of the sentence it carried before."""
     (tmp_path / "provenance.json").write_text('{"run": "first"}', encoding="utf-8")
     rows = [dict(path=str(tmp_path / "a.edi"), changed=True, old="was", new="is", reason=""),
             dict(path=str(tmp_path / "b.edi"), changed=False, old=None, new=None, reason="no line")]
@@ -649,7 +655,7 @@ def test_rewrite_is_recorded_in_the_run_folder(tmp_path):
     import json as _json
     d = _json.loads((tmp_path / "provenance.json").read_text(encoding="utf-8"))
     assert len(d[RATE.REWRITE_NAME]) == 1
-    assert d[RATE.REWRITE_NAME][0] == dict(at="2026-09-17T00:00:00+00:00", product="a.edi",
+    assert d[RATE.REWRITE_NAME][0] == dict(at="2026-09-17T00:00:00+00:00", transfer_function="a.edi",
                                            old="was", new="is")
 
 
@@ -657,21 +663,57 @@ def test_read_parameter_finds_the_line_under_its_dotted_name(tmp_path):
     """Fails if a processing_parameters line is missed because the writer emits its full dotted name.
 
     The EDI writer emits `transfer_function.processing_parameters.selection=...`, so a reader that asks for
-    a line beginning with `selection=` finds nothing and reports a product that carries the line as one that
-    does not. Section 9's check read it that way and failed 184 sound products before this was fixed.
+    a line beginning with `selection=` finds nothing and reports a transfer function that carries the line as
+    one that does not.
     """
     p = tmp_path / "x.edi"
     p.write_text("\n".join([
         "  >HEAD",
-        "    transfer_function.processing_parameters.selection=f05: the best 5 per cent",
+        "    transfer_function.processing_parameters.selection=stretch: the longest coherent stretch",
         "    transfer_function.processing_parameters.caveat_10hz=a sentence",
         "    transfer_function.processing_parameters.runs=30 kept stretch(es)",
         "    DATAID=Q49",
         ">END"]) + "\n", encoding="utf-8")
-    assert EDI.read_parameter(p, "selection").startswith("f05")
+    assert EDI.read_parameter(p, "selection").startswith("stretch")
     assert EDI.read_parameter(p, "caveat_10hz") == "a sentence"
     assert EDI.read_parameter(p, "runs").startswith("30 kept")
     assert EDI.read_parameter(p, "DATAID") == "Q49"
     assert EDI.read_parameter(p, "not_there") == ""
     # the key is matched where it sits, not as a substring of a longer name
     assert EDI.read_parameter(p, "election") == ""
+
+
+def test_a_cleaned_processing_parameters_line_reads_back_as_it_was_written(tmp_path):
+    """Fails if a processing_parameters line the package writes comes back from the file changed.
+
+    The EDI reader splits a Comment on the pipe and on the newline and drops the apostrophe, so a line
+    carrying any of the three is not the line the file carries. edi.clean_parameter takes them out before the
+    write; this test is the round trip on a real file and not an assertion about the cleaner.
+    """
+    pytest.importorskip("mt_metadata.transfer_functions.core")
+    from mt_metadata.transfer_functions.core import TF
+    raw = ["recipe_tipper=from the x row" + chr(39) + "s pass",
+           "members=Q50:0.81|Q51:0.77",
+           "note=two" + chr(10) + "lines"]
+    want = [EDI.clean_parameter(x) for x in raw]
+    tf = TF()
+    tf.station_metadata.id = "CLEAN"
+    p = np.geomspace(1.0, 100.0, 8)
+    tf.period = p
+    tf.impedance = np.full((8, 2, 2), 1 + 1j)
+    tf.impedance_error = np.full((8, 2, 2), 0.1)
+    st = tf.station_metadata
+    st.transfer_function.processing_parameters = want
+    tf.station_metadata = st
+    out = tmp_path / "clean.edi"
+    try:
+        tf.write(fn=str(out), file_type="edi", longitude_format="LONG", latlon_format="dd")
+    except TypeError:
+        tf.write(fn=str(out), file_type="edi")
+    back = TF(fn=str(out))
+    back.read()
+    got = [str(x) for x in back.station_metadata.transfer_function.processing_parameters]
+    for line in want:
+        assert line in got, "%r did not come back from the file" % line
+    # the control: the uncleaned line does NOT survive, which is what the cleaner is for
+    assert raw[0] not in got

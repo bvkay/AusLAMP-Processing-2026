@@ -1,4 +1,4 @@
-"""The three response tests, the product of record, the choice record, the splice and the merge.
+"""The three response tests, the transfer function of record, the choice record, the splice, the merge.
 
 Every test states what would make it fail. Nothing here reads a survey's work root: each transfer function is
 built in the test and, where a file is needed, written to an EDI through mt_metadata, so a failure names the
@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from auslamp_proc import final as FN, products as PR, readings as RD, splice as SP
+from auslamp_proc import final as FN, transfer_functions as TFN, readings as RD, splice as SP
 
 
 # ------------------------------------------------------------------ synthetic tensors
@@ -46,12 +46,12 @@ def power_law(n=41, rho0=100.0, slope=1.5, phase=80.0, bar=0.02, lo=0.5, hi=4.5)
 
 
 def tf_of(period, z, err, t=None, t_err=None, path="synthetic"):
-    return PR.TFData(np.asarray(period, float), np.asarray(z, complex), np.asarray(err, float),
+    return TFN.TFData(np.asarray(period, float), np.asarray(z, complex), np.asarray(err, float),
                      t, t_err, dict(path=path, parameters={}))
 
 
 def write_edi(tmp_path, period, z, err, station="TEST", tipper=None):
-    """A synthetic tensor written to an EDI through mt_metadata, as a product on disk would be."""
+    """A synthetic tensor written to an EDI through mt_metadata, as a delivered file on disk would be."""
     import xarray as xr
     from mt_metadata.transfer_functions.core import TF
 
@@ -186,24 +186,24 @@ def test_the_held_band_is_reported_and_is_not_a_test():
 
 
 def test_the_single_station_is_not_a_deliverable_kind():
-    """Fails if the single station is among the kinds a product may be delivered on."""
+    """Fails if the single station is among the kinds a transfer function may be delivered on."""
     import pandas as pd
     assert RD.DROPPED_KIND == "single" and "single" not in RD.KINDS
     assert set(RD.KINDS) == {"remote", "stack", "obs", "stack_obs"}
-    products = pd.DataFrame([dict(site="S", kind=k, rate_hz=1.0, on_disk=True) for k in
-                             ("single", "remote", "stack")])
-    keep, dropped = RD.deliverable(products)
+    tfs = pd.DataFrame([dict(site="S", kind=k, rate_hz=1.0, on_disk=True) for k in
+                        ("single", "remote", "stack")])
+    keep, dropped = RD.deliverable(tfs)
     assert set(keep.kind) == {"remote", "stack"} and list(dropped.kind) == ["single"]
 
 
-def test_a_product_name_is_read_off_its_kind_rate_selection_or_form():
-    """Fails if the name the choice cell uses does not pick a product out of the readings table."""
+def test_a_tf_name_is_read_off_its_kind_rate_selection_or_form():
+    """Fails if the name the choice cell uses does not pick a row out of the readings table."""
     import pandas as pd
     rows = pd.DataFrame([dict(kind="stack", rate_hz=1.0, selection="whole", form=""),
-                         dict(kind="remote", rate_hz=10.0, selection="f25", form=""),
+                         dict(kind="remote", rate_hz=10.0, selection="stretch", form=""),
                          dict(kind="remote", rate_hz=1.0, selection="whole", form="window_yx")])
-    got = [RD.product_key(r) for r in rows.itertuples()]
-    assert got == ["stack_1hz", "remote_10hz_f25", "window_yx"]
+    got = [RD.tf_key(r) for r in rows.itertuples()]
+    assert got == ["stack_1hz", "remote_10hz_stretch", "window_yx"]
 
 
 # ------------------------------------------------------------------ agreement
@@ -228,17 +228,18 @@ def test_agreement_fails_a_phase_shift_beyond_the_tolerance():
     assert not s["agrees"]
 
 
-# ------------------------------------------------------------------ the product of record
+# ------------------------------------------------------------------ the transfer function of record
 
 def _reading(site, comp, kind, bar, passes=True, agree_n=1, held_hi=1000.0, rate=1.0):
     return dict(site=site, component=comp, kind=kind, kind_word=kind, selection="whole", form="",
-                run="r", stamp="s", rate_hz=rate, status="ok", product="%s_%ghz" % (kind, rate),
+                run="r", stamp="s", rate_hz=rate, status="ok",
+                transfer_function="%s_%ghz" % (kind, rate),
                 passes=passes, fails="", agree_n=agree_n, agree_kinds="other", bar=bar, n_periods=20,
                 held_lo_s=10.0, held_hi_s=held_hi, held_n=10, path="")
 
 
-def test_product_of_record_takes_the_smallest_bar_among_agreeing_sound_products():
-    """Fails if a smaller bar on a product that fails a test, or corroborates nothing, is chosen."""
+def test_the_record_takes_the_smallest_bar_among_agreeing_sound_rows():
+    """Fails if a smaller bar on a row that fails a test, or corroborates nothing, is chosen."""
     import pandas as pd
     t = pd.DataFrame([
         _reading("S1", "xy", "remote", 0.001, passes=False, agree_n=0),   # smallest bar, fails a test
@@ -246,30 +247,31 @@ def test_product_of_record_takes_the_smallest_bar_among_agreeing_sound_products(
         _reading("S1", "xy", "stack_obs", 0.004),
         _reading("S1", "xy", "stack", 0.003),
     ])
-    rec = RD.product_of_record(t)
+    rec = RD.transfer_function_of_record(t)
     row = rec[(rec.site == "S1") & (rec.component == "xy")].iloc[0]
     assert row.kind == "stack" and row.bar == pytest.approx(0.003)
-    assert row["product"] == "stack_1hz"
+    assert row["transfer_function"] == "stack_1hz"
 
 
-def test_product_of_record_breaks_a_tie_on_the_longest_period_held():
+def test_the_record_breaks_a_tie_on_the_longest_period_held():
     """Fails if two rows with the same bar are not separated by the longest period each holds."""
     import pandas as pd
     t = pd.DataFrame([_reading("S2", "yx", "remote", 0.005, held_hi=2000.0),
                       _reading("S2", "yx", "stack", 0.005, held_hi=9000.0)])
-    rec = RD.product_of_record(t)
+    rec = RD.transfer_function_of_record(t)
     row = rec[rec.site == "S2"].iloc[0]
     assert row.kind == "stack" and "longest period held" in row.why
 
 
-def test_product_of_record_is_none_where_nothing_agrees_with_another_kind():
-    """Fails if a component whose sound products corroborate nothing is given a product of record."""
+def test_the_record_is_none_where_nothing_agrees_with_another_kind():
+    """Fails if a component whose sound rows corroborate nothing is given a transfer function of record."""
     import pandas as pd
     t = pd.DataFrame([_reading("S3", "xy", "remote", 0.002, agree_n=0),
                       _reading("S3", "xy", "obs", 0.003, agree_n=0)])
-    rec = RD.product_of_record(t)
+    rec = RD.transfer_function_of_record(t)
     row = rec[rec.site == "S3"].iloc[0]
-    assert row["product"] == "none" and "none agrees with a product of another kind" in row.why
+    assert row["transfer_function"] == "none"
+    assert "none agrees with a row of another kind" in row.why
 
 
 # ------------------------------------------------------------------ the splice step
@@ -289,7 +291,7 @@ def test_the_step_at_the_join_passes_at_one_and_a_half_per_cent_and_fails_at_thr
 def test_the_step_below_the_join_is_measurable_on_a_long_period_grid():
     """Fails if either ruled band comes back unmeasured on the grids this survey actually carries.
 
-    A 1 Hz product carries about seven periods a decade and a 10 Hz product about eight, so the octave
+    A 1 Hz pass carries about seven periods a decade and a 10 Hz pass about eight, so the octave
     8-16 s below the join holds two or three periods. A minimum of four points there leaves the rule
     reading one band where it states two, which is how the acceptance would silently halve.
     """
@@ -328,35 +330,38 @@ def test_the_guard_band_is_measured_and_scored_by_nothing():
 
 
 def test_the_control_gate_promotes_only_a_selection_that_beats_its_random_control():
-    """Fails if a selection no better than r25 is admitted, or one 30 per cent better is refused.
+    """Fails if a selection no better than its control is admitted, or one 30 per cent better is refused.
 
-    The gate reads the 2-16 s impedance bar. A selection must beat the random 25 per cent of hours by 20
-    per cent of the control's bar; the whole-record pass is admitted without the gate and r25 is never
-    promoted.
+    The gate reads the 2-16 s impedance bar. A selection must beat its random control by 20 per cent of the
+    control's bar; the whole-record pass is admitted without the gate and the control itself is never
+    promoted. The control's tag is read from SP.CONTROL_SELECTION, so the test states the rule and not the
+    spelling of the tag.
     """
+    ctrl = SP.CONTROL_SELECTION
     p, z, e = earth_tensor(n=61, lo=-0.2, hi=3.1, bar=0.10)
     shorts = {
-        ("remote", "r25"): (tf_of(p, z, 0.10 * np.abs(z)), "r25.edi"),
-        ("remote", "f05"): (tf_of(p, z, 0.07 * np.abs(z)), "f05.edi"),      # 30 per cent better
-        ("remote", "f10"): (tf_of(p, z, 0.095 * np.abs(z)), "f10.edi"),     # 5 per cent better
+        ("remote", ctrl): (tf_of(p, z, 0.10 * np.abs(z)), "remote_control.edi"),
+        ("remote", "stretch"): (tf_of(p, z, 0.07 * np.abs(z)), "remote_stretch.edi"),  # 30 per cent better
+        ("obs", ctrl): (tf_of(p, z, 0.10 * np.abs(z)), "obs_control.edi"),
+        ("obs", "stretch"): (tf_of(p, z, 0.095 * np.abs(z)), "obs_stretch.edi"),       # 5 per cent better
         ("remote", "whole"): (tf_of(p, z, 0.12 * np.abs(z)), "whole.edi"),
     }
     g = SP.control_gate(shorts, "xy")
-    assert g[("remote", "f05")]["eligible"]
-    assert not g[("remote", "f10")]["eligible"]
-    assert "does NOT beat" in g[("remote", "f10")]["verdict"]
+    assert g[("remote", "stretch")]["eligible"]
+    assert not g[("obs", "stretch")]["eligible"]
+    assert "does NOT beat" in g[("obs", "stretch")]["verdict"]
     assert g[("remote", "whole")]["eligible"] and "admitted without the gate" in \
         g[("remote", "whole")]["verdict"]
-    assert not g[("remote", "r25")]["eligible"]
+    assert not g[("remote", ctrl)]["eligible"]
 
 
 def test_the_control_gate_is_unjudged_where_no_random_control_exists():
-    """Fails if a selection with no r25 product of its kind is admitted rather than reported UNJUDGED."""
+    """Fails if a selection with no control of its kind is admitted rather than reported UNJUDGED."""
     p, z, e = earth_tensor(n=61, lo=-0.2, hi=3.1)
-    shorts = {("remote", "f10"): (tf_of(p, z, e), "f10.edi")}
+    shorts = {("remote", "stretch"): (tf_of(p, z, e), "a.edi")}
     g = SP.control_gate(shorts, "xy")
-    assert not g[("remote", "f10")]["eligible"]
-    assert g[("remote", "f10")]["verdict"].startswith("UNJUDGED")
+    assert not g[("remote", "stretch")]["eligible"]
+    assert g[("remote", "stretch")]["verdict"].startswith("UNJUDGED")
 
 
 def test_the_rate_gate_refuses_a_component_before_any_row_is_read():
@@ -371,15 +376,15 @@ def test_the_rate_gate_refuses_a_component_before_any_row_is_read():
     assert out["yx"]["scored"], "the component the gate passed must still be scored"
 
 
-def test_a_selection_name_is_read_off_the_product_file_name():
+def test_a_selection_name_is_read_off_the_file_name():
     """Fails if the selection tag is lost, or a whole-record name is read as carrying one."""
-    a = PR.parse_product_name("Q73_stack_10hz_f05_kaiser20_75.edi")
+    a = TFN.parse_tf_name("Q73_stack_10hz_stretch_kaiser20_75.edi")
     assert a["site"] == "Q73" and a["kind"] == "stack" and a["rate_hz"] == 10.0
-    assert a["selection"] == "f05" and a["params"] == "kaiser20_75"
-    b = PR.parse_product_name("Q49_stack_obs_1hz_kaiser20_75.edi")
-    assert b["kind"] == "stack_obs" and b["selection"] == PR.WHOLE_SELECTION
+    assert a["selection"] == "stretch" and a["params"] == "kaiser20_75"
+    b = TFN.parse_tf_name("Q49_stack_obs_1hz_kaiser20_75.edi")
+    assert b["kind"] == "stack_obs" and b["selection"] == TFN.WHOLE_SELECTION
     assert b["params"] == "kaiser20_75"
-    assert PR.parse_product_name("Q53N_whole_remote_1hz_kaiser20_75.edi").get("kind") != "whole"
+    assert TFN.parse_tf_name("Q53N_whole_remote_1hz_kaiser20_75.edi").get("kind") != "whole"
 
 
 # ------------------------------------------------------------------ the unjoined rows
@@ -387,9 +392,8 @@ def test_a_selection_name_is_read_off_the_product_file_name():
 def test_an_unspliced_row_comes_back_identical(tmp_path):
     """Fails if any period or value of a component that was not spliced moves, to 1e-12 relative.
 
-    The frozen tool rounded the union grid's VALUES and shifted one period of every unspliced row by
-    2.3e-7 of itself (vic_splice test S5); the grid here is deduplicated on a rounded key and keeps the
-    original value.
+    The union grid is deduplicated on a rounded key and keeps the original value. Rounding the values
+    themselves shifts one period of every unspliced row by 2.3e-7 of itself (vic_splice test S5).
     """
     p, z, e = earth_tensor(n=41, lo=0.4, hi=4.1)
     base = write_edi(tmp_path, p, z, e, "BASE")
@@ -448,9 +452,9 @@ def test_merge_reads_back_and_the_two_sources_control_holds(tmp_path):
     assert rec["worst_readback_relative"] <= FN.READBACK_RTOL
     assert "control PASS" in rec["control"]
 
-    back = PR.read_tf(rec["path"])
-    a = PR.read_tf(f_xy)
-    b = PR.read_tf(f_yx)
+    back = TFN.read_tf(rec["path"])
+    a = TFN.read_tf(f_xy)
+    b = TFN.read_tf(f_yx)
     m = np.isfinite(back.z[:, 0, 1])
     assert np.allclose(back.z[m, 0, 1], a.z[m, 0, 1], rtol=FN.READBACK_RTOL)
     assert np.allclose(back.z[m, 1, 0], b.z[m, 1, 0], rtol=FN.READBACK_RTOL)
@@ -464,11 +468,11 @@ def test_merge_writes_the_frame_block(tmp_path):
     picks = {"xy": dict(path=str(f), kind="remote", kind_word="remote site", form="", run="r",
                         stamp="s", rate_hz=1.0, bar=0.02)}
     rec = FN.merge(SurveyStub, "FRAME", picks, tmp_path / "final" / "FRAME.edi", verbose=False)
-    kv = PR.read_tf(rec["path"]).meta["parameters"]
+    kv = TFN.read_tf(rec["path"]).meta["parameters"]
     assert "declination_deg" in kv and "RECORDED AND NOT APPLIED" in kv["declination_deg"]
     assert "to_geographic_north_deg" in kv and kv["to_geographic_north_deg"].startswith("-8.978")
     assert "reference_frame" in kv
-    assert "no product of record" in kv.get("yx_rows", "")
+    assert "no transfer function of record" in kv.get("yx_rows", "")
 
 
 def test_the_optional_resample_lands_on_the_ten_per_decade_grid(tmp_path):
@@ -480,10 +484,10 @@ def test_the_optional_resample_lands_on_the_ten_per_decade_grid(tmp_path):
     p, z, e = earth_tensor(n=41, rho=100.0, lo=0.6, hi=4.2)
     f = write_edi(tmp_path, p, z, e, "GRID")
     r = FN.resample(f, tmp_path / "GRID_resampled.edi")
-    back = PR.read_tf(r["path"])
+    back = TFN.read_tf(r["path"])
     assert len(back.period) == len(AG.GRID)
     assert np.allclose(np.sort(back.period), AG.GRID, rtol=1e-6)
-    rho, _e, _ph, _pe = PR.rho_phase(back.period, back.z, back.z_err, "xy")
+    rho, _e, _ph, _pe = TFN.rho_phase(back.period, back.z, back.z_err, "xy")
     per = np.asarray(back.period, float)
     got = np.isfinite(rho)
     assert got.sum() > 20
@@ -497,7 +501,7 @@ def test_the_optional_resample_lands_on_the_ten_per_decade_grid(tmp_path):
     assert "resampled" in kv and "not the delivered file" in kv["resampled"]
 
 
-def test_a_component_with_no_product_of_record_reads_back_empty(tmp_path):
+def test_a_component_with_no_transfer_function_of_record_reads_back_empty(tmp_path):
     """Fails if the empty row of a delivered file reads back as a measurement of zero at every period.
 
     The EDI writer emits the 1e32 empty-data value for a row that carries nothing and the reader hands it
@@ -509,7 +513,7 @@ def test_a_component_with_no_product_of_record_reads_back_empty(tmp_path):
     picks = {"xy": dict(path=str(f), kind="remote", kind_word="remote site", form="", run="r",
                         stamp="s", rate_hz=1.0, bar=0.02)}
     rec = FN.merge(SurveyStub, "ONECOMP", picks, tmp_path / "final" / "ONECOMP.edi", verbose=False)
-    back = PR.read_tf(rec["path"])
+    back = TFN.read_tf(rec["path"])
     assert np.isfinite(back.z[:, 0, 1]).sum() == len(p)
     assert np.isfinite(back.z[:, 1, 0]).sum() == 0
     assert np.isfinite(back.z[:, 1, 1]).sum() == 0
@@ -555,7 +559,7 @@ def test_the_trim_drops_exactly_the_periods_outside_the_held_band(tmp_path):
                         stamp="s", rate_hz=1.0, bar=0.02)}
     rec = FN.merge(SurveyStub, "TRIM", picks, tmp_path / "final" / "TRIM.edi",
                    keep_band={"xy": band}, verbose=False)
-    back = PR.read_tf(rec["path"])
+    back = TFN.read_tf(rec["path"])
     inside = p[(p >= band[0]) & (p <= band[1])]
     outside = p[(p < band[0]) | (p > band[1])]
     assert len(back.period) == len(inside)
@@ -593,13 +597,13 @@ def test_a_band_that_would_empty_the_file_is_not_applied(tmp_path):
     rec = FN.merge(SurveyStub, "EMPTY", picks, tmp_path / "final" / "EMPTY.edi",
                    keep_band={"xy": (1e5, 2e5)}, verbose=False)
     assert rec["n_dropped"] == 0 and "not trimmed" in rec["dropped_reason"]
-    assert len(PR.read_tf(rec["path"]).period) == len(p)
+    assert len(TFN.read_tf(rec["path"]).period) == len(p)
 
 
 # ------------------------------------------------------------------ the choice record
 
 def test_the_choice_record_round_trips_and_reproduces_the_merge(tmp_path):
-    """Fails if a choice row written is not read back with the same product, band and join.
+    """Fails if a choice row written is not read back with the same transfer function, band and join.
 
     The row is the record of a delivery: a re-run that reads it and merges again must land on the same
     file, byte for byte in its impedance rows.
@@ -617,13 +621,13 @@ def test_the_choice_record_round_trips_and_reproduces_the_merge(tmp_path):
                                           chosen_by="analyst", note="the analyst took the remote row")])
     back = FN.read_choices(path)
     row = back[(back.site == "ROUND") & (back.component == "xy")].iloc[0]
-    assert row["product"] == "remote_1hz" and row.chosen_by == "analyst"
+    assert row["transfer_function"] == "remote_1hz" and row.chosen_by == "analyst"
     assert (float(row.periods_lo), float(row.periods_hi)) == band
     assert str(row["join"]).strip() in ("", "nan")
 
     again = FN.merge(SurveyStub, "ROUND", picks, tmp_path / "final" / "ROUND_again.edi",
                      keep_band={"xy": (float(row.periods_lo), float(row.periods_hi))}, verbose=False)
-    a, b = PR.read_tf(first["path"]), PR.read_tf(again["path"])
+    a, b = TFN.read_tf(first["path"]), TFN.read_tf(again["path"])
     assert np.allclose(a.period, b.period, rtol=1e-12)
     m = np.isfinite(a.z[:, 0, 1])
     assert np.allclose(a.z[m, 0, 1], b.z[m, 0, 1], rtol=1e-12)
@@ -643,9 +647,9 @@ def test_an_analyst_row_is_never_overwritten_by_the_rule(tmp_path):
                                   FN.choice_row("C", "xy", "obs_1hz", chosen_by="rule")])
     t = out["table"]
     assert out["analyst_kept"] == 1 and out["written"] == 2
-    assert t[(t.site == "A")].iloc[0]["product"] == "remote_1hz"
+    assert t[(t.site == "A")].iloc[0]["transfer_function"] == "remote_1hz"
     assert t[(t.site == "A")].iloc[0].chosen_by == "analyst"
-    assert t[(t.site == "B")].iloc[0]["product"] == "obs_1hz"
+    assert t[(t.site == "B")].iloc[0]["transfer_function"] == "obs_1hz"
     assert set(t.site) == {"A", "B", "C"}
 
 

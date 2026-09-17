@@ -2,20 +2,20 @@
 
 The physical claim (wamt_substitute.py:1-14): at long period the horizontal magnetic field is homogeneous
 over the site spacing, so a neighbour's H measures the same field; at short period it is not. A borrowed long
-end therefore goes UNDER the site's own short periods and the two are spliced where borrowing stops costing.
+end therefore goes under the site's own short periods and the two are spliced where borrowing stops costing.
 
-WHICH CHANNEL, AND FROM WHOM (qld_campaign.py:122-139, :696-777). The WORST channel only, and only where it
+Which channel, and from whom (qld_campaign.py:122-139, :696-777). The worst channel only, and only where it
 is clearly worse than the other: a site decorrelated from its neighbours for any reason -- distance, a quiet
 spell, its own noise -- has both channels below any threshold, so "any channel below a threshold" replaces
-both and wrecks the site. The own channel's coherence with the candidate is the WHOLE-RECORD mean over
-100-1000 s, deliberately not the chunk median used elsewhere: the chunk median is more forgiving and misses
-the two sites whose own channels really are bad. The candidate must itself be sound, judged against a THIRD
-site at 0.80 -- a donor vouched for by the site it stands in for has been vouched for by nobody
+both and wrecks the site. The own channel's coherence with the candidate is the whole-record mean over
+100-1000 s and not the chunk median used elsewhere: the chunk median is more forgiving and misses the two
+sites whose own channels really are bad. The candidate must itself be sound, judged against a third site at
+DONOR_GATE = 0.80 -- a donor vouched for by the site it stands in for has been vouched for by nobody
 (qld_v2_pairs.py:194-222) -- and a donor cannot also be a member of the stack the pass uses as its reference.
-A pair's score is the MIN of its two channels; coverage is reported and not gated.
+A pair's score is the minimum of its two channels; coverage is reported and not gated.
 
-THE FRAMES (vic_w3_vic040.py:335-365, :427-431). The lender's pair is served in its own mean-horizontal-field
-frame, so it is turned by minus the site's angle into the site's SENSOR frame before it stands in for a
+The frames (vic_w3_vic040.py:335-365, :427-431). The lender's pair is served in its own mean-horizontal-field
+frame, so it is turned by minus the site's angle into the site's sensor frame before it stands in for a
 sensor-frame channel. The tensor the pass then produces has its H basis in whatever pair was handed in, and
 is turned back on the right. With H_used = M H_sensor and H_geo = R(t) H_sensor,
 
@@ -26,12 +26,12 @@ With both channels borrowed M is the identity and the correction is the rotation
 R(t) and the correction is the identity; with one of each M is [[1, 0], [-sin t, cos t]] (or its transpose
 case) and the correction is not a rotation.
 
-WHAT IS NEVER DELIVERED. A form that borrows BOTH horizontal channels is an inter-site impedance -- the
-tensor of the site's E on the regional field the neighbour measured -- and is labelled as one, shown and not
-delivered (the VIC040 result: an Hx-only replacement sits within 4 per cent and 0.6 deg of the own-H product
-where every whole-pair form is 1.6x off). Electrics are never borrowed. A lender leaves every reference the
-pass reads, because a reference sharing a channel with the local H compares a channel with itself
-(vic_w3_lender.py:1-22).
+What is never delivered. A form that borrows both horizontal channels is an inter-site impedance -- the
+tensor of the site's E on the regional field the neighbour measured -- and is labelled as one and drawn for
+comparison; it is not a transfer function (at VIC040 an Hx-only replacement sits within 4 per cent and
+0.6 deg of the own-H estimate where every whole-pair form is 1.6x off). Electrics are never borrowed. A
+lender leaves every reference the pass reads, because a reference sharing a channel with the local H
+compares a channel with itself (vic_w3_lender.py:1-22).
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -49,7 +49,7 @@ SUB_BAND_S = (100.0, 1000.0)
 SUB_NPERSEG = 16384
 SUB_THRESHOLD = 0.5             # the own channel's coherence below which a replacement is considered
 SUB_CLEARLY = 0.7               # ... and it must be this much below the other channel's
-DONOR_GATE = 0.80               # the donor's coherence against a THIRD site
+DONOR_GATE = 0.80               # the donor's coherence against a third site
 COVER_GATE = 0.95               # coverage is reported, not gated; this is the level reported against
 MIN_OVERLAP_DAYS = 20.0
 
@@ -62,11 +62,10 @@ SPLICE_TEST_LO_S = 10.0
 
 
 def sub_coh(x, y, fs=1.0, band_s=SUB_BAND_S, nperseg=SUB_NPERSEG, despike_k=30.0) -> float:
-    """The WHOLE-RECORD mean coherence over a band. Ported from qld_campaign.sub_coh (:678-694).
+    """The whole-record mean coherence over a band. Ported from qld_campaign.sub_coh (:678-694).
 
-    The chunk median is the better statistic for a single pair over a long record and is the wrong one for
-    this decision: it is more forgiving and it misses the sites whose own channels really are bad. The chunk
-    median stays where it belongs, in the donor weighting.
+    The chunk median is the wrong statistic for this decision: it is more forgiving and it misses the sites
+    whose own channels really are bad. The chunk median stays where it belongs, in the donor weighting.
 
     Both series are despiked first (look.despike, vic_windows.py:95). A whole-record mean has no median to
     hide behind, so one logger spike sets the whole number: measured on AusLAMP Queensland Phase 1 on
@@ -123,7 +122,7 @@ def candidates(sv, site, chan=None, donors=None, rate=1, band_s=SUB_BAND_S, excl
                max_donors=6) -> pd.DataFrame:
     """One row per candidate lender: the own channel coherences, the third-site check and the coverage.
 
-    `chan` restricts the table to one channel; with None both are scored and the WORST is the one the rule
+    `chan` restricts the table to one channel; with None both are scored and the worse is the one the rule
     would replace. `exclude` names sites a donor may not be -- the members of the stack the pass uses, and
     the remote site -- because a reference sharing a channel with the local H compares a channel with itself.
     """
@@ -146,7 +145,7 @@ def candidates(sv, site, chan=None, donors=None, rate=1, band_s=SUB_BAND_S, excl
             break
     rows = []
     for i, (s, g) in enumerate(got):
-        # the donor is vouched for by the BEST third site among the other candidates, never by the site it
+        # the donor is vouched for by the best third site among the other candidates, never by the site it
         # stands in for and never by whichever neighbour happens to come next in the list: a third site that
         # is itself broken refuses every donor, which would make the gate unusable rather than strict
         third, third_coh = "", {}
@@ -195,7 +194,7 @@ def candidates(sv, site, chan=None, donors=None, rate=1, band_s=SUB_BAND_S, excl
 def mixed_basis(theta_deg, borrowed) -> np.ndarray:
     """M with H_used = M H_sensor: the identity row where a channel is borrowed, R(t)'s row where it is own.
 
-    A borrowed channel is handed in already turned into the site's SENSOR frame, so its row of M is the
+    A borrowed channel is handed in already turned into the site's sensor frame, so its row of M is the
     identity's; the site's own channel is handed in in its mean-field frame, so its row is R(t)'s.
     """
     R = FR.rotation_matrix(float(theta_deg))
@@ -238,8 +237,8 @@ def replace_channel(local, lender_pair, chan, theta_deg, whole_pair=False) -> di
         borrowed = (True, True)
         out["Hx"], out["Hy"] = sensor["Hx"], sensor["Hy"]
         note = ("both horizontal channels borrowed and turned into the site's sensor frame by R(%+.4f deg): "
-                "the tensor of the site's E on the neighbour's field, an INTER-SITE IMPEDANCE, shown and "
-                "never delivered" % -float(theta_deg))
+                "the tensor of the site's E on the neighbour's field, an inter-site impedance, drawn for "
+                "comparison; not a transfer function" % -float(theta_deg))
     else:
         borrowed = (chan == "Hx", chan == "Hy")
         out[chan] = sensor[chan]
@@ -320,7 +319,7 @@ def correct_edi(path, correction, note="") -> dict:
 # ---------------------------------------------------------------- the lender and the reference
 
 def reference_members(info: dict) -> list:
-    """Every site the reference of one product is built from, the observatory included."""
+    """Every site the reference of one pass is built from, the observatory included."""
     out = []
     if not isinstance(info, dict):
         return out
@@ -351,10 +350,10 @@ def splice_period(period, rho_a, phase_a, rho_b, phase_b, sigma_a=None, sigma_b=
                   lo_s=SPLICE_TEST_LO_S, hi_s=SPLICE_TEST_HI_S) -> dict:
     """The shortest period from which two curves agree and keep agreeing up to hi_s.
 
-    The looser of two rules decides: within `rho_tol` in apparent resistivity and `phase_tol` in phase, OR
+    The looser of two rules decides: within `rho_tol` in apparent resistivity and `phase_tol` in phase, or
     within `sigma_k` combined sigma. Above SPLICE_TEST_HI_S = 3000 s the two curves stop being compared with
-    each other and start being compared with the shorter record's sampling noise, so the test stops there.
-    A borrowed long end goes UNDER the site's own short periods, which is what the period returned is for.
+    each other and start being compared with the shorter record's sampling noise, so the test stops there. A
+    borrowed long end goes under the site's own short periods, which is what the period returned is for.
     """
     p = np.asarray(period, float)
     ra, rb = np.asarray(rho_a, float), np.asarray(rho_b, float)

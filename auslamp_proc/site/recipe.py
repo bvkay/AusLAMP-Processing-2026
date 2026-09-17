@@ -1,42 +1,37 @@
-"""One composition of the catalogue's methods into one product: a frame, a rule per row, and the assembly.
+"""One composition of the catalogue's methods into one transfer function: a frame, a rule per row, the
+assembly.
 
-The catalogue sections of workbook 05 each change one thing and score it. The recipe composes them: a frame
-for the whole product, and per impedance row a selection of hours and a sample rate, so that one row can come
+The catalogue sections of workbook 04 each change one thing and score it. The recipe composes them: a frame
+for the whole file, and per impedance row a selection of hours and a sample rate, so that one row can come
 from the whole record at 1 Hz and the other from a short window at 10 Hz. The rows are passed separately and
 assembled into one tensor, with the tipper taken from the pass the recipe names.
 
 THE FRAME. `native` is the site's own sensor frame after the package's mean-field rotation; `diagonal` is the
 arm diagonal of site.centre, so every row's pass reads cache_<rate>hz_ne and is turned back by
-theta = atan2(-L_E, L_N) on the written file. Both rows run in the recipe's frame, so the assembled product
-is in one frame and no row is turned after the assembly.
+theta = atan2(-L_E, L_N) on the written file. Both rows run in the recipe's frame, so the assembled file is
+in one frame and no row is turned after the assembly.
 
-THE HOURS of a row:
+THE HOURS of a row, one of three:
 
-    whole             the record.
-    f05, f10, f25     workbook 03's hour selections (process.selection), scored on this frame's cache at this
-                      row's rate over SCORE_BAND_S = 1-30 s, each with its r25 control -- the same number of
-                      hours drawn without replacement from the same pool under the seed.
-    window:coherent   the longest contiguous stretch in which both recorded electric lines read a coherence
-                      with the magnetic field they couple to -- Ex with Hy, Ey with Hx -- above
-                      WINDOW_COH = 0.5 over WINDOW_BAND_S = 20-200 s, per whole UTC hour on the 1 Hz cache as
-                      laid. The lines are the recorded ones and not the frame's: the window exists to find
-                      where both electrodes were measuring, which is a fact about the electrodes and not
-                      about the frame they are later combined in. The 1 Hz cache is read whatever the row's
-                      rate, because 200 s is measured on the long record and not on the short one.
+    whole               the record.
+    window:coherent     the stretch process.selection chooses -- the longest contiguous run of whole UTC
+                        hours in which the row's own recorded line reads above WINDOW_COH = 0.5 against the
+                        magnetic channel it couples to over 20-200 s, cut to its best STRETCH_MAX_H = 48 h
+                        where it runs longer. The x row is read on Ex against Hy and the y row on Ey against
+                        Hx. The lines are the recorded ones and not the frame's: the stretch exists to find
+                        where that electrode was measuring, which is a fact about the electrode and not
+                        about the frame the rows are later combined in. The 1 Hz cache is read whatever the
+                        row's rate, because 200 s is measured on the long record.
     window:<start>/<h>  a stretch the caller names, as an ISO UTC start and a count of hours.
 
-    A window's control is a stretch of the same length placed at random elsewhere in the record under the
-    named seed (site.masks.random_block), so the two cost the same and the difference between their products
-    is what the window bought.
+    A stretch's control is a stretch of the same length placed at random elsewhere in the record under the
+    named seed, so the two cost the same and the difference between their transfer functions is what the
+    stretch bought.
 
-THE RULE the window rule reproduces (the AusLAMP Queensland Phase 2 campaign at Q58N, 2026-09-07:
-PROJECT_JOURNAL.md :1678-1683, Q58N_EXPLANATION_2026-09-07.md :44-46): the longest stretch with both recorded
-lines above 0.5 at 20-200 s is 2026-03-22 12:00 to 2026-03-23 02:00 UTC, 14 h.
-
-THE ASSEMBLY. The x row supplies Zx'x' and Zx'y' and the y row Zy'x' and Zy'y'. The x row's product is the
+THE ASSEMBLY. The x row supplies Zx'x' and Zx'y' and the y row Zy'x' and Zy'y'. The x row's file is the
 base, so its period grid, its station block and its position carry through; the y row is matched onto that
 grid where the two grids are the same and interpolated in log period where they are not, and a period the y
-row's grid does not reach carries the EDI empty-data value 1e32 rather than a number. products.read_tf masks
+row's grid does not reach carries the EDI empty-data value 1e32 rather than a number. read_tf masks
 that value per component, so the assembled file reads back with the y row empty above the y row's own longest
 period and the x row measured throughout.
 
@@ -52,22 +47,19 @@ import numpy as np
 import pandas as pd
 
 from ..process import selection as SEL
-from .masks import band_coherence, random_block
+from . import masks as MK
 
-WINDOW_COH = 0.5                # both recorded lines must read above this to be inside a coherent window
-WINDOW_BAND_S = (20.0, 200.0)   # ... over this band
-WINDOW_NPERSEG = 1024           # the Welch segment of the hourly coherence at 1 Hz, masks.COH_NPERSEG
-WINDOW_RATE = 1                 # the rate the window is chosen on, whatever rate the row is passed at
-HOUR_S = 3600.0
+HOUR_S = SEL.HOUR_S
 EDI_FILL = 1e32                 # the EDI empty-data value a period the y row does not reach is written as
 
-RECORDED_PAIRS = (("xy", "Ex", "Hy"), ("yx", "Ey", "Hx"))
+HOURS_WHOLE = "whole"           # the row is passed over the record
+HOURS_COHERENT = "window:coherent"   # ... over the stretch the one rule chooses for that row's own line
+HOURS_OPTIONS = (HOURS_WHOLE, HOURS_COHERENT, "window:<ISO UTC start>/<hours>")
+
 ROW_COMPONENT = {"x": "xy", "y": "yx"}      # the off-diagonal element each row carries
 ROW_ELEMENTS = {"x": ((0, 0), (0, 1)), "y": ((1, 0), (1, 1))}
 ROW_LABEL = {"x": "x'", "y": "y'"}
 FRAMES = ("native", "diagonal")
-SELECTION_KEYS = ("f05", "f10", "f25")
-CONTROL_KEY = "r25"
 GRID_RTOL = 1e-9
 
 
@@ -79,125 +71,38 @@ def _hm(t) -> str:
     return datetime.fromtimestamp(float(t), timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
-# ---------------------------------------------------------------- the hourly coherence and the window
+# ---------------------------------------------------------------- the hours a row is passed on
 
-def hour_coherence(sv, site, rate=WINDOW_RATE, band_s=WINDOW_BAND_S, nperseg=WINDOW_NPERSEG,
-                   hour_s=HOUR_S, arrays=None, t0=None) -> pd.DataFrame:
-    """One row per whole UTC hour: the coherence of each recorded line with the H it couples to.
+def row_hours(sv, site, spec, row="x", seed=SEL.SEED, table=None, coh_min=SEL.WINDOW_COH,
+              max_h=SEL.STRETCH_MAX_H, rate=SEL.SCORE_RATE) -> dict:
+    """The stretch one row's `hours` names, with its control and the score table it was read from.
 
-    The record is read as laid -- no sign and no frame -- because a sign flips a coherence's phase and not
-    its magnitude. An hour holding a non-finite sample in a pair scores NaN on that pair and cannot be inside
-    a window, which is what keeps a gap out of a stretch that is called coherent.
+    `spec` is `whole`, `window:coherent` or `window:<ISO UTC start>/<hours>`. `window:coherent` calls
+    process.selection.longest_stretch on that row's own recorded line, which is the one rule the package
+    selects hours with; a named window is parsed and not scored. A row over the whole record carries no
+    control, because there is nothing a stretch of the same length elsewhere would be compared with.
     """
-    from .masks import load_raw
-    if arrays is None:
-        t0, arrays = load_raw(sv, site, rate, ("Hx", "Hy", "Ex", "Ey"))
-    fs = float(rate)
-    n = len(arrays["Hx"])
-    step = int(round(float(hour_s) * fs))
-    starts, t_starts = SEL.hour_grid(int(t0), n, fs, hour_s)
-    rows = []
-    for i0, ta in zip(starts, t_starts):
-        row = dict(t_start=int(round(ta)), t_end=int(round(ta + float(hour_s))), utc=_hm(ta))
-        for comp, line, hchan in RECORDED_PAIRS:
-            e = np.asarray(arrays[line][i0:i0 + step], float)
-            h = np.asarray(arrays[hchan][i0:i0 + step], float)
-            row["coh_%s" % comp] = (band_coherence(e, h, fs, band_s, nperseg)
-                                    if (np.isfinite(e).all() and np.isfinite(h).all()) else np.nan)
-        rows.append(row)
-    out = pd.DataFrame(rows, columns=["t_start", "t_end", "utc", "coh_xy", "coh_yx"])
-    out.attrs["band_s"] = list(band_s)
-    out.attrs["nperseg"] = int(nperseg)
-    out.attrs["rate_hz"] = float(rate)
-    return out
+    spec = str(spec).strip()
+    if spec == HOURS_WHOLE:
+        return dict(rule=HOURS_WHOLE, window=None, control=None, table=table, line=None,
+                    reason="the whole record")
+    line = SEL.ROW_LINE[str(row)]
+    if spec == HOURS_COHERENT:
+        table = SEL.site_scores(sv, site, rate=rate) if table is None else table
+        window = SEL.longest_stretch(table, coh_min=coh_min, lines=(line,), max_h=max_h)
+    elif spec.startswith("window:"):
+        window = SEL.named_stretch(spec)
+    else:
+        raise ValueError("%s: the hours are one of %s" % (spec, ", ".join(HOURS_OPTIONS)))
+    control = None
+    if window.get("t_start") is not None:
+        t0, n = MK.span(sv, site, int(rate))
+        control = SEL.control_stretch(t0, n, window, seed=int(seed), fs=float(rate))
+    return dict(rule=spec, window=window, control=control, table=table, line=line,
+                reason=window.get("reason", ""))
 
 
-def runs_above(table: pd.DataFrame, coh_min=WINDOW_COH) -> list:
-    """[(hours, t_start, t_end)] of every contiguous stretch with both recorded lines above `coh_min`.
-
-    Longest first, and the earliest of any that tie, so a record carrying several stretches of one length
-    returns the same one on every run.
-    """
-    a = np.asarray(table.coh_xy, float)
-    b = np.asarray(table.coh_yx, float)
-    ok = np.isfinite(a) & np.isfinite(b) & (a > float(coh_min)) & (b > float(coh_min))
-    ts = np.asarray(table.t_start, float)
-    te = np.asarray(table.t_end, float)
-    out, k = [], 0
-    while k < len(ok):
-        if not ok[k]:
-            k += 1
-            continue
-        j = k
-        while j + 1 < len(ok) and ok[j + 1]:
-            j += 1
-        out.append((int(j - k + 1), int(ts[k]), int(te[j])))
-        k = j + 1
-    out.sort(key=lambda r: (-r[0], r[1]))
-    return out
-
-
-def coherent_window(table: pd.DataFrame, coh_min=WINDOW_COH) -> dict:
-    """The longest contiguous stretch with both recorded lines above `coh_min`, with its reason."""
-    runs = runs_above(table, coh_min)
-    a = np.asarray(table.coh_xy, float)
-    b = np.asarray(table.coh_yx, float)
-    scored = int((np.isfinite(a) & np.isfinite(b)).sum())
-    above = int(((a > float(coh_min)) & (b > float(coh_min))).sum())
-    band = table.attrs.get("band_s", list(WINDOW_BAND_S))
-    if not runs:
-        return dict(rule="window:coherent", t_start=None, t_end=None, hours=0, n_runs=0,
-                    n_hours_above=above, n_hours_scored=scored, coh_min=float(coh_min), runs=[],
-                    reason="no hour reads above %.2f on both recorded lines over %g-%g s (%d hour(s) scored)"
-                           % (coh_min, band[0], band[1], scored))
-    hours, ta, tb = runs[0]
-    return dict(rule="window:coherent", t_start=int(ta), t_end=int(tb), hours=int(hours), n_runs=len(runs),
-                n_hours_above=above, n_hours_scored=scored, coh_min=float(coh_min), runs=runs,
-                reason="the longest contiguous stretch with both recorded lines above %.2f over %g-%g s: "
-                       "%d h, %s to %s UTC, of %d hour(s) above on %d scored"
-                       % (coh_min, band[0], band[1], hours, _hm(ta), _hm(tb), above, scored))
-
-
-def named_window(spec: str) -> dict:
-    """`window:<ISO UTC start>/<hours>` as a window dict, or a dict carrying the reason it does not parse."""
-    body = str(spec).split(":", 1)[1] if ":" in str(spec) else ""
-    start, _, hours = body.rpartition("/")
-    try:
-        ta = int(pd.Timestamp(start.strip(), tz="UTC").timestamp())
-        h = float(hours)
-        if h <= 0:
-            raise ValueError("the hour count is not positive")
-    except Exception as exc:
-        return dict(rule=str(spec), t_start=None, t_end=None, hours=0,
-                    reason="%s does not read as window:<ISO UTC start>/<hours> (%s)" % (spec, exc))
-    return dict(rule=str(spec), t_start=ta, t_end=int(ta + h * HOUR_S), hours=float(h),
-                reason="the stretch named in the recipe: %.4g h from %s UTC" % (h, _hm(ta)))
-
-
-def window_mask(t0, n, window, fs=1.0) -> np.ndarray:
-    """The sample mask of one window on a record of `n` samples starting at `t0`, at `fs`."""
-    keep = np.zeros(int(n), bool)
-    a = max(0, int(round((float(window["t_start"]) - float(t0)) * float(fs))))
-    b = min(int(n), int(round((float(window["t_end"]) - float(t0)) * float(fs))))
-    if b > a:
-        keep[a:b] = True
-    return keep
-
-
-def control_window(t0, n, window, seed, fs=1.0) -> dict:
-    """A stretch of the same length placed at random elsewhere in the record, under `seed`."""
-    length = int(round((float(window["t_end"]) - float(window["t_start"])) * float(fs)))
-    a, b = random_block(int(t0), int(n), length, int(seed), fs=float(fs),
-                        exclude=(int(round((window["t_start"] - t0) * fs)),
-                                 int(round((window["t_end"] - t0) * fs))))
-    ta = int(round(t0 + a / float(fs)))
-    tb = int(round(t0 + b / float(fs)))
-    return dict(t_start=ta, t_end=tb, hours=round((tb - ta) / HOUR_S, 3), seed=int(seed),
-                reason="a stretch of the same length placed at random elsewhere in the record, seed %d"
-                       % int(seed))
-
-
-# ---------------------------------------------------------------- the frame and the selections
+# ---------------------------------------------------------------- the frame
 
 def frame_spec(sv, site, frame) -> dict:
     """What a row's pass needs to run in `frame`: the cache variant, the turn and the angle.
@@ -222,47 +127,6 @@ def frame_spec(sv, site, frame) -> dict:
                 separation_m=diagonal_length(arms["L_N"], arms["L_E"]),
                 note="the arm diagonal: x' along (L_N Ex - L_E Ey)/d at %+.2f deg from north with L_N %.4g m "
                      "and L_E %.4g m, y' orthogonal to it" % (theta, arms["L_N"], arms["L_E"]))
-
-
-def selection_hours(sv, site, key, rate=1, variant="", seed=SEL.SEED, elines=None,
-                    control_key=CONTROL_KEY) -> dict:
-    """One of workbook 03's hour selections and its r25 control, scored on this cache at this rate.
-
-    The score table and the selections are computed in memory and never written: the site's own
-    hour_scores_10hz.csv and hour_selection_10hz.json belong to workbook 03's 10 Hz lane, and a selection
-    scored on a variant cache at another rate is not that file's content.
-    """
-    key = str(key)
-    if key not in SELECTION_KEYS:
-        raise ValueError("the selection is %s; it is one of %s" % (key, ", ".join(SELECTION_KEYS)))
-    work = Path(sv.cfg["work_root"])
-    d = work / ("cache_%dhz%s" % (int(rate), ("_" + variant) if variant else ""))
-    z = np.load(d / ("%s.npz" % site), allow_pickle=False)
-    t0 = int(z["t0"][0])
-    arrays = {c: np.asarray(z[c], float) for c in ("Hx", "Hy", "Ex", "Ey")}
-    z.close()
-    n = len(arrays["Hx"])
-    if elines is None:
-        p = work / site / "elines.csv"
-        elines = pd.read_csv(p) if p.exists() else None
-    table = SEL.score_hours(t0, arrays, float(rate), elines=elines).round(6)
-    del arrays
-    fraction = float(key[1:]) / 100.0
-    sel = SEL.selections(table, t0, n, float(rate), fractions=(fraction,),
-                         random_fraction=float(control_key[1:]) / 100.0, seed=int(seed))
-    out = {}
-    for tag in (key, control_key):
-        v = sel[tag]
-        out[tag] = dict(tag=tag, fraction=v["fraction"], random=v["random"], seed=v["seed"],
-                        threshold=v["threshold"], n_hours=v["n_hours"], n_candidates=v["n_candidates"],
-                        hours=v["hours"], days=round(v["n_hours"] / 24.0, 3),
-                        keep=SEL.mask_from_hours(v["hours"], t0, n, float(rate)))
-    out["t0"] = t0
-    out["n"] = n
-    out["rate_hz"] = float(rate)
-    out["scored"] = int(table.score.notna().sum())
-    out["band_s"] = list(SEL.SCORE_BAND_S)
-    return out
 
 
 # ---------------------------------------------------------------- what a row needs on disk
@@ -294,7 +158,7 @@ def missing_inputs(sv, site, rate, variant, kind) -> str:
 # ---------------------------------------------------------------- the header lines
 
 def recipe_lines(recipe: dict, rows: dict) -> list:
-    """The `recipe=` lines an assembled product carries: one per row, then the tipper and the frame."""
+    """The `recipe=` lines an assembled file carries: one per row, then the tipper and the frame."""
     out = ["recipe_frame=%s" % str(recipe.get("frame"))]
     for key in ("x", "y"):
         r = rows.get(key) or {}
@@ -308,7 +172,7 @@ def recipe_lines(recipe: dict, rows: dict) -> list:
                       ("%s..%s" % (_iso(c["t_start"]), _iso(c["t_end"]))) if c.get("t_start")
                       else str(r.get("control") or "none"),
                       str(r.get("seed", "none"))))
-    out.append("recipe_tipper=from the %s row's pass" % str(recipe.get("tipper")))
+    out.append("recipe_tipper=from the pass of the %s row" % str(recipe.get("tipper")))
     return out
 
 
@@ -341,9 +205,9 @@ def _interp_block(pf, pe, ve, ee):
 
 
 def assemble(x_edi, y_edi, out_edi, tipper="x", lines=(), fill=EDI_FILL, verbose=True) -> dict:
-    """One product from two row passes: the x row's file as the base, the y row's two rows written into it.
+    """One transfer function from two row passes: the x row's file as the base, the y row's rows written in.
 
-    The x row's product carries the period grid, the station block, the position and every header line, so
+    The x row's file carries the period grid, the station block, the position and every header line, so
     the assembled file is the x row's file with Zy'x' and Zy'y' replaced. A period the y row's own grid does
     not reach carries `fill`, the EDI empty-data value, so a reader cannot take an absent row for a
     measurement. `tipper` names the row the tipper is taken from; the x row's is already in the base.
@@ -396,7 +260,7 @@ def assemble(x_edi, y_edi, out_edi, tipper="x", lines=(), fill=EDI_FILL, verbose
         pp = list(st.transfer_function.processing_parameters or [])
         pp += [str(x) for x in lines]
         pp.append("recipe_assembly=Zy'x' and Zy'y' from %s, %s; %d of %d period(s) carry the y row and the "
-                  "rest carry the EDI empty value %g; the tipper is the %s row's"
+                  "rest carry the EDI empty value %g; the tipper is the pass of the %s row"
                   % (Path(y_edi).name, how, int(len(y_periods)), int(len(pf)), fill,
                      "y" if took_tipper else "x"))
         st.transfer_function.processing_parameters = pp
@@ -416,13 +280,13 @@ def assemble(x_edi, y_edi, out_edi, tipper="x", lines=(), fill=EDI_FILL, verbose
 
 
 def row_comparison(a, b, lo_s=5.0, hi_s=100.0) -> pd.DataFrame:
-    """Row by row, the rho ratio and the phase difference of two products over a band.
+    """Row by row, the rho ratio and the phase difference of two transfer functions over a band.
 
-    The comparison of workbook 05's section 12: a product against one built outside this package, read on the
-    four elements over one band. It is a comparison and never a verdict.
+    A transfer function against one built outside this package, read on the four elements over one band.
+    It is a comparison and never a verdict.
     """
     from .. import agreement as AG
-    from ..products import COMPONENTS, rho_phase
+    from ..transfer_functions import COMPONENTS, rho_phase
     bg = AG.on_grid(a, b)
     rows = []
     for comp, (i, j) in COMPONENTS.items():

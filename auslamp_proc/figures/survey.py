@@ -23,6 +23,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .common import finish
+
 DATA = Path(__file__).resolve().parent.parent / "data"
 COASTLINE = DATA / "coastline_au.npz"
 
@@ -76,7 +78,8 @@ def short_label(site: str) -> str:
     return m.group(0) if m else str(site)
 
 
-def map(sites, observatories, out, title="", coastline=None, figsize=(9.0, 8.0), dpi=110,
+def map(sites, observatories, out, title="", caption="", coastline=None, figsize=(9.0, 8.0),
+        dpi=110,
         label_col="site", colour_by="instrument"):
     """Sites as points with short labels, one colour per instrument, observatories as black triangles.
 
@@ -130,12 +133,19 @@ def map(sites, observatories, out, title="", coastline=None, figsize=(9.0, 8.0),
     ax.set_title(title)
     ax.legend(loc="best", fontsize=8, framealpha=0.9)
     ax.grid(alpha=0.25, lw=0.5)
-    fig.tight_layout()
-    fig.savefig(out, dpi=dpi)
+    ax.set_title("")
+    finish(fig, title, caption or (
+        "Every site as a point labelled with the digits of its name, one colour per instrument, and each "
+        "observatory inside the frame as a black triangle. The frame is the sites' own bounding box padded "
+        "by 10 per cent of its span or 0.5 deg, whichever is larger, and the aspect is 1 / cos(mean "
+        "latitude), so a degree of longitude is drawn at its real length. An observatory outside the frame "
+        "is named in the corner box with its bearing in degrees east of north and its distance in km from "
+        "the survey centroid, because a 1,000 km observatory drawn on the map would set the scale. The "
+        "coastline is the Natural Earth 1:50 m line stored as two arrays in the package."), out, dpi=dpi)
     return fig
 
 
-def register(spans, groups, active, out, title="", figsize=(11.0, 11.0), dpi=110,
+def register(spans, groups, active, out, title="", caption="", figsize=(11.0, 11.0), dpi=110,
              colour_by="instrument", group_spans=True):
     """A Gantt of the records sorted by start, over the sites-active-per-day curve.
 
@@ -186,5 +196,11 @@ def register(spans, groups, active, out, title="", figsize=(11.0, 11.0), dpi=110
     for lbl in ax2.get_xticklabels():
         lbl.set_rotation(30)
         lbl.set_ha("right")
-    fig.savefig(out, dpi=dpi)
+    ax.set_title("")
+    finish(fig, title, caption or (
+        "One bar per site over the days it recorded, sorted by start and coloured by instrument, with each "
+        "overlap group's common window as a light span behind the bars; the lower panel counts the sites "
+        "recording each day. A group is the pool a reference is drawn from, so a site's bar has to overlap "
+        "a candidate's for the two to be a pair at all. What to change: MIN_OVERLAP_DAYS sets how much "
+        "overlap two sites need to share a group."), out, dpi=dpi)
     return fig

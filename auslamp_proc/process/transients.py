@@ -12,7 +12,7 @@ baseline that is not comparable between sites cannot be judged against a survey 
 in the band the fleet agrees in, which is also the band the remote-site rule scores coherence in.
 
 The event test (ported from qld_transients.py) is fleet-normalised. A chunk is an event when the site's own
-band power exceeds `own_ratio` = 100 times its own median on Hx or Hy AND the rest of the fleet does not see
+band power exceeds `own_ratio` = 100 times its own median on Hx or Hy and the rest of the fleet does not see
 the same thing: either fewer than `min_fleet` = 3 other sites were recording then, or this site runs more
 than `fleet_excess` = 10 times the median of the others. A substorm lifts every site in the array within the
 same ten minutes and is signal; a power-cycle or a vehicle lifts one. The site's own median cannot tell them
@@ -26,8 +26,8 @@ so the reference level is a property of the instrument and the band and not of w
 
 Every threshold is a survey.yaml `pool` value, read by params().
 
-The keep mask of a pass is the finite samples AND the H transient intervals of the target AND, for the
-remote-site kind, those of the remote AND the E burst intervals (ported from wamt_run.build_keep :598-647).
+The keep mask of a pass is the finite samples and the H transient intervals of the target and, for the
+remote-site kind, those of the remote and the E burst intervals (wamt_run.build_keep :598-647).
 The record is never cut: each kept stretch of at least MIN_SEGMENT_S = 3600 s becomes its own Aurora run.
 
 @author: ben kay (ben@auscope.org.au)
@@ -355,10 +355,6 @@ def clean_row(site: str, sites, work_root, cfg=None, keep_chunks=None) -> dict:
                 judged=f is not None)
 
 
-def is_clean(site: str, sites, work_root, cfg=None, keep_chunks=None) -> bool:
-    return bool(clean_row(site, sites, work_root, cfg, keep_chunks)["clean"])
-
-
 # ----------------------------------------------------------------- the mask
 
 def keep_mask(t0, n, fs, intervals) -> np.ndarray:
@@ -400,8 +396,8 @@ def build_keep(t0, arrays: dict, fs, ev_site, ev_remote=(), ev_e=(), remote_mask
                extra_name="") -> tuple:
     """(keep, statistics) for one pass.
 
-    The mask is the finite samples of every local channel AND the target's H transient intervals AND, for
-    the remote-site kind, the remote's own intervals AND the E burst intervals. Where a reference carries a
+    The mask is the finite samples of every local channel and the target's H transient intervals and, for
+    the remote-site kind, the remote's own intervals and the E burst intervals. Where a reference carries a
     coverage mask, samples the reference does not cover are dropped as well: a stack is zero there and a
     zero reference contributes nothing but the window it sits in.
 

@@ -1,7 +1,7 @@
 """Create surveys/<survey>/decisions.csv with 'decide' in every cell, carrying over signs already decided.
 
 A survey worked on before arrives with decisions already made. This tool writes the blank decisions table and
-copies in the five channel signs from a previous table wherever that table records HOW the sign was reached.
+copies in the five channel signs from a previous table wherever that table records how the sign was reached.
 A sign whose *_how value is not in --accept stays 'decide'; a convention is not a measurement.
 
     python tools/prefill_decisions.py victoria \

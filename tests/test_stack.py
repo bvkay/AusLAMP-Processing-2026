@@ -1,7 +1,7 @@
 """The three screens a fleet stack member passes: the edge screen, the Lanczos shift and the spike screen.
 
 Every test states what would make it fail. The records are built in the test, so a failure names the code
-and not the data. The values under test are align.LANCZOS_A = 16, references.EDGE_S = 30 s,
+and not the data. The values under test are align.LANCZOS_A = 16, references.EDGE_S = 120 s,
 references.SCREEN_K = 30, references.SCREEN_FLOOR_NT = 3.0 nT and references.SCREEN_MAX_SPAN_S = 12 s.
 
 @author: ben kay (ben@auscope.org.au)
@@ -465,7 +465,7 @@ def test_the_observatory_is_matched_one_sided_and_does_not_step_at_its_mask_edge
     w_obs = 0.87
 
     # the same field the members carry, on its own level, with its own slow drift against them: the level
-    # and the drift are what the match is for, and nothing else here differs
+    # and the drift are the only differences, and they are what the match is for
     obs = 4200.0 + 150.0 * t / n + field + 0.05 * rng.standard_normal(n)
     omask = np.ones(n, bool)
     edges = [(5000, 5600), (9000, 9200), (14000, 15000)]     # the archive opening and closing
@@ -531,3 +531,64 @@ def test_the_block_median_and_the_running_statistics_keep_their_shape():
     stepped = np.concatenate([np.zeros(100), np.full(100, 500.0)])
     assert np.nanmax(np.abs(np.diff(REF._running_median(stepped, 60, 6)))) > 100.0
     assert np.nanmax(np.abs(np.diff(REF._running_mean(stepped, 60, 6)))) < 10.0
+
+
+def test_the_alignment_target_is_the_pair_the_pass_runs_on(tmp_path):
+    """Fails if a member's lag is measured against a record the pass does not read.
+
+    A target with decisions.csv h_lender runs on the lender's pair placed on its own grid, so that is what a
+    member has to line up with; a target that borrows nothing runs on its own pair. The control is the
+    second half: the borrowing site's own record is NOT what comes back, and the non-borrowing site's is
+    exactly what Store.rotated returns, so the branch cannot pass by returning one record for both.
+    """
+    import pandas as pd
+
+    n, t0 = 4 * 3600, 1_700_000_000
+    rng = np.random.default_rng(4)
+    own = np.cumsum(rng.normal(size=n)) + 40000.0          # the borrower's own, distinct record
+    lent = np.cumsum(rng.normal(size=n)) + 40000.0         # the lender's, a different one
+    cache_dir = tmp_path / "cache_1hz"
+    cache_dir.mkdir(parents=True)
+    for site, hx in (("A", own), ("B", lent)):
+        np.savez(cache_dir / ("%s.npz" % site), t0=np.array([t0]), fs=np.array([1.0]),
+                 layout=np.array(["edl_L"]), chan_x=np.array(["Ex"]), chan_y=np.array(["Ey"]),
+                 dipole_n_m=np.array([100.0]), dipole_e_m=np.array([100.0]), e_gain=np.array([1.0]),
+                 h_uv_per_nt=np.array([1.0]), bz_divider=np.array([1.0]),
+                 Hx=hx, Hy=np.full(n, 10.0), Hz=np.zeros(n), Ex=np.zeros(n), Ey=np.zeros(n))
+
+    def row(**kw):
+        """One decisions.csv row with every cell of the grammar at its neutral value."""
+        cells = {c: "decide" for c in ("sign_hx", "sign_hy", "sign_hz", "sign_ex", "sign_ey")}
+        cells.update(sign_hx="+1", sign_hy="+1", sign_hz="+1", sign_ex="+1", sign_ey="+1",
+                     e_exchange="no", e_shift_s="0", h_exchange="no", h_gain="1", h_lender="none",
+                     h_lender_channels="none", rot_regimes="", rot_drop="")
+        cells.update(kw)
+        return pd.Series(cells)
+
+    rows = {"A": row(h_lender="B", h_lender_channels="Hx Hy Hz"), "B": row()}
+
+    class _Survey:
+        def __init__(self):
+            self.cfg = dict(work_root=str(tmp_path), name="test")
+            self.sites = pd.DataFrame(dict(site=["A", "B"]))
+
+        def decision(self, name):
+            return rows[name]
+
+        def site(self, name):
+            raise KeyError(name)
+
+    st = REF.Store(_Survey(), ["A", "B"], rate=1)
+
+    # the borrower: the pair that comes back is the lender's and not its own
+    _ta, ha = st.alignment_target("A")
+    _tr, hr, _ang, _n = st.rotated("A")
+    _tb, hb = st.alignment_target("B")
+    got = np.asarray(ha["Hx"], float)
+    assert np.corrcoef(got, np.asarray(hb["Hx"], float))[0, 1] > 0.999, "A is not aligned to B's record"
+    assert np.corrcoef(got, np.asarray(hr["Hx"], float))[0, 1] < 0.5, "A came back on its own record"
+
+    # the control: a site that borrows nothing gets exactly what rotated returns, so no lag can move there
+    _t2, hb2, _a2, _n2 = st.rotated("B")
+    for c in ("Hx", "Hy"):
+        assert np.array_equal(np.asarray(hb[c], float), np.asarray(hb2[c], float)), c

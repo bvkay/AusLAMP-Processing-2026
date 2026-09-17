@@ -6,7 +6,7 @@ A survey is `survey.yaml` (the survey-level inputs), `sites.csv` (what was recor
 | cell | meaning |
 |---|---|
 | a value | measured or read from a file; the neighbouring `*_source` column says where from |
-| `assume:<value>` | used, and carried into every product's provenance as an assumption until it is replaced |
+| `assume:<value>` | used, and carried into the provenance of every transfer function as an assumption until it is replaced |
 | `decide` | not yet decided; a later workbook measures it and writes it back with its source |
 
 An empty cell means "not known, and nothing depends on it". Nothing is filled in silently. Re-running workbook
@@ -57,12 +57,12 @@ every `assume:` and `decide` cell a file already holds.
 | h_lender_source | where the lender came from, with its date | whoever decided it |
 | rot_regimes | JSON list of `[start_day, end_day, angle_deg]` sensor-frame regimes; a magnetometer move makes two | the sensor-move scan |
 | rot_drop | JSON list of `[start_day, end_day]` transit or fault days dropped from the H record | the look workbook |
-| windows | JSON per component: `[start, end]` windows or `"whole"`; every window carries its reason | the processing workbook; the analyst decides |
-| keep_mask | the path of a keep mask (best hours) or empty; a random selection of the same size is always built beside it | the processing workbook |
+| windows | JSON per component: `[start, end]` windows or `"whole"`; every window carries its reason. No workbook reads this cell: the hours a row is estimated on are chosen by `auslamp_proc.process.selection`, and a stretch the analyst names is given to workbook 04's recipe as `window:<ISO UTC start>/<hours>`. The cell is kept as the analyst's record of what a campaign did | the analyst |
+| keep_mask | the path of a boolean .npy of hours to keep, or empty; `process.run` applies it on top of the transient mask and says loudly where the file it names is not there | the analyst |
 | remote_site | the chosen remote site, or `decide` | the reference workbook |
 | remote_source | where the remote site came from, with its date; a table is named in full | whoever chose it |
 | stack_members | JSON list of fleet stack members, or `decide`; a lender is never a member of the reference it feeds | the reference workbook |
-| flags | free text carried into every product's provenance | the analyst |
+| flags | free text carried into the provenance of every transfer function | the analyst |
 
 ## The six hand decisions, and the one place they are applied
 
@@ -86,7 +86,7 @@ ratio of the length the cache used to the length of the line the channel actuall
     Ex_out = Ey_cache x (L_E / L_N)        Ey_out = Ex_cache x (L_N / L_E)
 
 with `L_N = dipole_n_m` and `L_E = dipole_e_m`. A site whose arm lengths are not both known is swapped and
-not rescaled, and the product says so. Signs apply after the swap, so `sign_ex` is the sign of the north
+not rescaled, and the transfer function says so. Signs apply after the swap, so `sign_ex` is the sign of the north
 line wherever `e_exchange` is `yes`.
 
 **`e_shift_s`.** Positive means E is ADVANCED: the E sample at `t` takes the recorded value at `t + s`,
@@ -107,9 +107,13 @@ and taken out with the Lanczos delay. A lender of a lender is not followed. Two 
 `process.references`: a site with `h_lender` is never a member of any reference, and its lender is never a
 member of a reference that feeds it; both refusals are named in the reference's sidecar. Borrowing BOTH
 horizontal channels makes the tensor an inter-site impedance -- this site's E on the field the lender
-measured -- and every product says so.
+measured -- and every transfer function says so.
 
 ## The vocabulary, fixed
 
-single station, remote site, fleet stack, observatory, stack + observatory, member. The code keys are
-`single`, `remote`, `stack`, `obs`, `stack_obs` and appear in code only.
+remote site, fleet stack, observatory, stack + observatory, member. The code keys are `remote`, `stack`,
+`obs` and `stack_obs` and appear in code and in file names only. The single station is not a kind of this
+package: noise in H biases it low and its error bars carry no sign of that bias.
+
+What a pass estimates is a TRANSFER FUNCTION, and the one delivered per component is the transfer function of
+record.

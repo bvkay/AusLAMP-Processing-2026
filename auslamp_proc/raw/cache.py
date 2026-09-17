@@ -406,6 +406,8 @@ def _sidecar(site, site_dir, t0, n_raw, fs, n_one, stats, one, meta, gains, dipo
         gains_uv_per_unit={k: (float(v) if np.isfinite(v) else None) for k, v in gains.items()},
         constants_source=const_source,
         units={ch: UNIT[ch] for ch in CHANNELS},
+        # the package applies no notch; the field is written as "none" because process.provenance and
+        # process.run read it off the sidecar, and caches already on disk carry it
         signs_applied="none", frame_applied="none", notch_applied="none",
         channels={ch: {k: (float(v) if isinstance(v, float) else v) for k, v in stats[ch].items()}
                   for ch in CHANNELS},

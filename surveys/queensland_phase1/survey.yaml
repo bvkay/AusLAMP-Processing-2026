@@ -37,14 +37,14 @@ instruments:
     sensor_manufacturer: Bartington
     sensor_model: Mag-03
 
-# Products are processed and served in geomagnetic north: each site's horizontal magnetics are rotated so the
+# A transfer function is estimated and served in geomagnetic north: each site's horizontal magnetics are rotated so the
 # mean Hy is zero, which removes the hand-compass misalignment. The IGRF declination is recorded in every file
 # and NOT applied.
 frame: geomagnetic
 declination_source: "IGRF via ppigrf, at the site, at the record midpoint"
 
-# The identity every product's header carries. survey_id is the EDI SURVEY id, project its name,
-# geographic_name the region named beside each station, author the person the products are processed by.
+# The identity every transfer function's header carries. survey_id is the EDI SURVEY id, project its name,
+# geographic_name the region named beside each station, author the person who processed them.
 survey_id: AusLAMP_QLD_P1
 project: AusLAMP Queensland Phase 1
 geographic_name: southern Queensland, Australia
@@ -71,6 +71,15 @@ comparison_positions:
 
 # Per-site facts a check in a workbook tests against, each an input and not a computed value.
 checks:
+  # The verdicts a run reports honestly over a condition this survey carries and the package does not
+  # repair. tests/test_conventions.py reads them and excuses a FAIL only where an entry names the workbook
+  # and the site the verdict names, so a new failure cannot shelter behind an old entry.
+  retained_failures:
+    - workbook: 02_records
+      site: Q87
+      reason: "the electric-line state machine scores no day: the site's own magnetics are under 80 per
+        cent finite after the despike on all 61 of its days (Ex 18, Ey 18, Hx 60, Hy 61 days refused).
+        That dead own H is what decisions.csv gives Q87 an h_lender for, and this reading is the evidence"
   first_data_file: {}
 
 floors:

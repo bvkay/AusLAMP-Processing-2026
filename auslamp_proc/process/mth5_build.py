@@ -1,7 +1,5 @@
 """The MTH5 Aurora reads: the local station and, where there is one, the reference as a second station.
 
-Ported from qld_campaign.write_h5 (:1436-1480) and qld_one_second.station (:45-71).
-
 One run per kept stretch. Cutting the record and concatenating puts a step at every join, and a step common
 to E, H and the reference is coherent between them, so a robust regression fits it rather than down-weighting
 it, so cutting the record is the disease. Instead each kept stretch of at least
@@ -141,7 +139,7 @@ def remove(path) -> str:
     """Delete a written MTH5, and say so rather than raise where the file is still held open.
 
     On Windows a handle the HDF5 library has not yet released makes the unlink raise, and a scratch file
-    left behind is not worth failing a product for.
+    left behind is not worth failing a transfer function for.
     """
     import gc
     gc.collect()

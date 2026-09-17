@@ -1,10 +1,10 @@
 """Processing: the frame, the transient mask, the reference kinds, the MTH5, the Aurora pass and the EDI.
 
 The modules are ordered as the work is: frame (signs and rotation), transients (the tail scan and the keep
-mask), coherence (the estimators the choices are made on), align (member lags), references (the five kinds
-and their store), selection (the hours a 10 Hz pass is run on), mth5_build (the MTH5 the pass reads),
-aurora_run (the pass), edi (the product's header), provenance (what the run rests on) and run (the per-site
-CLI).
+mask), coherence (the estimators the choices are made on), align (member lags), references (the four kinds
+and their store), selection (the one rule for which hours a pass is run on), mth5_build (the MTH5 the pass
+reads), aurora_run (the pass), edi (the transfer function's header), provenance (what the run rests on), run
+(the per-site CLI) and batch (one survey over many sites, one lane a site).
 
 @author: ben kay (ben@auscope.org.au)
 """
