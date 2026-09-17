@@ -19,7 +19,7 @@ Author: Ben Kay (bvkay). Started 2026-09-13; re-cut for the workbook layout 2026
     conda activate auslamp-processing-2026
     python -m ipykernel install --user --name auslamp-processing-2026 --display-name "Python (auslamp-processing-2026)"
 
-The readers are the released packages (mt-io 0.0.5, mth5 0.6.9, mt-metadata v1.0.11); nothing depends on a fork.
+The readers are the released packages (mt-io 0.0.5, mth5 0.6.9, mt-metadata 1.0.11); nothing depends on a fork.
 
 Launch the workbooks as `python -m jupyterlab`, and run the runner as `python workbooks/run_workbooks.py 01`,
 with the environment's own interpreter. The `jupyter` dispatcher resolves its subcommands from PATH, which on a
@@ -32,10 +32,10 @@ silently escapes the environment where `python -m jupyterlab` and `python -m nbc
 |---|---|
 | `01_survey` | reads the raw folder into a site table (instrument, serial, dipoles, positions from the logger's own GPS, dates with the EDL week rollover, declination), draws the map and the deployment register, and checks or fetches the observatory record for the span |
 | `02_records` | builds each site's cache (every file placed on one absolute axis, gaps NaN, no sign or frame) and draws its record, band coherence, coherence maps, spectra and spectrograms, with the magnetometer DC test and the per-day state of each electric line -- look before processing |
-| `03_process` | Aurora over the chosen sites and reference kinds (single station, remote site, fleet stack, observatory, stack + observatory), at 1 Hz and 10 Hz, one folder per run with its provenance |
+| `03_process` | Aurora over the chosen sites and the four reference kinds (remote site, fleet stack, observatory, stack + observatory): at 1 Hz over the record, at 10 Hz on the most coherent hours with a random selection as the control; one folder per run with its provenance, and a figure for what each step did |
 | `04_products` | every product of a site, group or survey on one page; run against run; the release turned into our frame as a comparison |
-| `05_site` | one site in depth: windows and masks with their random control, the north-minus-east diagonal, the notch, a magnetic channel replaced from a neighbour, the stack or the observatory |
-| `06_final` | the readings rule over every product, the product of record per component, the splice, one EDI per site |
+| `05_site` | one site in depth: the magnetics day by day, the fleet and clock tests, day masks, windows and best hours each with a random control, the arm diagonal for a shared centre, the 10 Hz short end, a magnetic channel borrowed from a neighbour, and the recipe that composes them -- one frame and, per impedance row, which hours at which rate -- into one product |
+| `06_final` | one site's final transfer function: every product put to the three response tests (phase in quadrant, the slope bound, the error bar), the rule's proposal, the analyst's choice recorded, the 10 Hz join, one EDI per site, the comparison last |
 
 Each workbook is generated from `workbooks/make_workbooks.py`, which holds it as one Python list of markdown and
 code cells, and is executed in place by `workbooks/run_workbooks.py`, which fails on a non-zero nbconvert exit, on
@@ -60,13 +60,10 @@ periods in s.
 
 ## Status
 
-2026-09-17: workbooks 01, 02, 03 and 04 run end to end. Workbook 01 takes about 20 s a phase over Queensland
-Phases 1, 2 and 3 (56 sites) with nine checks reporting. Workbook 03 processed all 23 sites of Queensland
-Phase 1 at 1 Hz over the five reference kinds -- 115 products in 3.9 hours on three lanes, six checks passing
--- then the five cleanest of them at 10 Hz (15 products, 22-37 GB a pass on one lane), with Phases 2 and 3 and
-Victoria as five-site examples under `workbooks/examples/`. Workbook 04 reads those 130 products in 50 s,
-writes a page per site, the kind-against-kind and comparison tables and a four-page gallery, and passes its
-four checks on Phase 1 and on all three examples. The package also reads the GA Victoria release
-(EDL miniSEED and LEMI-424), on which the raw readers were checked bit for bit against the released mt-io.
-The repository's history before this date is an April 2026 exploration of the Victoria MTH5 files, retired in
-the first commit of the package.
+2026-09-17: the six workbooks run end to end on Queensland Phase 1 (23 sites) and as examples on Phases 2 and 3,
+with every check reporting; the times each step took are printed in the notebooks. Workbook 03 processes the
+23 sites at 1 Hz over the four reference kinds (92 products) and at 10 Hz on the best 5, 10 and 25 per cent of
+hours with a random 25 per cent as the control. The single station is not a kind of this package: a noisy H
+biases it low with no sign of it in the error bars. The raw readers were checked bit for bit against the
+released mt-io on the GA Victoria release. The repository's history before this date is an April 2026
+exploration of the Victoria MTH5 files, retired in the first commit of the package.

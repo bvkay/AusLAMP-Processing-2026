@@ -93,14 +93,13 @@ for ASCII the start is the stamp in the file name, the count is the line count, 
 site's own consecutive files (`auslamp_proc.raw.edl.sample_rate`).
 
 Nine checks state their failure criterion in bold above the cell and print a verdict below it. A check that
-scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported FAILED and is
+scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported as FAIL and is
 not revised afterwards.
 
 The reference kinds the later workbooks build are named here once and used as words from then on:
 
 | word | what it is | code key |
 |---|---|---|
-| single station | the site's own H and E | `single` |
 | remote site | one other site's H as the reference | `remote` |
 | fleet stack | a coherence-weighted mean of several sites' H | `stack` |
 | observatory | an INTERMAGNET one-second record as the reference | `obs` |
@@ -482,8 +481,8 @@ The comparison below is a regression against site tables built by other code, na
 campaigns are two different files. It is a regression and not a source: no value is read from it into
 sites.csv.
 
-A regression table says what its own builder meant by a span, and the two meanings are different quantities.
-`regression.times_kind` declares which one the table holds, and the criterion follows from that declaration.
+A regression table's span means what its builder meant by it: the first and last sample on disk, or the hours a
+processing run kept. `regression.times_kind` declares which, and the criterion follows.
 
 | `times_kind` | what the table's start and end are | what the spans are tested for |
 |---|---|---|
@@ -497,10 +496,8 @@ hour, that is when the raw start falls more than 1 hour after the window's start
 hour before the window's end.** The tolerances are survey.yaml `regression.position_tolerance_m` and
 `regression.time_tolerance_h`, and every site that fails is printed with both values.
 
-Containment is the whole criterion for a processing window and not a weakened equality. A run states which
-hours it used; what the raw tree has to answer for is that those hours are in it. A raw span that does not
-hold what a run processed means the run read hours this discovery cannot find, which is a fault in one of the
-two, and the check reports it.
+A raw span that does not hold what a run processed means the run read hours this discovery cannot find, which
+is a fault in one of the two, and the check reports it.
 
 The AusLAMP Queensland tables are processing windows and their edges are the campaign's own trims: six
 transit hours cut from the head of each Phase 2 record, the tails of Phase 1's Q49, Q77N and Q87 cut where
@@ -990,11 +987,11 @@ No sign, no rotation and no notch is applied: the frame and the signs come from 
 time, and a cache carrying them could not be re-read under a different decision.
 
 Four checks state their failure criterion in bold above the cell and print a verdict below it. A check that
-scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported FAILED and is
+scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported as FAIL and is
 not revised afterwards.
 
-The words for the reference kinds are fixed in workbook 01 and used here as words: single station, remote
-site, fleet stack, observatory, stack + observatory, member."""),
+The words for the reference kinds are fixed in workbook 01 and used here as words: remote site, fleet stack,
+observatory, stack + observatory, member."""),
 
 ("code", WB02_PARAMS),
 
@@ -1046,10 +1043,6 @@ every file found on disk, every file read, every sample read, every sample writt
 sample written over a value already there. An hour the recorder wrote twice raises `overlap_samples`; an hour
 it could not write leaves NaN and lowers nothing, which is why the NaN fraction is a separate column and not
 part of the equality.
-
-`auslamp_proc.raw.cache.build` states the criterion in its own docstring, because the check has to be able to
-fail: the form in the script this was ported from reads `placed == read or overlap >= 0`, whose right-hand
-limb is true at every site, so it passes on a record it has never tested.
 
 **This check fails if, at any site, samples placed differs from samples read, or any two files overlap, or a
 channel is more than 50 per cent NaN, or the rate read differs from the rate survey.yaml gives the
@@ -1128,7 +1121,7 @@ the sensor angle, the tilt and the flags. The rules, in the order they fire, are
 `Bx < 0` a reversed north axis; `|angle| > 30 deg` a sensor laid far from north or the axes exchanged
 (`auslamp_proc.look.dc_test`).
 
-The flags are the finding. What the check tests is that the rule fires where the numbers say it must.
+The check tests that the rule fires where the numbers say it must.
 
 **This check fails if any site's F differs from IGRF by more than 5 per cent without a flag naming it, or if
 any Bx is negative without a flag.**"""),
@@ -2574,15 +2567,13 @@ and its error bars do not carry that bias, so it is not a kind of this package: 
 a run folder by an earlier pass is counted and named in the first cell, and no table or figure below reads it.
 
 Four checks state their failure criterion in bold above the cell and print a verdict below it. A check that
-scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported FAILED and is
+scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported as FAIL and is
 not revised afterwards.
 
-The last section is a comparison and not a test of the truth. Two independent processings of the same field
-are two measurements, neither an oracle; the section is a shape check, and a difference in level is a gain, a
-dipole length or a frame before it is the earth. Every source outside this run declares the frame its tensors
-are in -- geomagnetic, geographic or instrument -- in `surveys/<SURVEY>/survey.yaml`, and the workbook refuses
-a source that declares none: a tensor drawn on our axes in an undeclared frame is a different object on the
-same picture."""),
+The last section is a comparison, not a test of the truth: two independent processings of the same field are
+two measurements. Every source outside this run declares the frame its tensors are in -- geomagnetic,
+geographic or instrument -- in `surveys/<SURVEY>/survey.yaml`, and the workbook refuses one that declares
+none."""),
 
 ("code", WB04_PARAMS),
 ("code", WB04_RULES),
@@ -2765,9 +2756,9 @@ side of the 16 s join: 8-16 s below and 32-100 s above, with 18-36 s left as a g
 Data logger writes an instrument line at 20.6 s. The number reported is the difference in apparent resistivity
 as a percentage of the 1 Hz level, and the phase difference in degrees.
 
-Aurora at 10 Hz reads about 8 per cent low at 4-32 s against its own 1 Hz product (AusLAMP Victoria,
-2026-09-11), and every 10 Hz product carries that sentence in its own file. Nothing is spliced here; the join
-is workbook 06's work, and this section is the measurement it will be decided on. A reading, not a check."""),
+Every 10 Hz product carries the survey's own measured departure at 4-32 s in its file, written by workbook
+03. Nothing is spliced here; the join is workbook 06's work, and this section is the measurement it is decided
+on. A reading, not a check."""),
 
 ("code", '''rows = []
 for site in sorted(set(PROD.site)):
@@ -2872,10 +2863,10 @@ print(ranked.tail(5).to_string(index=False))
 
 ("md", r"""## The comparisons, last
 
-This section sets our products beside a processing done outside this run. It comes last, and it is labelled a
-comparison and never the truth, for one reason: two independent processings of the same field are two
-measurements. Neither is an oracle. A difference in level is a gain, a dipole length or a frame before it is
-the earth, and a difference that the declination turn removes was never a difference in the earth at all.
+This section sets our products beside a processing done outside this run. It comes last and is a comparison,
+never the truth: two independent processings of the same field are two measurements. A difference in level
+is a gain, a dipole length or a frame before it is the earth, and a difference the declination turn removes
+was never a difference in the earth.
 
 Every source is declared in `surveys/<SURVEY>/survey.yaml` with the frame its tensors are in and a note
 saying what it is, and `auslamp_proc.products.comparison_sources` refuses one that declares neither:
@@ -2890,10 +2881,10 @@ The comparison is what moves; our products are never turned. A source declaring 
 own record says it is out by -- is multiplied by it in apparent resistivity, and the factor is stated in every
 figure title and every table row it enters.
 
-The reading per site, kind and component follows the same three explanations a difference can have: a SCALE
-is a constant ratio with the phase untouched, which is a dipole length or a gain and is the only one a number
-can fix; a FRAME is a disagreement the declination turn removes; a FAULT is neither -- the ratio wanders with
-period, or the phase disagrees and the turn does not fix it. It is a reading and not a check.
+The reading per site, kind and component names one of three explanations: a scale is a constant ratio with
+the phase untouched, which is a dipole length or a gain and the only one a number can fix; a frame is a
+disagreement the declination turn removes; a fault is neither -- the ratio wanders with period, or the phase
+disagrees and the turn does not fix it. It is a reading and not a check.
 
 **This check fails if a declared source lacks a frame declaration, or if the frame turn applied to any tensor
 changes a rotation invariant by more than 1e-9 relative.** The second limb is an independent observable of the
