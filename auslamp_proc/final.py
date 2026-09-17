@@ -9,6 +9,17 @@ with no product of record leaves its row empty and the file says so, so a reader
 a measurement. A product on another period grid is aligned by NEAREST PERIOD within NEAREST_PCT and never
 interpolated: an interpolated row is a third curve, not either product.
 
+THE TRIM. `keep_band` is {component: (lo, hi) in s}, the band each row is delivered over -- the chosen
+product's held band by default. A value outside its component's band is dropped, and a period left carrying
+neither off-diagonal element is dropped from the grid with the tipper on it, so that a delivered file carries
+the measurement and nothing else. Every dropped period is named in the manifest with the band that dropped
+it. Without `keep_band` every period the sources carry is written and the file says it was not trimmed.
+
+THE CHOICE RECORD. surveys/<survey>/final_choices.csv holds one row per site and component: the product, the
+periods, the join, whether the rule or the analyst chose it, a note and the date. A workbook reads it before
+it proposes anything, so a re-run reproduces a delivery without choosing again, and writes back the rule's
+own rows only where no analyst row stands.
+
 THE FAILURE CRITERION of the merge, which is what `check` measures: the written file must read back with its
 Zxy equal to the xy source's and its Zyx equal to the yx source's at every period to READBACK_RTOL relative,
 and, where the two sources carry different yx rows, its Zyx must DIFFER from the xy source's. The second is
@@ -47,7 +58,11 @@ GRID_RTOL = 1e-6                   # two grids count as the same within this
 EDI_FILL = 1e32                    # the EDI empty-data value an undelivered row is written as
 
 MANIFEST_COLUMNS = ["site", "role", "component", "file", "kind", "form", "run", "stamp", "rate_hz",
-                    "bytes", "sha256"]
+                    "n_periods", "n_dropped", "dropped_periods_s", "dropped_reason", "bytes", "sha256"]
+
+CHOICE_COLUMNS = ["site", "component", "product", "periods_lo", "periods_hi", "join", "chosen_by", "note",
+                  "date"]
+CHOSEN_BY = ("rule", "analyst")
 
 
 def clean(text) -> str:
@@ -95,6 +110,16 @@ def _load(path):
     return tf, p, z, ze, t, te
 
 
+def _match_index(source_period, period) -> tuple:
+    """(the nearest index of `source_period` for each of `period`, whether it lands within NEAREST_PCT)."""
+    pc = np.asarray(source_period, float)
+    p = np.asarray(period, float)
+    if not len(pc) or not len(p):
+        return np.zeros(len(p), int), np.zeros(len(p), bool)
+    idx = np.array([int(np.argmin(np.abs(np.log(pc) - np.log(t)))) for t in p])
+    return idx, np.abs(np.log(pc[idx]) - np.log(p)) < np.log1p(NEAREST_PCT / 100.0)
+
+
 def align(period, source_period, source_row, source_err):
     """One product's two-element row on another grid, by nearest period and never interpolated."""
     p, pc = np.asarray(period, float), np.asarray(source_period, float)
@@ -125,7 +150,7 @@ def source_lines(picks: dict, tipper_from: str, record: pd.DataFrame, site) -> l
                    % (comp, rows, pick.get("kind_word") or KIND_WORD.get(pick["kind"], pick["kind"]),
                       pick["kind"], pick.get("run", ""), pick.get("stamp", ""),
                       (", form %s" % pick["form"]) if pick.get("form") else "",
-                      float(pick.get("rate_hz") or 0.0), float(pick.get("bar_10_1000") or np.nan),
+                      float(pick.get("rate_hz") or 0.0), float(pick.get("bar") or np.nan),
                       Path(str(pick["path"])).name))
     out.append("tipper=from the %s product" % tipper_from)
     if record is not None and len(record):
@@ -167,13 +192,43 @@ def package_lines(cfg) -> list:
 
 # ------------------------------------------------------------------ the merge
 
+def trim(period, zm, em, keep_band: dict) -> tuple:
+    """(the kept periods, the tensor, its errors, the dropped periods, the reason) under a per-component band.
+
+    A value outside its component's band is dropped from that row; a period left carrying neither
+    off-diagonal element is dropped from the grid. A band that would empty the file is not applied, and the
+    reason says so rather than writing a file with nothing in it.
+    """
+    p = np.asarray(period, float)
+    z, e = np.asarray(zm).copy(), np.asarray(em, float).copy()
+    words = []
+    for comp, row in (("xy", 0), ("yx", 1)):
+        band = (keep_band or {}).get(comp)
+        if not band or not all(np.isfinite([float(band[0]), float(band[1])])):
+            continue
+        outside = (p < float(band[0])) | (p > float(band[1]))
+        z[outside, row, :] = np.nan + 0j
+        e[outside, row, :] = np.nan
+        words.append("%s %g-%g s" % (comp, float(band[0]), float(band[1])))
+    live = np.isfinite(z[:, 0, 1]) | np.isfinite(z[:, 1, 0])
+    if not words:
+        return p, np.asarray(zm), np.asarray(em, float), np.zeros(0), "not trimmed: no band was given"
+    if not live.any():
+        return (p, np.asarray(zm), np.asarray(em, float), np.zeros(0),
+                "not trimmed: the band (%s) leaves no period carrying either off-diagonal element"
+                % "; ".join(words))
+    return (p[live], z[live], e[live], p[~live],
+            "outside the delivered band (%s), the tipper trimmed with the grid" % "; ".join(words))
+
+
 def merge(sv, site, picks: dict, out_path, tipper_from="xy", record=None, extra_lines=(),
-          verbose=True) -> dict:
+          keep_band=None, verbose=True) -> dict:
     """One final EDI for one site. Returns the record of what was merged and how the check scored.
 
     `picks` is {"xy": row, "yx": row} of the record rows chosen, each a mapping carrying `path`, `kind`,
-    `form`, `run`, `stamp`, `rate_hz` and `bar_10_1000`. `tipper_from` is "xy", "yx" or a reference kind;
-    where the named product carries no tipper the other pick supplies it and the file says which.
+    `form`, `run`, `stamp`, `rate_hz` and `bar`. `tipper_from` is "xy", "yx" or a reference kind; where the
+    named product carries no tipper the other pick supplies it and the file says which. `keep_band` is
+    {component: (lo, hi) in s}, the band each row is delivered over; None writes every period.
     """
     from mt_metadata.transfer_functions.core import TF
 
@@ -199,6 +254,13 @@ def merge(sv, site, picks: dict, out_path, tipper_from="xy", record=None, extra_
         em[:, row, :] = er
         src[comp] = dict(period=pc, z=zc, t=tc, t_err=tec, n_aligned=n_ok, how=how)
         notes.append("%s_grid=%s" % (comp, how))
+
+    n_before = int(len(p))
+    p, zm, em, dropped, trim_why = trim(p, zm, em, keep_band)
+    if keep_band:
+        notes.append("trim=%d of %d period(s) dropped, %s" % (len(dropped), n_before, trim_why))
+    else:
+        notes.append("trim=every period the sources carry is delivered; the file is not trimmed to a band")
 
     want = tipper_from if tipper_from in picks else None
     if want is None:
@@ -265,6 +327,8 @@ def merge(sv, site, picks: dict, out_path, tipper_from="xy", record=None, extra_
     rec = check(out_path, p, zm, picks, src)
     rec.update(site=site, path=str(out_path), written=True, xml=(str(xml_out) if xml_out else None),
                xml_error=xml_error, tipper_from=(tip_from or ""), n_periods=int(len(p)),
+               n_dropped=int(len(dropped)), dropped_periods_s=dropped, dropped_reason=trim_why,
+               keep_band=dict(keep_band or {}),
                xy=(picks["xy"]["kind"] if "xy" in picks else ""),
                yx=(picks["yx"]["kind"] if "yx" in picks else ""),
                xy_form=(picks["xy"].get("form", "") if "xy" in picks else ""),
@@ -295,10 +359,13 @@ def check(out_path, period, zm, picks: dict, src: dict) -> dict:
         ok = ok and bool(np.allclose(a[m], c[m], rtol=READBACK_RTOL, atol=0))
     control = "control n/a (one component has no product of record)"
     if "xy" in picks and "yx" in picks:
-        zxy, zyx = src["xy"]["z"], src["yx"]["z"]
-        same_grid = zxy.shape[0] == len(period) and zyx.shape[0] == len(period)
-        m = ((np.isfinite(zb[:, 1, 0]) & np.isfinite(zxy[:, 1, 0]) & np.isfinite(zyx[:, 1, 0]))
-             if same_grid else np.zeros(len(period), bool))
+        # the sources are indexed by nearest period, not by position: a trimmed file is shorter than the
+        # products it came from, and a positional control on it would silently report n/a
+        ixy, okxy = _match_index(src["xy"]["period"], period)
+        iyx, okyx = _match_index(src["yx"]["period"], period)
+        zxy, zyx = src["xy"]["z"][ixy], src["yx"]["z"][iyx]
+        m = (okxy & okyx & np.isfinite(zb[:, 1, 0]) & np.isfinite(zxy[:, 1, 0])
+             & np.isfinite(zyx[:, 1, 0]))
         if not m.any():
             control = "control n/a (the two sources share no period carrying both yx rows)"
         elif np.allclose(zxy[m, 1, 0], zyx[m, 1, 0], rtol=GRID_RTOL, atol=0):
@@ -400,10 +467,115 @@ def resample(final_path, out_path, grid=None) -> dict:
                           for c, (i, j) in PR.COMPONENTS.items()})
 
 
+# ------------------------------------------------------------------ the choice record
+
+def choices_path(sv) -> Path:
+    """surveys/<survey>/final_choices.csv, beside the survey's own tables."""
+    return Path(sv.folder) / "final_choices.csv"
+
+
+def read_choices(path) -> pd.DataFrame:
+    """final_choices.csv, or an empty frame with its columns where the file is not there yet."""
+    path = Path(path)
+    if not path.exists():
+        return pd.DataFrame(columns=CHOICE_COLUMNS)
+    d = pd.read_csv(path, dtype={"product": str, "join": str, "chosen_by": str, "note": str,
+                                 "date": str})
+    for c in CHOICE_COLUMNS:
+        if c not in d.columns:
+            d[c] = ""
+    d["chosen_by"] = [str(v).strip().lower() if str(v).strip().lower() in CHOSEN_BY else "rule"
+                      for v in d.chosen_by]
+    return d[CHOICE_COLUMNS]
+
+
+def choice_row(site, component, product, periods=None, join=None, chosen_by="rule", note="") -> dict:
+    """One final_choices.csv row. `periods` is (lo, hi) in s or None, `join` a period in s or None."""
+    lo, hi = (periods if periods is not None else (np.nan, np.nan))
+    return dict(site=str(site), component=str(component), product=str(product),
+                periods_lo=(float(lo) if lo is not None and np.isfinite(float(lo)) else np.nan),
+                periods_hi=(float(hi) if hi is not None and np.isfinite(float(hi)) else np.nan),
+                join=("" if join is None else ("%g" % float(join))), chosen_by=str(chosen_by),
+                note=str(note), date=datetime.now(timezone.utc).date().isoformat())
+
+
+def write_choices(path, rows, keep_analyst=True) -> dict:
+    """Write final_choices.csv, an analyst's row never overwritten by the rule's.
+
+    A row already in the file with `chosen_by` analyst is kept as it stands; every other (site, component)
+    is replaced by the row given. Returns the counts, so a workbook can say what it wrote and what it left.
+    """
+    path = Path(path)
+    old = read_choices(path)
+    new = pd.DataFrame(list(rows), columns=CHOICE_COLUMNS)
+    kept = old[old.chosen_by == "analyst"] if (keep_analyst and len(old)) else old.iloc[0:0]
+    locked = {(r.site, r.component) for r in kept.itertuples()}
+    fresh = new[[(r.site, r.component) not in locked for r in new.itertuples()]] if len(new) else new
+    untouched = old[[(r.site, r.component) not in set(zip(fresh.site, fresh.component))
+                     and (r.site, r.component) not in locked for r in old.itertuples()]] \
+        if len(old) else old
+    out = pd.concat([kept, untouched, fresh], ignore_index=True).sort_values(["site", "component"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out[CHOICE_COLUMNS].to_csv(path, index=False)
+    return dict(path=str(path), written=int(len(fresh)), analyst_kept=int(len(kept)),
+                rows=int(len(out)), table=out[CHOICE_COLUMNS].reset_index(drop=True))
+
+
+def manifest_check(manifest: pd.DataFrame) -> pd.DataFrame:
+    """One row per delivered file: whether it is there, reads as a transfer function, and matches its sha256.
+
+    The three are read from the files themselves and not from the table that names them, so a manifest row
+    written against a file that has since changed is what this reports.
+    """
+    rows = []
+    for r in manifest[manifest.role == "final"].itertuples():
+        p = Path(str(r.file))
+        exists = p.exists()
+        digest = sha256(p) if exists else ""
+        readable = False
+        if exists:
+            try:
+                readable = bool(len(PR.read_tf(p).period))
+            except Exception:
+                readable = False
+        rows.append(dict(site=r.site, file=str(p), exists=exists, readable=readable,
+                         sha256_matches=bool(exists and digest == str(r.sha256)),
+                         sha256=digest, sha256_recorded=str(r.sha256)))
+    return pd.DataFrame(rows, columns=["site", "file", "exists", "readable", "sha256_matches",
+                                       "sha256", "sha256_recorded"])
+
+
 # ------------------------------------------------------------------ the delivery record
 
-def write_record(out_dir, record: pd.DataFrame, readings: pd.DataFrame, merges, splice=None) -> dict:
-    """PRODUCTS_OF_RECORD.csv, READINGS.csv, SPLICE.csv and FINAL_MANIFEST.csv under `out_dir`."""
+def _carry_other_sites(path, table: pd.DataFrame, sites) -> pd.DataFrame:
+    """The table with the rows of `sites` replaced and every other site's rows of the old file kept.
+
+    The workbook delivers one site at a time, and the four tables are the survey's and not the run's: a
+    one-site run that wrote its own rows alone would leave the survey with a table of one site.
+    """
+    if sites is None or not Path(path).exists():
+        return table
+    try:
+        old = pd.read_csv(path)
+    except Exception:
+        return table
+    if "site" not in old.columns:
+        return table
+    keep = old[~old.site.isin(list(sites))]
+    if not len(keep):
+        return table
+    out = pd.concat([keep, table], ignore_index=True, sort=False)
+    return out[[c for c in table.columns if c in out.columns]
+               + [c for c in out.columns if c not in table.columns]]
+
+
+def write_record(out_dir, record: pd.DataFrame, readings: pd.DataFrame, merges, splice=None,
+                 sites=None) -> dict:
+    """PRODUCTS_OF_RECORD.csv, READINGS.csv, SPLICE.csv and FINAL_MANIFEST.csv under `out_dir`.
+
+    `sites` are the sites this run delivered: their rows replace the old ones and every other site's rows
+    stay, so a one-site run adds to the survey's tables rather than replacing them.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = {}
@@ -412,15 +584,31 @@ def write_record(out_dir, record: pd.DataFrame, readings: pd.DataFrame, merges, 
         if table is None:
             continue
         path = out_dir / name
-        table.to_csv(path, index=False)
+        _carry_other_sites(path, table, sites).to_csv(path, index=False)
         written[name] = str(path)
     rows = []
     for m in merges:
         if not m.get("written") or not m.get("path"):
             continue
-        p = Path(m["path"])
+        # the delivered file is the spliced one where a 10 Hz row was joined and the merge itself where
+        # none was: a manifest naming the unspliced base would carry the sha256 of a file nobody delivers
+        p = Path(m.get("delivered") or m["path"])
+        gone = list(np.asarray(m.get("dropped_periods_s", []), float))
         rows.append(dict(site=m["site"], role="final", component="", file=str(p), kind="", form="",
-                         run="", stamp="", rate_hz=np.nan, bytes=p.stat().st_size, sha256=sha256(p)))
+                         run="", stamp="", rate_hz=np.nan,
+                         n_periods=m.get("n_delivered_periods", m.get("n_periods", np.nan)),
+                         n_dropped=int(m.get("n_dropped", 0) or 0),
+                         dropped_periods_s=" ".join("%.4g" % t for t in gone),
+                         dropped_reason=str(m.get("dropped_reason", "") or ""),
+                         bytes=p.stat().st_size, sha256=sha256(p)))
+        b = Path(m["path"])
+        if b != p and b.exists():
+            rows.append(dict(site=m["site"], role="base", component="", file=str(b), kind="", form="",
+                             run="", stamp="", rate_hz=1.0, n_periods=m.get("n_periods", np.nan),
+                             n_dropped=int(m.get("n_dropped", 0) or 0),
+                             dropped_periods_s=" ".join("%.4g" % t for t in gone),
+                             dropped_reason=str(m.get("dropped_reason", "") or ""),
+                             bytes=b.stat().st_size, sha256=sha256(b)))
         for comp in RD.COMPONENTS + ("tipper",):
             pick = (m.get("picks") or {}).get(comp)
             if not pick:
@@ -431,10 +619,12 @@ def write_record(out_dir, record: pd.DataFrame, readings: pd.DataFrame, merges, 
             rows.append(dict(site=m["site"], role="source", component=comp, file=str(q),
                              kind=pick.get("kind", ""), form=pick.get("form", ""),
                              run=pick.get("run", ""), stamp=pick.get("stamp", ""),
-                             rate_hz=pick.get("rate_hz", np.nan), bytes=q.stat().st_size,
+                             rate_hz=pick.get("rate_hz", np.nan), n_periods=np.nan, n_dropped=0,
+                             dropped_periods_s="", dropped_reason="", bytes=q.stat().st_size,
                              sha256=sha256(q)))
     man = pd.DataFrame(rows, columns=MANIFEST_COLUMNS)
     path = out_dir / "FINAL_MANIFEST.csv"
+    man = _carry_other_sites(path, man, sites)
     man.to_csv(path, index=False)
     written["FINAL_MANIFEST.csv"] = str(path)
     return dict(written=written, manifest=man)

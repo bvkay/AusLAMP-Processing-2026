@@ -33,8 +33,8 @@ efficiency, not a different answer. The whole-record 10 Hz product is a control 
 allowed into the candidates without the gate; r25 itself is never promoted. A selection whose kind has no r25
 product is UNJUDGED on the gate and is not eligible, and the table says so rather than passing it.
 
-THE SELECTION, inside what the control gate and the acceptance leave, among the 10 Hz rows that are earths by
-the rule of `readings`:
+THE SELECTION, inside what the control gate and the acceptance leave, among the 10 Hz rows that pass the
+three response tests of `readings`:
     xy   on its LEVEL over LEVEL_BAND against the row it will join: the smallest departure from one, and
          inside LEVEL_MAX_PCT
     yx   on its own error bar at the short end: the smallest impedance bar over SHORT_BAR_BAND, and under
@@ -86,7 +86,7 @@ WHOLE_SELECTION = "whole"          # the whole-record 10 Hz pass: a control, all
 SPLICE_COLUMNS = ["site", "component", "spliced", "kind", "kind_word", "selection", "form",
                   "control_verdict",
                   "bar_2_16", "control_bar_2_16", "step_pct", "step_below_pct", "step_above_pct",
-                  "guard_pct", "level_4_32_pct", "short_bar", "earth", "shortest_period_s",
+                  "guard_pct", "level_4_32_pct", "short_bar", "passes", "join_s", "shortest_period_s",
                   "n_short_periods", "why", "all_kinds", "file"]
 
 
@@ -263,7 +263,7 @@ def select_rows(site, base, shorts: dict, readings: pd.DataFrame, join=SPLICE_JO
     """{component: the chosen row or None} with the reason, over one site's 10 Hz products.
 
     `shorts` is {(kind, selection, form): (TFData, path)} of the site's 10 Hz products and `readings` is
-    the readings table, which carries the earth flag each of them was given. The control gate runs first,
+    the readings table, which carries the response-test verdict each of them was given. The gate runs first,
     then the acceptance -- the step at the join and the short-end bar guard -- and the selection runs
     inside what the two leave.
 
@@ -287,39 +287,39 @@ def select_rows(site, base, shorts: dict, readings: pd.DataFrame, join=SPLICE_JO
             row = readings[(readings.site == site) & (readings.component == comp)
                            & (readings.kind == kind) & (readings.rate_hz == 10.0)
                            & (readings.selection == sel) & (readings.form == form)]
-            is_earth = bool(row.earth.iloc[0]) if len(row) else False
+            sound = bool(row.passes.iloc[0]) if len(row) else False
             s = step_at_join(base, tf, comp, join, below, above, guard, level_band)
             g = gate[key]
             s.update(kind=kind, kind_word=KIND_WORD.get(kind, kind), selection=sel, form=form,
-                     earth=is_earth, file=str(path), tf=tf, eligible=g["eligible"],
+                     passes=sound, file=str(path), tf=tf, eligible=g["eligible"],
                      control_verdict=g["verdict"], bar_2_16=g["bar_2_16"],
                      control_bar_2_16=g["control_bar_2_16"],
                      short_bar=RD.bar(tf, comp, short_bar_band[0], short_bar_band[1]))
             scored.append(s)
         all_kinds = "; ".join(
-            "%s/%s%s earth=%s control=%s level=%s step=%s bar=%s"
-            % (s["kind"], s["selection"], ("/" + s["form"]) if s["form"] else "", s["earth"],
+            "%s/%s%s passes=%s control=%s level=%s step=%s bar=%s"
+            % (s["kind"], s["selection"], ("/" + s["form"]) if s["form"] else "", s["passes"],
                ("pass" if s["eligible"] else "refused"),
                ("%+.1f%%" % s["level_4_32_pct"]) if np.isfinite(s["level_4_32_pct"]) else "-",
                ("%+.1f%%" % s["step_pct"]) if np.isfinite(s["step_pct"]) else "-",
                ("%.3f" % s["short_bar"]) if np.isfinite(s["short_bar"]) else "-") for s in scored)
-        earths = [s for s in scored if s["earth"] and s["eligible"]]
-        pool = [s for s in earths
+        sound = [s for s in scored if s["passes"] and s["eligible"]]
+        pool = [s for s in sound
                 if np.isfinite(s["step_pct"]) and abs(s["step_pct"]) <= max_step_pct
                 and np.isfinite(s["short_bar"]) and s["short_bar"] <= short_bar_max]
         best, why = None, ""
         if not scored:
             why = "no 10 Hz product of this site"
-        elif not [s for s in scored if s["earth"]]:
-            why = "no 10 Hz row is an earth by the readings rule"
-        elif not earths:
-            unjudged = [s for s in scored if s["earth"] and "UNJUDGED" in s["control_verdict"]]
-            why = ("NOT SPLICED: no 10 Hz row that is an earth passes the control gate (%s)"
+        elif not [s for s in scored if s["passes"]]:
+            why = "no 10 Hz row passes the three response tests"
+        elif not sound:
+            unjudged = [s for s in scored if s["passes"] and "UNJUDGED" in s["control_verdict"]]
+            why = ("NOT SPLICED: no 10 Hz row that passes the response tests holds the control gate (%s)"
                    % ("UNJUDGED: no %s control exists yet for %s"
                       % (control, ", ".join(sorted({s["kind"] for s in unjudged}))) if unjudged
                       else "every selection is refused by its random control"))
         elif not pool:
-            held = [s for s in earths if np.isfinite(s["step_pct"]) and abs(s["step_pct"]) <= max_step_pct]
+            held = [s for s in sound if np.isfinite(s["step_pct"]) and abs(s["step_pct"]) <= max_step_pct]
             if held:
                 bg = min(held, key=lambda s: s["short_bar"] if np.isfinite(s["short_bar"]) else np.inf)
                 why = ("NOT SPLICED by the short-end bar guard, not by the step: %s holds the step at "
@@ -327,9 +327,9 @@ def select_rows(site, base, shorts: dict, readings: pd.DataFrame, join=SPLICE_JO
                        % (bg["kind_word"], bg["step_pct"], short_bar_band[0], short_bar_band[1],
                           bg["short_bar"], short_bar_max))
             else:
-                w = min((s for s in earths if np.isfinite(s["step_pct"])),
+                w = min((s for s in sound if np.isfinite(s["step_pct"])),
                         key=lambda s: abs(s["step_pct"]), default=None)
-                why = ("NOT SPLICED: no earth kind holds the step at the join inside %.0f %% (best %s, "
+                why = ("NOT SPLICED: no sound kind holds the step at the join inside %.0f %% (best %s, "
                        "%+0.1f %% -- %+0.1f above the join, %+0.1f below it)"
                        % (max_step_pct, w["kind_word"] if w else "none",
                           w["step_pct"] if w else np.nan,

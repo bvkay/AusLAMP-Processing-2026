@@ -1,4 +1,4 @@
-"""The earth rule, the product of record, the splice and the merge, on synthetic transfer functions.
+"""The three response tests, the product of record, the choice record, the splice and the merge.
 
 Every test states what would make it fail. Nothing here reads a survey's work root: each transfer function is
 built in the test and, where a file is needed, written to an EDI through mt_metadata, so a failure names the
@@ -33,15 +33,12 @@ def earth_tensor(n=41, rho=100.0, phase=45.0, bar=0.02, lo=0.5, hi=4.5, flip_yx=
     return period, z, err
 
 
-def loop_tensor(n=41, lo=0.5, hi=4.5, bar=0.02):
-    """An inductive loop: Z proportional to omega with a flat phase, so d log|Z| / d log T is -1.
-
-    rho = 0.2 T |Z|^2 then falls as 1/T, which passes the quadrant, the bar and the held-range guards and
-    is what the impedance-slope cut exists to refuse.
-    """
+def power_law(n=41, rho0=100.0, slope=1.5, phase=80.0, bar=0.02, lo=0.5, hi=4.5):
+    """A curve whose apparent resistivity rises as T^`slope`, with the phase held in its quadrant."""
     period = 10.0 ** np.linspace(lo, hi, n)
-    mag = 100.0 / period
-    zxy = mag * np.exp(1j * np.radians(45.0))
+    rho = rho0 * (period / 100.0) ** float(slope)
+    mag = np.sqrt(rho / (0.2 * period))
+    zxy = mag * np.exp(1j * np.radians(phase))
     z = np.zeros((n, 2, 2), complex)
     z[:, 0, 1] = zxy
     z[:, 1, 0] = -zxy
@@ -81,45 +78,92 @@ def write_edi(tmp_path, period, z, err, station="TEST", tipper=None):
     return out
 
 
-# ------------------------------------------------------------------ the quadrant
+class SurveyStub:
+    """The two things final.merge asks a survey for: its config and one row of sites.csv."""
 
-def test_quadrant_holds_on_an_earth_and_fails_on_a_flipped_row():
-    """Fails if a 45 deg earth is called out of quadrant, or a row with its sign flipped is called in it."""
+    cfg = dict(name="synthetic", project="synthetic", author="test")
+
+    @staticmethod
+    def site(name):
+        import pandas as pd
+        return pd.Series(dict(site=str(name), declination_deg="8.978"))
+
+
+# ------------------------------------------------------------------ the three response tests
+
+def test_a_clean_one_dimensional_curve_passes_all_three_tests():
+    """Fails if a 100 Ohm.m curve at 45 deg with a 2 per cent bar does not pass the three tests."""
     p, z, e = earth_tensor()
-    tf = tf_of(p, z, e)
-    q = RD.quality(tf, "xy")
-    assert q["quadrant"] and 0 < q["median_phase_deg"] < 90
-    flipped = tf_of(p, -z, e)
-    assert not RD.quality(flipped, "xy")["quadrant"]
-    assert not RD.earth(RD.quality(flipped, "xy"))[0]
+    q = RD.quality(tf_of(p, z, e), "xy")
+    assert q["pass_phase"] and q["pass_slope"] and q["pass_error"]
+    assert q["passes"] and q["fails"] == ""
+    assert q["phase_frac"] == 1.0 and q["slope_frac"] == 1.0
+    assert 0 < q["median_phase_deg"] < 90
 
 
-def test_a_flipped_yx_row_leaves_the_quadrant():
+def test_a_flipped_sign_fails_the_phase_test():
+    """Fails if a row with its sign flipped is still called in quadrant, or the failure is not named."""
+    p, z, e = earth_tensor()
+    q = RD.quality(tf_of(p, -z, e), "xy")
+    assert not q["pass_phase"] and not q["passes"]
+    assert q["fails"].startswith("phase") and "sign fault" in q["fails"]
+
+
+def test_a_flipped_yx_row_fails_the_phase_test():
     """Fails if the yx row of a tensor whose Zyx has the wrong sign still folds into the first quadrant."""
     p, z, e = earth_tensor(flip_yx=True)
     q = RD.quality(tf_of(p, z, e), "yx")
-    assert not q["quadrant"]
-    assert not RD.earth(q)[0]
+    assert not q["pass_phase"] and not q["passes"]
 
 
-# ------------------------------------------------------------------ the bar guard and the held range
+def test_the_phase_test_tolerates_a_few_periods_out_of_quadrant():
+    """Fails if a curve with one period in ten out of quadrant is refused at QUADRANT_MIN = 0.70."""
+    p, z, e = earth_tensor(n=41)
+    zz = z.copy()
+    zz[::10] *= -1                                  # four of the forty-one periods flipped
+    q = RD.quality(tf_of(p, zz, e), "xy")
+    assert q["phase_frac"] >= RD.QUADRANT_MIN and q["pass_phase"]
 
-def test_the_bar_guard_refuses_a_row_whose_bar_exceeds_its_own_value():
-    """Fails if a row whose median error over |Z| is above BAR_MAX is still called an earth."""
-    p, z, e = earth_tensor(bar=1.5)
+
+def test_a_curve_rising_as_t_to_the_three_halves_fails_the_slope_test():
+    """Fails if rho proportional to T^1.5 passes the bound of one decade a decade, or the name is wrong.
+
+    |d log rho / d log T| <= 1 holds for a one-dimensional earth (Weidelt 1972; Parker and Booker 1996);
+    the test widens it by SLOPE_TOL for noise, so 1.5 is outside it at every adjacent pair.
+    """
+    p, z, e = power_law(slope=1.5)
     q = RD.quality(tf_of(p, z, e), "xy")
-    assert q["bar_10_1000"] > RD.BAR_MAX
-    ok, why = RD.earth(q)
-    assert not ok and "bar" in why
+    assert q["slope_frac"] == 0.0 and not q["pass_slope"]
+    assert not q["passes"] and "slope" in q["fails"]
+    assert q["pass_phase"] and q["pass_error"], "only the slope test may refuse this curve"
 
 
-def test_a_row_that_holds_at_no_period_is_not_an_earth():
-    """Fails if a row with every bar above the held ceiling is called an earth on its shape alone."""
-    p, z, e = earth_tensor(bar=0.6)
+def test_a_curve_inside_the_bound_passes_the_slope_test():
+    """Fails if rho proportional to T^0.9, which a one-dimensional earth can produce, is refused."""
+    p, z, e = power_law(slope=0.9, phase=50.0)
     q = RD.quality(tf_of(p, z, e), "xy")
-    assert q["held_n"] == 0
-    ok, why = RD.earth(q)
-    assert not ok and "holds at no period" in why
+    assert q["slope_frac"] == 1.0 and q["pass_slope"]
+
+
+def test_a_bar_of_two_fails_the_error_test():
+    """Fails if a curve whose error bars are twice its own impedance is still called sound."""
+    p, z, e = earth_tensor(bar=2.0)
+    q = RD.quality(tf_of(p, z, e), "xy")
+    assert q["bar"] == pytest.approx(2.0, rel=1e-6) and q["bar"] > RD.BAR_MAX
+    assert q["n_periods"] == 0 and not q["pass_error"]
+    assert not q["passes"] and "error" in q["fails"]
+    assert q["pass_phase"] and q["pass_slope"], "only the error test may refuse this curve"
+
+
+def test_the_error_test_needs_min_periods_under_the_ceiling():
+    """Fails if a curve whose bar is under the ceiling at fewer than MIN_PERIODS of the band passes."""
+    p, z, e = earth_tensor(n=41, bar=0.02)
+    band = (p >= RD.QUALITY_BAND[0]) & (p <= RD.QUALITY_BAND[1])
+    idx = np.where(band)[0]
+    ee = e.copy()
+    ee[idx[: len(idx) - (RD.MIN_PERIODS - 1)]] *= 200.0     # leaves MIN_PERIODS - 1 under the ceiling
+    q = RD.quality(tf_of(p, z, ee), "xy")
+    assert q["n_periods"] == RD.MIN_PERIODS - 1 and not q["pass_error"]
 
 
 def test_the_rho_bar_is_twice_the_impedance_bar():
@@ -129,43 +173,37 @@ def test_the_rho_bar_is_twice_the_impedance_bar():
     assert RD.rho_bar(tf, "xy") == pytest.approx(2.0 * RD.bar(tf, "xy"), rel=1e-9)
 
 
-# ------------------------------------------------------------------ the impedance slope
+def test_the_held_band_is_reported_and_is_not_a_test():
+    """Fails if a curve holding at no period is refused, or if its held band is not reported empty.
 
-def test_z_slope_refuses_an_inductive_loop_and_passes_an_earth():
-    """Fails if a curve with d log|Z| / d log T near -1 passes, or a half-space-like earth near -0.4 fails."""
-    p, z, e = loop_tensor()
+    The held band is what the delivered file is trimmed to, not a clause: a curve with bars over the held
+    ceiling everywhere is still put to the three tests on its own terms.
+    """
+    p, z, e = earth_tensor(bar=0.6)
     q = RD.quality(tf_of(p, z, e), "xy")
-    assert q["z_slope"] == pytest.approx(-1.0, abs=0.05)
-    ok, why = RD.earth(q)
-    assert not ok and "inductive loop" in why
-
-    # an earth whose rho rises as T^0.2 gives d log|Z| / d log T = (0.2 - 1) / 2 = -0.4
-    period = 10.0 ** np.linspace(0.5, 4.5, 41)
-    rho = 100.0 * (period / 100.0) ** 0.2
-    mag = np.sqrt(rho / (0.2 * period))
-    zz = np.zeros((len(period), 2, 2), complex)
-    zz[:, 0, 1] = mag * np.exp(1j * np.radians(36.0))
-    zz[:, 1, 0] = -zz[:, 0, 1]
-    q2 = RD.quality(tf_of(period, zz, 0.02 * np.abs(zz)), "xy")
-    assert q2["z_slope"] == pytest.approx(-0.4, abs=0.02)
-    assert RD.earth(q2)[0]
+    assert q["held_n"] == 0 and not np.isfinite(q["held_lo_s"])
+    assert q["pass_phase"] and q["pass_slope"] and q["pass_error"] and q["passes"]
 
 
-# ------------------------------------------------------------------ the short slope clause
+def test_the_single_station_is_not_a_deliverable_kind():
+    """Fails if the single station is among the kinds a product may be delivered on."""
+    import pandas as pd
+    assert RD.DROPPED_KIND == "single" and "single" not in RD.KINDS
+    assert set(RD.KINDS) == {"remote", "stack", "obs", "stack_obs"}
+    products = pd.DataFrame([dict(site="S", kind=k, rate_hz=1.0, on_disk=True) for k in
+                             ("single", "remote", "stack")])
+    keep, dropped = RD.deliverable(products)
+    assert set(keep.kind) == {"remote", "stack"} and list(dropped.kind) == ["single"]
 
-def test_the_short_slope_clause_is_unjudged_outside_the_live_band():
-    """Fails if a live band that leaves no part of 2-20 s still produces a band for the clause."""
-    assert RD.slope_band((30.0, 3000.0)) is None
-    assert RD.slope_band((10.0, 3000.0)) == (10.0, 20.0)
-    assert RD.slope_band(None) == RD.SHORT_SLOPE_BAND
 
-
-def test_an_unjudged_short_slope_does_not_veto():
-    """Fails if a row with no short slope measurable is refused for the clause it could not be scored on."""
-    p, z, e = earth_tensor(lo=1.5, hi=4.5)      # nothing below 30 s
-    q = RD.quality(tf_of(p, z, e), "xy", live=(30.0, 3000.0))
-    assert not np.isfinite(q["short_slope"])
-    assert RD.earth(q)[0]
+def test_a_product_name_is_read_off_its_kind_rate_selection_or_form():
+    """Fails if the name the choice cell uses does not pick a product out of the readings table."""
+    import pandas as pd
+    rows = pd.DataFrame([dict(kind="stack", rate_hz=1.0, selection="whole", form=""),
+                         dict(kind="remote", rate_hz=10.0, selection="f25", form=""),
+                         dict(kind="remote", rate_hz=1.0, selection="whole", form="window_yx")])
+    got = [RD.product_key(r) for r in rows.itertuples()]
+    assert got == ["stack_1hz", "remote_10hz_f25", "window_yx"]
 
 
 # ------------------------------------------------------------------ agreement
@@ -192,24 +230,26 @@ def test_agreement_fails_a_phase_shift_beyond_the_tolerance():
 
 # ------------------------------------------------------------------ the product of record
 
-def _reading(site, comp, kind, bar, earth=True, agree_n=1, held_hi=1000.0, rate=1.0):
-    return dict(site=site, component=comp, kind=kind, kind_word=kind, form="", run="r", stamp="s",
-                rate_hz=rate, status="ok", earth=earth, not_earth_because="", agree_n=agree_n,
-                agree_kinds="other", bar_10_1000=bar, held_hi_s=held_hi, held_n=10, path="")
+def _reading(site, comp, kind, bar, passes=True, agree_n=1, held_hi=1000.0, rate=1.0):
+    return dict(site=site, component=comp, kind=kind, kind_word=kind, selection="whole", form="",
+                run="r", stamp="s", rate_hz=rate, status="ok", product="%s_%ghz" % (kind, rate),
+                passes=passes, fails="", agree_n=agree_n, agree_kinds="other", bar=bar, n_periods=20,
+                held_lo_s=10.0, held_hi_s=held_hi, held_n=10, path="")
 
 
-def test_product_of_record_takes_the_smallest_bar_among_agreeing_earths():
-    """Fails if a smaller bar on a row that is not an earth, or that corroborates nothing, is chosen."""
+def test_product_of_record_takes_the_smallest_bar_among_agreeing_sound_products():
+    """Fails if a smaller bar on a product that fails a test, or corroborates nothing, is chosen."""
     import pandas as pd
     t = pd.DataFrame([
-        _reading("S1", "xy", "single", 0.001, earth=False, agree_n=0),   # smallest bar, not an earth
-        _reading("S1", "xy", "obs", 0.002, earth=True, agree_n=0),       # an earth, corroborates nothing
-        _reading("S1", "xy", "remote", 0.004),
+        _reading("S1", "xy", "remote", 0.001, passes=False, agree_n=0),   # smallest bar, fails a test
+        _reading("S1", "xy", "obs", 0.002, passes=True, agree_n=0),       # sound, corroborates nothing
+        _reading("S1", "xy", "stack_obs", 0.004),
         _reading("S1", "xy", "stack", 0.003),
     ])
     rec = RD.product_of_record(t)
     row = rec[(rec.site == "S1") & (rec.component == "xy")].iloc[0]
-    assert row.kind == "stack" and row.bar_10_1000 == pytest.approx(0.003)
+    assert row.kind == "stack" and row.bar == pytest.approx(0.003)
+    assert row["product"] == "stack_1hz"
 
 
 def test_product_of_record_breaks_a_tie_on_the_longest_period_held():
@@ -222,10 +262,10 @@ def test_product_of_record_breaks_a_tie_on_the_longest_period_held():
     assert row.kind == "stack" and "longest period held" in row.why
 
 
-def test_product_of_record_is_none_where_no_earth_agrees_with_another_kind():
-    """Fails if a component whose earths corroborate nothing is given a product of record anyway."""
+def test_product_of_record_is_none_where_nothing_agrees_with_another_kind():
+    """Fails if a component whose sound products corroborate nothing is given a product of record."""
     import pandas as pd
-    t = pd.DataFrame([_reading("S3", "xy", "single", 0.002, agree_n=0),
+    t = pd.DataFrame([_reading("S3", "xy", "remote", 0.002, agree_n=0),
                       _reading("S3", "xy", "obs", 0.003, agree_n=0)])
     rec = RD.product_of_record(t)
     row = rec[rec.site == "S3"].iloc[0]
@@ -296,18 +336,18 @@ def test_the_control_gate_promotes_only_a_selection_that_beats_its_random_contro
     """
     p, z, e = earth_tensor(n=61, lo=-0.2, hi=3.1, bar=0.10)
     shorts = {
-        ("single", "r25"): (tf_of(p, z, 0.10 * np.abs(z)), "r25.edi"),
-        ("single", "f05"): (tf_of(p, z, 0.07 * np.abs(z)), "f05.edi"),      # 30 per cent better
-        ("single", "f10"): (tf_of(p, z, 0.095 * np.abs(z)), "f10.edi"),     # 5 per cent better
-        ("single", "whole"): (tf_of(p, z, 0.12 * np.abs(z)), "whole.edi"),
+        ("remote", "r25"): (tf_of(p, z, 0.10 * np.abs(z)), "r25.edi"),
+        ("remote", "f05"): (tf_of(p, z, 0.07 * np.abs(z)), "f05.edi"),      # 30 per cent better
+        ("remote", "f10"): (tf_of(p, z, 0.095 * np.abs(z)), "f10.edi"),     # 5 per cent better
+        ("remote", "whole"): (tf_of(p, z, 0.12 * np.abs(z)), "whole.edi"),
     }
     g = SP.control_gate(shorts, "xy")
-    assert g[("single", "f05")]["eligible"]
-    assert not g[("single", "f10")]["eligible"]
-    assert "does NOT beat" in g[("single", "f10")]["verdict"]
-    assert g[("single", "whole")]["eligible"] and "admitted without the gate" in \
-        g[("single", "whole")]["verdict"]
-    assert not g[("single", "r25")]["eligible"]
+    assert g[("remote", "f05")]["eligible"]
+    assert not g[("remote", "f10")]["eligible"]
+    assert "does NOT beat" in g[("remote", "f10")]["verdict"]
+    assert g[("remote", "whole")]["eligible"] and "admitted without the gate" in \
+        g[("remote", "whole")]["verdict"]
+    assert not g[("remote", "r25")]["eligible"]
 
 
 def test_the_control_gate_is_unjudged_where_no_random_control_exists():
@@ -323,9 +363,9 @@ def test_the_rate_gate_refuses_a_component_before_any_row_is_read():
     """Fails if a component whose survey rate path is outside the ceiling is still offered a 10 Hz row."""
     import pandas as pd
     p, z, e = earth_tensor(n=61, lo=-0.2, hi=3.1)
-    shorts = {("single", "whole", ""): (tf_of(p, z, e), "s.edi")}
-    reads = pd.DataFrame([dict(site="S", component=c, kind="single", rate_hz=10.0, selection="whole",
-                               form="", earth=True) for c in RD.COMPONENTS])
+    shorts = {("remote", "whole", ""): (tf_of(p, z, e), "s.edi")}
+    reads = pd.DataFrame([dict(site="S", component=c, kind="remote", rate_hz=10.0, selection="whole",
+                               form="", passes=True) for c in RD.COMPONENTS])
     out = SP.select_rows("S", tf_of(p, z, e), shorts, reads, rate_ok={"xy": False, "yx": True})
     assert out["xy"]["pick"] is None and "10 Hz path sits further" in out["xy"]["why"]
     assert out["yx"]["scored"], "the component the gate passed must still be scored"
@@ -342,7 +382,7 @@ def test_a_selection_name_is_read_off_the_product_file_name():
     assert PR.parse_product_name("Q53N_whole_remote_1hz_kaiser20_75.edi").get("kind") != "whole"
 
 
-# ------------------------------------------------------------------ the unspliced rows
+# ------------------------------------------------------------------ the unjoined rows
 
 def test_an_unspliced_row_comes_back_identical(tmp_path):
     """Fails if any period or value of a component that was not spliced moves, to 1e-12 relative.
@@ -355,7 +395,7 @@ def test_an_unspliced_row_comes_back_identical(tmp_path):
     base = write_edi(tmp_path, p, z, e, "BASE")
     ps, zs, es = earth_tensor(n=31, lo=0.0, hi=3.1)
     short = write_edi(tmp_path, ps, zs, es, "SHORT")
-    pick = dict(kind="single", kind_word="single station", file=str(short), step_pct=0.5,
+    pick = dict(kind="remote", kind_word="remote site", file=str(short), step_pct=0.5,
                 step_above_pct=0.4, step_below_pct=0.5)
     out = tmp_path / "spliced.edi"
     SP.splice(base, {"xy": pick}, out)
@@ -398,19 +438,12 @@ def test_merge_reads_back_and_the_two_sources_control_holds(tmp_path):
     f_xy = write_edi(tmp_path, p, z_xy, e_xy, "SXY", tipper=tip)
     f_yx = write_edi(tmp_path, p, z_yx, e_yx, "SYX")
 
-    class SV:
-        cfg = dict(name="synthetic", project="synthetic", author="test")
-
-        @staticmethod
-        def site(_name):
-            import pandas as pd
-            return pd.Series(dict(site="SXY", declination_deg="8.978"))
-
     picks = {"xy": dict(path=str(f_xy), kind="remote", kind_word="remote site", form="", run="r",
-                        stamp="s", rate_hz=1.0, bar_10_1000=0.02),
+                        stamp="s", rate_hz=1.0, bar=0.02),
              "yx": dict(path=str(f_yx), kind="stack", kind_word="fleet stack", form="", run="r",
-                        stamp="s", rate_hz=1.0, bar_10_1000=0.03)}
-    rec = FN.merge(SV, "SXY", picks, tmp_path / "final" / "SXY.edi", tipper_from="xy", verbose=False)
+                        stamp="s", rate_hz=1.0, bar=0.03)}
+    rec = FN.merge(SurveyStub, "SXY", picks, tmp_path / "final" / "SXY.edi", tipper_from="xy",
+                   verbose=False)
     assert rec["written"] and rec["ok"]
     assert rec["worst_readback_relative"] <= FN.READBACK_RTOL
     assert "control PASS" in rec["control"]
@@ -428,18 +461,9 @@ def test_merge_writes_the_frame_block(tmp_path):
     """Fails if the written final carries no declination line or no angle to geographic north."""
     p, z, e = earth_tensor(n=41)
     f = write_edi(tmp_path, p, z, e, "FRAME")
-
-    class SV:
-        cfg = dict(name="synthetic", project="synthetic", author="test")
-
-        @staticmethod
-        def site(_name):
-            import pandas as pd
-            return pd.Series(dict(site="FRAME", declination_deg="8.978"))
-
-    picks = {"xy": dict(path=str(f), kind="single", kind_word="single station", form="", run="r",
-                        stamp="s", rate_hz=1.0, bar_10_1000=0.02)}
-    rec = FN.merge(SV, "FRAME", picks, tmp_path / "final" / "FRAME.edi", verbose=False)
+    picks = {"xy": dict(path=str(f), kind="remote", kind_word="remote site", form="", run="r",
+                        stamp="s", rate_hz=1.0, bar=0.02)}
+    rec = FN.merge(SurveyStub, "FRAME", picks, tmp_path / "final" / "FRAME.edi", verbose=False)
     kv = PR.read_tf(rec["path"]).meta["parameters"]
     assert "declination_deg" in kv and "RECORDED AND NOT APPLIED" in kv["declination_deg"]
     assert "to_geographic_north_deg" in kv and kv["to_geographic_north_deg"].startswith("-8.978")
@@ -482,18 +506,9 @@ def test_a_component_with_no_product_of_record_reads_back_empty(tmp_path):
     """
     p, z, e = earth_tensor(n=41)
     f = write_edi(tmp_path, p, z, e, "ONECOMP")
-
-    class SV:
-        cfg = dict(name="synthetic", project="synthetic", author="test")
-
-        @staticmethod
-        def site(_name):
-            import pandas as pd
-            return pd.Series(dict(site="ONECOMP", declination_deg="8.978"))
-
     picks = {"xy": dict(path=str(f), kind="remote", kind_word="remote site", form="", run="r",
-                        stamp="s", rate_hz=1.0, bar_10_1000=0.02)}
-    rec = FN.merge(SV, "ONECOMP", picks, tmp_path / "final" / "ONECOMP.edi", verbose=False)
+                        stamp="s", rate_hz=1.0, bar=0.02)}
+    rec = FN.merge(SurveyStub, "ONECOMP", picks, tmp_path / "final" / "ONECOMP.edi", verbose=False)
     back = PR.read_tf(rec["path"])
     assert np.isfinite(back.z[:, 0, 1]).sum() == len(p)
     assert np.isfinite(back.z[:, 1, 0]).sum() == 0
@@ -523,3 +538,123 @@ def test_align_never_interpolates(tmp_path):
     # every value that was taken is one of the source's own, never a blend
     taken = out[np.isfinite(out[:, 0]), 0]
     assert np.allclose(taken, 1.0)
+
+
+# ------------------------------------------------------------------ the trim
+
+def test_the_trim_drops_exactly_the_periods_outside_the_held_band(tmp_path):
+    """Fails if a period inside the chosen band is dropped, or one outside it is delivered.
+
+    The periods are compared to 1e-6 relative and not exactly: an EDI carries frequency, so the round trip
+    through the writer and the reader moves a period value by about 1e-7 of itself.
+    """
+    p, z, e = earth_tensor(n=41, lo=0.0, hi=4.5)
+    f = write_edi(tmp_path, p, z, e, "TRIM")
+    band = (10.0, 1000.0)
+    picks = {"xy": dict(path=str(f), kind="remote", kind_word="remote site", form="", run="r",
+                        stamp="s", rate_hz=1.0, bar=0.02)}
+    rec = FN.merge(SurveyStub, "TRIM", picks, tmp_path / "final" / "TRIM.edi",
+                   keep_band={"xy": band}, verbose=False)
+    back = PR.read_tf(rec["path"])
+    inside = p[(p >= band[0]) & (p <= band[1])]
+    outside = p[(p < band[0]) | (p > band[1])]
+    assert len(back.period) == len(inside)
+    assert np.allclose(np.sort(back.period), np.sort(inside), rtol=1e-6)
+    assert rec["n_dropped"] == len(outside)
+    assert np.allclose(np.sort(rec["dropped_periods_s"]), np.sort(outside), rtol=1e-6)
+    assert "outside the delivered band" in rec["dropped_reason"]
+
+
+def test_the_manifest_names_the_dropped_periods(tmp_path):
+    """Fails if the delivered file's manifest row does not carry the dropped periods and the reason."""
+    import pandas as pd
+    p, z, e = earth_tensor(n=41, lo=0.0, hi=4.5)
+    f = write_edi(tmp_path, p, z, e, "MAN")
+    picks = {"xy": dict(path=str(f), kind="remote", kind_word="remote site", form="", run="r",
+                        stamp="s", rate_hz=1.0, bar=0.02)}
+    rec = FN.merge(SurveyStub, "MAN", picks, tmp_path / "final" / "MAN.edi",
+                   keep_band={"xy": (10.0, 1000.0)}, verbose=False)
+    rec["picks"] = picks
+    out = FN.write_record(tmp_path / "survey", pd.DataFrame(columns=RD.RECORD_COLUMNS),
+                          pd.DataFrame(columns=RD.READINGS_COLUMNS), [rec], sites=["MAN"])
+    row = out["manifest"][out["manifest"].role == "final"].iloc[0]
+    assert int(row.n_dropped) == rec["n_dropped"] > 0
+    assert len(str(row.dropped_periods_s).split()) == rec["n_dropped"]
+    assert "outside the delivered band" in str(row.dropped_reason)
+    assert row.sha256 == FN.sha256(rec["path"])
+
+
+def test_a_band_that_would_empty_the_file_is_not_applied(tmp_path):
+    """Fails if a band holding no period of the grid writes a file with nothing in it."""
+    p, z, e = earth_tensor(n=41, lo=0.5, hi=4.5)
+    f = write_edi(tmp_path, p, z, e, "EMPTY")
+    picks = {"xy": dict(path=str(f), kind="remote", kind_word="remote site", form="", run="r",
+                        stamp="s", rate_hz=1.0, bar=0.02)}
+    rec = FN.merge(SurveyStub, "EMPTY", picks, tmp_path / "final" / "EMPTY.edi",
+                   keep_band={"xy": (1e5, 2e5)}, verbose=False)
+    assert rec["n_dropped"] == 0 and "not trimmed" in rec["dropped_reason"]
+    assert len(PR.read_tf(rec["path"]).period) == len(p)
+
+
+# ------------------------------------------------------------------ the choice record
+
+def test_the_choice_record_round_trips_and_reproduces_the_merge(tmp_path):
+    """Fails if a choice row written is not read back with the same product, band and join.
+
+    The row is the record of a delivery: a re-run that reads it and merges again must land on the same
+    file, byte for byte in its impedance rows.
+    """
+    p, z, e = earth_tensor(n=41, lo=0.0, hi=4.5)
+    f = write_edi(tmp_path, p, z, e, "ROUND")
+    band = (10.0, 1000.0)
+    picks = {"xy": dict(path=str(f), kind="remote", kind_word="remote site", form="", run="r",
+                        stamp="s", rate_hz=1.0, bar=0.02)}
+    first = FN.merge(SurveyStub, "ROUND", picks, tmp_path / "final" / "ROUND.edi",
+                     keep_band={"xy": band}, verbose=False)
+
+    path = tmp_path / "final_choices.csv"
+    FN.write_choices(path, [FN.choice_row("ROUND", "xy", "remote_1hz", periods=band, join=None,
+                                          chosen_by="analyst", note="the analyst took the remote row")])
+    back = FN.read_choices(path)
+    row = back[(back.site == "ROUND") & (back.component == "xy")].iloc[0]
+    assert row["product"] == "remote_1hz" and row.chosen_by == "analyst"
+    assert (float(row.periods_lo), float(row.periods_hi)) == band
+    assert str(row["join"]).strip() in ("", "nan")
+
+    again = FN.merge(SurveyStub, "ROUND", picks, tmp_path / "final" / "ROUND_again.edi",
+                     keep_band={"xy": (float(row.periods_lo), float(row.periods_hi))}, verbose=False)
+    a, b = PR.read_tf(first["path"]), PR.read_tf(again["path"])
+    assert np.allclose(a.period, b.period, rtol=1e-12)
+    m = np.isfinite(a.z[:, 0, 1])
+    assert np.allclose(a.z[m, 0, 1], b.z[m, 0, 1], rtol=1e-12)
+
+
+def test_an_analyst_row_is_never_overwritten_by_the_rule(tmp_path):
+    """Fails if a rule row replaces an analyst row, which is what SITE = "all" must not do."""
+    path = tmp_path / "final_choices.csv"
+    FN.write_choices(path, [FN.choice_row("A", "xy", "remote_1hz", chosen_by="analyst", note="mine"),
+                            FN.choice_row("B", "xy", "stack_1hz", chosen_by="rule")])
+    out = FN.write_choices(path, [FN.choice_row("A", "xy", "stack_1hz", chosen_by="rule"),
+                                  FN.choice_row("B", "xy", "obs_1hz", chosen_by="rule"),
+                                  FN.choice_row("C", "xy", "obs_1hz", chosen_by="rule")])
+    t = out["table"]
+    assert out["analyst_kept"] == 1 and out["written"] == 2
+    assert t[(t.site == "A")].iloc[0]["product"] == "remote_1hz"
+    assert t[(t.site == "A")].iloc[0].chosen_by == "analyst"
+    assert t[(t.site == "B")].iloc[0]["product"] == "obs_1hz"
+    assert set(t.site) == {"A", "B", "C"}
+
+
+def test_the_manifest_check_catches_a_file_that_changed(tmp_path):
+    """Fails if a delivered file rewritten after the manifest was taken still matches its sha256."""
+    import pandas as pd
+    p, z, e = earth_tensor(n=41)
+    f = write_edi(tmp_path, p, z, e, "SHA")
+    man = pd.DataFrame([dict(site="SHA", role="final", component="", file=str(f), kind="", form="",
+                             run="", stamp="", rate_hz=np.nan, n_periods=len(p), n_dropped=0,
+                             dropped_periods_s="", dropped_reason="", bytes=f.stat().st_size,
+                             sha256=FN.sha256(f))])
+    assert bool(FN.manifest_check(man).iloc[0].sha256_matches)
+    write_edi(tmp_path, p, np.sqrt(2.0) * z, e, "SHA")
+    row = FN.manifest_check(man).iloc[0]
+    assert row.exists and row.readable and not row.sha256_matches

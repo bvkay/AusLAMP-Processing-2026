@@ -1,37 +1,38 @@
-"""The earth rule over every product, and the product of record per site and component.
+"""The three response tests over every product, and the product of record per site and component.
 
 Ported from scripts/processing/wamt_esp2026_readings.py and the quality call it uses,
 scripts/qc/qld_salvage.py:177-210 (D:/BEN/MTH5_Aurora_mt-io_2026). Every threshold is an argument with the
 frozen value as its default.
 
-THE EARTH RULE, per product and component, over QUALITY_BAND (10-1000 s by default):
+THE THREE RESPONSE TESTS, per product and component, over QUALITY_BAND (10-1000 s by default):
 
-    quadrant      the phase in its quadrant: Zxy in (0, 90) deg and Zyx in (-180, -90) deg, which is
-                  (0, 90) after the +180 deg fold products.rho_phase applies. Read as the median of the
-                  band and the fraction of its periods inside, not as every point: a sign flip moves the
-                  median, a few noisy periods at the band edges do not (qld_salvage:201-205).
-    continuity    the apparent-resistivity curve continuous: the log-log slope of rho against period
-                  within SLOPE_MAX of zero and within SLOPE_PHASE_TOL of the slope the phase implies,
-                  1 - phase / 45 deg, scored over the band and again over its short end (lo to 5 lo) with
-                  the looser SLOPE_MAX_SHORT and SLOPE_TOL_SHORT (qld_salvage:177-183).
-    short slope   the log-log slope of rho over the survey's live short band within SLOPE_TOL. The clause
-                  follows the band the record actually carries: on a 1 Hz record whose live band starts at
-                  10 s the clause is scored over 10-20 s, and where the live band leaves nothing of 2-20 s
-                  the clause is UNJUDGED and does not veto (wamt_esp2026_readings.slope_band).
-    z slope       the log-log slope of |Z| against period at or above Z_SLOPE_CUT. An electric field
-                  following dB/dt -- an inductive loop, Z proportional to omega with a flat phase -- reads
-                  -0.92 to -0.95 and passes quadrant, slope of rho, bar and held range alike; a uniform
-                  half-space reads -0.5. One-sided: the shallow side is structure, not a known fault.
-    the bar       the median relative error of |Z| over the band. A row whose bar exceeds BAR_MAX is not a
-                  measurement. The bar always sits beside the shape call, because the shape rule alone
-                  passes on noise.
-    held          the periods where the impedance bar is under HELD_BAR_MAX and the phase is in quadrant.
-                  A row that holds at no period is not an earth.
+    the phase test    the phase lies in its quadrant -- 0-90 deg for xy, and for yx after the +180 deg fold
+                      products.rho_phase applies -- at QUADRANT_MIN of the band's periods. A product that
+                      fails it carries a sign fault on an E or an H line.
+    the slope test    apparent resistivity cannot change faster than the period: |d log rho / d log T| <= 1
+                      for a one-dimensional earth (Weidelt 1972; Parker and Booker 1996). The log-log slope
+                      between adjacent periods lies inside +-(SLOPE_BOUND + SLOPE_TOL) at SLOPE_MIN of the
+                      adjacent pairs. A two- or three-dimensional response can exceed the bound, so the test
+                      is a screen carrying a tolerance for noise and not a law.
+    the error test    the median relative error of |Z| over the band at or under BAR_MAX, with at least
+                      MIN_PERIODS periods in the band carrying an error under BAR_MAX.
 
-One column name is one quantity: `bar_10_1000` is the impedance bar, the median of the error over |Z|, and
-`rho_bar_10_1000` is the apparent-resistivity bar, which is twice it. The frozen tool scored the bar guard on
-the apparent-resistivity bar at 1.0; BAR_MAX here is the impedance bar's own ceiling and both bars are in the
-table, so which quantity a guard reads is never in doubt.
+A product passes the response tests where all three hold; `fails` names the tests it did not hold.
+
+One column name is one quantity: `bar` is the impedance bar, the median of the error over |Z| across
+QUALITY_BAND, and `rho_bar` is the apparent-resistivity bar, which is twice it. `n_periods` is the error
+test's count -- the periods of the band whose error is under BAR_MAX -- and `n_finite_rho` is how many
+periods of the whole curve carry an apparent resistivity at all.
+
+THE HELD BAND is the periods where the impedance bar is under HELD_BAR_MAX and the phase is in quadrant. It
+is not a test: it is the band the delivered file is trimmed to, so that the file carries the measurement and
+nothing else.
+
+THE KINDS a product may be delivered on are the four references: remote site, fleet stack, observatory,
+stack + observatory. The single station is not one of them. Its estimate is biased low by whatever noise sits
+in the site's own H, its error bars do not show that bias, and a corroboration count that included it would
+count a row against its own noise. `deliverable` splits a products frame on that rule and the workbooks report
+what it dropped.
 
 AGREEMENT between two products of one site and component: the median departure in apparent resistivity within
 AGREE_RHO and the median departure in phase within AGREE_PHASE over AGREE_BAND (20 per cent and 5 deg over
@@ -49,14 +50,13 @@ be delivered; a form may only where forms.csv marks it a candidate, which it doe
 control it carries on the bar by the stated margin and is not an inter-site impedance. A form that is not a
 candidate is read, scored and reported, is never the product of record, and does not corroborate another row.
 
-THE PRODUCT OF RECORD, per site and component: among the products that are earths AND agree with at least one
-product of another reference kind, the one with the smallest bar over QUALITY_BAND; ties are broken by the
-longest period held. The choice is made at the delivery rate, which is 1 Hz: a 10 Hz product of a long-period
-survey stops near 1,200 s, and its short end enters the delivered file through the splice rather than as the
-whole row. Corroboration comes from another kind because two references that share no magnetics
-cannot carry the same noise into the estimate. A component with no agreeing earth has no product of record and
-the row says which clause emptied it. The release and any earlier processing are never the arbiter: the rule
-reads the products' own soundness and their agreement with each other.
+THE PRODUCT OF RECORD, per site and component: among the products that pass the three response tests AND
+agree with at least one product of another reference kind, the one with the smallest bar over QUALITY_BAND;
+ties are broken by the longest period held. The choice is made at the delivery rate, which is 1 Hz: a 10 Hz
+product of a long-period survey stops near 1,200 s, and its short end enters the delivered file through the
+splice rather than as the whole row. Corroboration comes from another kind because two references that share
+no magnetics cannot carry the same noise into the estimate. A component with no agreeing product has none of
+record and the row says which test emptied it. The release and any earlier processing are never the arbiter.
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -69,79 +69,42 @@ import numpy as np
 import pandas as pd
 
 from . import products as PR
-from .process import KIND_WORD, KINDS
+from .process import KIND_WORD
+from .process import KINDS as ALL_KINDS
 
-QUALITY_BAND = (10.0, 1000.0)      # the band the shape, the bar and the choice are read over, in s
-SHORT_SLOPE_BAND = (2.0, 20.0)     # the short slope clause's band before the live band clips it, in s
-SLOPE_TOL = 1.2                    # |d log rho / d log T| over the short band beyond this is not an earth
+QUALITY_BAND = (10.0, 1000.0)      # the band the three tests and the choice are read over, in s
+QUADRANT_MIN = 0.70                # the phase test: this fraction of the band's periods inside the quadrant
+SLOPE_BOUND = 1.0                  # the slope test: |d log rho / d log T| for a one-dimensional earth
+SLOPE_TOL = 0.25                   # ... the tolerance added to the bound for noise
+SLOPE_MIN = 0.80                   # ... and the fraction of adjacent pairs that must lie inside it
+BAR_MAX = 1.0                      # the error test: the median relative error of |Z| over the band
+MIN_PERIODS = 8                    # ... and the periods of the band that must carry an error under it
+
+HELD_BAR_MAX = 0.20                # a period is held where its impedance bar is under this and the phase
+                                   # is in quadrant; the held band is what a delivered file is trimmed to
+
 AGREE_RHO = 0.20                   # two products agree within this fraction in apparent resistivity
 AGREE_PHASE = 5.0                  # ... and this many degrees in phase
 AGREE_BAND = (5.0, 200.0)          # ... over this band, in s
-Z_SLOPE_CUT = -0.75                # d log|Z| / d log T below this is an inductive loop, not an earth
-BAR_MAX = 1.0                      # the median relative error of |Z| over the band, at most this
-HELD_BAR_MAX = 0.20                # a period is held where its impedance bar is under this and the phase
 
-QUADRANT_FRAC = 0.70               # the fraction of the band's periods that must sit in the quadrant
-SLOPE_MAX = 1.2                    # the continuity clause over the whole band
-SLOPE_PHASE_TOL = 1.0              # ... and its departure from the slope the phase implies
-SLOPE_MAX_SHORT = 2.0              # the same over the band's short end, looser for its scatter
-SLOPE_TOL_SHORT = 1.5
-SHORT_END_FACTOR = 5.0             # the short end of the band is lo to SHORT_END_FACTOR x lo
+DROPPED_KIND = "single"            # the single station: read where it sits on disk, never delivered
+KINDS = tuple(k for k in ALL_KINDS if k != DROPPED_KIND)
 
+TESTS = ("phase", "slope", "error")
 BAR_BANDS = ((2.0, 10.0), (10.0, 100.0), (100.0, 1000.0), (1000.0, 10000.0))
 MIN_POINTS = 4                     # a slope is fitted to at least this many periods
 COMPONENTS = ("xy", "yx")
 
 READINGS_COLUMNS = ["site", "component", "kind", "kind_word", "selection", "form", "run", "stamp",
-                    "rate_hz", "status", "earth", "not_earth_because", "quadrant", "quadrant_frac",
-                    "median_phase_deg", "continuous", "rho_slope", "rho_slope_implied", "short_slope",
-                    "short_slope_band_s", "z_slope", "bar_10_1000", "rho_bar_10_1000", "held_lo_s",
-                    "held_hi_s", "held_n", "n_periods", "agree_kinds", "agree_n", "reproducible",
-                    "reproducible_why", "candidate", "path"]
+                    "rate_hz", "status", "product", "passes", "fails", "pass_phase", "phase_frac",
+                    "median_phase_deg", "pass_slope", "slope_frac", "pass_error", "bar", "n_periods",
+                    "rho_bar", "n_finite_rho", "held_lo_s", "held_hi_s", "held_n", "agree_kinds",
+                    "agree_n", "reproducible", "reproducible_why", "candidate", "path"]
 
 RECORD_COLUMNS = ["site", "component", "product", "kind", "kind_word", "selection", "form", "run", "stamp",
-                  "rate_hz", "bar_10_1000", "held_hi_s", "held_n", "earth", "agree_n", "agree_kinds",
-                  "reproducible", "why", "alternatives", "flagged", "note", "path"]
-
-
-# ------------------------------------------------------------------ the survey's live band
-
-def live_band(sv) -> tuple | None:
-    """(lo, hi) in s of the band the survey's records carry, or None where none is declared.
-
-    `live_band_s: [lo, hi]` in survey.yaml is read first. Failing that the liveness bands of the record
-    stage, `bands.liveness`, are read as strings of the form "lo-hi" and their outer edges are taken: those
-    are the bands the survey declares its channels are judged live over, so a clause scored outside them is
-    scored on a band the record does not carry.
-    """
-    cfg = getattr(sv, "cfg", sv) or {}
-    declared = cfg.get("live_band_s")
-    if declared:
-        lo, hi = float(declared[0]), float(declared[1])
-        return (lo, hi) if lo < hi else None
-    bands = ((cfg.get("bands") or {}).get("liveness") or [])
-    edges = []
-    for text in bands:
-        try:
-            a, _, b = str(text).partition("-")
-            edges += [float(a), float(b)]
-        except ValueError:
-            continue
-    return (min(edges), max(edges)) if edges else None
-
-
-def slope_band(live, band=SHORT_SLOPE_BAND) -> tuple | None:
-    """The short slope clause's band clipped to the live band, or None where the clause has no band left.
-
-    Ported from wamt_esp2026_readings.slope_band. A survey with no live band declared keeps the clause's own
-    band unchanged, and a clause with no band left is UNJUDGED and must not veto an earth row.
-    """
-    lo, hi = float(band[0]), float(band[1])
-    if live is None:
-        return lo, hi
-    lo = max(lo, float(live[0]))
-    hi = min(hi, float(live[1])) if live[1] else hi
-    return (lo, hi) if lo < hi else None
+                  "rate_hz", "bar", "n_periods", "held_lo_s", "held_hi_s", "held_n", "passes", "fails",
+                  "agree_n", "agree_kinds", "reproducible", "why", "alternatives", "flagged", "note",
+                  "path"]
 
 
 # ------------------------------------------------------------------ one component's curve
@@ -152,14 +115,23 @@ def curve(tf, comp: str):
     return np.asarray(tf.period, float), rho, rho_err, ph, ph_err
 
 
-def bar(tf, comp: str, lo=QUALITY_BAND[0], hi=QUALITY_BAND[1]) -> float:
-    """The median relative impedance error of one component over a band: the product's bar."""
+def relative_error(tf, comp: str):
+    """The error of one component over its own impedance magnitude, NaN where either is not finite."""
     i, j = PR.COMPONENTS[comp]
-    p = np.asarray(tf.period, float)
     z = np.asarray(tf.z)[:, i, j]
     e = np.asarray(tf.z_err, float)[:, i, j]
-    m = (p >= lo) & (p <= hi) & np.isfinite(z) & np.isfinite(e) & (np.abs(z) > 0)
-    return float(np.median(e[m] / np.abs(z[m]))) if m.any() else np.nan
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rel = e / np.abs(z)
+    rel[~(np.isfinite(z) & (np.abs(z) > 0) & np.isfinite(e))] = np.nan
+    return rel
+
+
+def bar(tf, comp: str, lo=QUALITY_BAND[0], hi=QUALITY_BAND[1]) -> float:
+    """The median relative impedance error of one component over a band: the product's bar."""
+    p = np.asarray(tf.period, float)
+    rel = relative_error(tf, comp)
+    m = (p >= lo) & (p <= hi) & np.isfinite(rel)
+    return float(np.median(rel[m])) if m.any() else np.nan
 
 
 def rho_bar(tf, comp: str, lo=QUALITY_BAND[0], hi=QUALITY_BAND[1]) -> float:
@@ -169,65 +141,59 @@ def rho_bar(tf, comp: str, lo=QUALITY_BAND[0], hi=QUALITY_BAND[1]) -> float:
     return float(np.median(rho_err[m] / rho[m])) if m.any() else np.nan
 
 
-def quadrant(p, ph, lo, hi, frac=QUADRANT_FRAC) -> tuple:
-    """(in quadrant, the fraction of the band inside it, the median phase in deg).
+# ------------------------------------------------------------------ the three response tests
 
-    qld_salvage:201-205: the median of the band must sit in (0, 90) deg and at least `frac` of the band's
-    periods with it.
+def phase_test(p, ph, lo=QUALITY_BAND[0], hi=QUALITY_BAND[1], quadrant_min=QUADRANT_MIN) -> tuple:
+    """(the test holds, the fraction of the band inside the quadrant, the median phase in deg).
+
+    The phase of a transfer function of an earth lies in the first quadrant, which is (0, 90) deg for Zxy and
+    (-180, -90) deg for Zyx, the second folded into the first by the +180 deg products.rho_phase applies. The
+    fraction is read rather than every point, so a few noisy periods at the band edges do not refuse a
+    product and a sign flip, which moves every point, does.
     """
     m = (p >= lo) & (p <= hi) & np.isfinite(ph)
     if not m.any():
         return False, np.nan, np.nan
     inside = (ph[m] > 0) & (ph[m] < 90)
-    med = float(np.median(ph[m]))
-    return bool(0 < med < 90 and inside.mean() >= frac), float(inside.mean()), med
+    return bool(inside.mean() >= quadrant_min), float(inside.mean()), float(np.median(ph[m]))
 
 
-def _slope_pair(p, rho, ph, lo, hi, slope_max, tol) -> tuple:
-    """(holds, the fitted log-log slope, the slope the phase implies) over one band."""
-    m = (p >= lo) & (p <= hi) & np.isfinite(rho) & (rho > 0) & np.isfinite(ph)
-    if m.sum() < 3:
-        return True, np.nan, np.nan
-    slope = float(np.polyfit(np.log10(p[m]), np.log10(rho[m]), 1)[0])
-    implied = 1.0 - float(np.median(ph[m])) / 45.0
-    return bool(abs(slope) <= slope_max and abs(slope - implied) <= tol), slope, implied
+def slope_test(p, rho, lo=QUALITY_BAND[0], hi=QUALITY_BAND[1], bound=SLOPE_BOUND, tol=SLOPE_TOL,
+               slope_min=SLOPE_MIN) -> tuple:
+    """(the test holds, the fraction of adjacent pairs inside the bound, the pairs read).
 
-
-def continuous(p, rho, ph, lo, hi, slope_max=SLOPE_MAX, tol=SLOPE_PHASE_TOL,
-               slope_max_short=SLOPE_MAX_SHORT, tol_short=SLOPE_TOL_SHORT,
-               short_factor=SHORT_END_FACTOR) -> tuple:
-    """(the curve is continuous, the slope over the band, the slope the phase implies).
-
-    qld_salvage._earth: scored over the whole band and again over its short end, lo to short_factor x lo,
-    where the looser pair of bounds applies. A row of six decades of rho climbing over one decade of period
-    is a filter on E and not the field, and the whole-band fit alone passed it.
-    """
-    whole, slope, implied = _slope_pair(p, rho, ph, lo, hi, slope_max, tol)
-    short, _s, _i = _slope_pair(p, rho, ph, lo, short_factor * lo, slope_max_short, tol_short)
-    return bool(whole and short), slope, implied
-
-
-def short_slope(p, rho, lo, hi) -> float:
-    """The log-log slope of rho against period over one band, NaN under MIN_POINTS periods.
-
-    wamt_esp2026_readings.short_slope. An earth's slope lies within about +-1; a noise-biased single-station
-    row ramps three or four decades over a decade of period.
+    Apparent resistivity cannot change faster than the period over a one-dimensional earth:
+    |d log rho / d log T| <= 1 (Weidelt 1972; Parker and Booker 1996). A two- or three-dimensional response
+    can violate the bound, which is why the test is applied as a screen with `tol` added for noise and a
+    fraction of the pairs rather than all of them, and not as a law.
     """
     m = (p >= lo) & (p <= hi) & np.isfinite(rho) & (rho > 0)
-    return float(np.polyfit(np.log10(p[m]), np.log10(rho[m]), 1)[0]) if m.sum() >= MIN_POINTS else np.nan
+    if m.sum() < 2:
+        return False, np.nan, 0
+    x, y = np.log10(p[m]), np.log10(rho[m])
+    order = np.argsort(x)
+    x, y = x[order], y[order]
+    dx = np.diff(x)
+    ok = dx > 0
+    if not ok.any():
+        return False, np.nan, 0
+    s = np.diff(y)[ok] / dx[ok]
+    inside = np.abs(s) <= (float(bound) + float(tol))
+    return bool(inside.mean() >= slope_min), float(inside.mean()), int(inside.size)
 
 
-def z_slope(p, rho, lo=QUALITY_BAND[0], hi=QUALITY_BAND[1]) -> float:
-    """The log-log slope of |Z| against period over one band, NaN under MIN_POINTS periods.
+def error_test(rel, p, lo=QUALITY_BAND[0], hi=QUALITY_BAND[1], bar_max=BAR_MAX,
+               min_periods=MIN_PERIODS) -> tuple:
+    """(the test holds, the bar, the periods of the band whose error is under `bar_max`).
 
-    wamt_esp2026_readings.z_slope: rho = 0.2 T |Z|^2, so log|Z| = (log rho - log 0.2 - log T) / 2 and no
-    second read of the file is needed.
+    The bar always sits beside the shape tests, because the two shape tests alone pass on noise.
     """
-    m = (p >= lo) & (p <= hi) & np.isfinite(rho) & (rho > 0)
-    if m.sum() < MIN_POINTS:
-        return np.nan
-    lz = 0.5 * (np.log10(rho[m]) - np.log10(0.2) - np.log10(p[m]))
-    return float(np.polyfit(np.log10(p[m]), lz, 1)[0])
+    m = (p >= lo) & (p <= hi) & np.isfinite(rel)
+    if not m.any():
+        return False, np.nan, 0
+    b = float(np.median(rel[m]))
+    n = int((rel[m] < bar_max).sum())
+    return bool(b <= bar_max and n >= min_periods), b, n
 
 
 def held(tf, comp: str, held_bar_max=HELD_BAR_MAX) -> tuple:
@@ -236,80 +202,53 @@ def held(tf, comp: str, held_bar_max=HELD_BAR_MAX) -> tuple:
     A period is held where its impedance bar is under `held_bar_max` and its folded phase is in (0, 90) deg.
     The frozen tool wrote the same guard as an apparent-resistivity bar under 0.4, which is this one at 0.20.
     """
-    i, j = PR.COMPONENTS[comp]
     p = np.asarray(tf.period, float)
-    z = np.asarray(tf.z)[:, i, j]
-    e = np.asarray(tf.z_err, float)[:, i, j]
+    rel = relative_error(tf, comp)
     _p, _rho, _re, ph, _pe = curve(tf, comp)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        rel = e / np.abs(z)
-    m = (np.isfinite(z) & (np.abs(z) > 0) & np.isfinite(e) & (rel < held_bar_max)
-         & np.isfinite(ph) & (ph >= 0) & (ph <= 90))
+    m = np.isfinite(rel) & (rel < held_bar_max) & np.isfinite(ph) & (ph >= 0) & (ph <= 90)
     return (float(p[m].min()), float(p[m].max()), int(m.sum())) if m.any() else (np.nan, np.nan, 0)
 
 
-# ------------------------------------------------------------------ the reading and the earth flag
+def quality(tf, comp: str, band=QUALITY_BAND, quadrant_min=QUADRANT_MIN, slope_bound=SLOPE_BOUND,
+            slope_tol=SLOPE_TOL, slope_min=SLOPE_MIN, bar_max=BAR_MAX, min_periods=MIN_PERIODS,
+            held_bar_max=HELD_BAR_MAX) -> dict:
+    """Every statistic the three response tests read, and the three verdicts, for one product and component.
 
-def quality(tf, comp: str, band=QUALITY_BAND, live=None, held_bar_max=HELD_BAR_MAX,
-            quadrant_frac=QUADRANT_FRAC, slope_max=SLOPE_MAX, slope_phase_tol=SLOPE_PHASE_TOL,
-            slope_max_short=SLOPE_MAX_SHORT, slope_tol_short=SLOPE_TOL_SHORT,
-            short_slope_band=SHORT_SLOPE_BAND) -> dict:
-    """Every statistic the earth rule reads, for one product and one component.
-
-    `live` is the survey's live band; the short slope clause is scored on `short_slope_band` clipped to it,
-    and is NaN where the clip leaves nothing.
+    `passes` is the conjunction of the three and `fails` names the tests that did not hold, in the order the
+    tests are stated.
     """
     lo, hi = float(band[0]), float(band[1])
-    p, rho, rho_err, ph, ph_err = curve(tf, comp)
-    inq, frac, med = quadrant(p, ph, lo, hi, quadrant_frac)
-    cont, slope, implied = continuous(p, rho, ph, lo, hi, slope_max, slope_phase_tol,
-                                      slope_max_short, slope_tol_short)
-    ss_band = slope_band(live, short_slope_band)
-    ss = short_slope(p, rho, ss_band[0], ss_band[1]) if ss_band else np.nan
+    p, rho, _rho_err, ph, _ph_err = curve(tf, comp)
+    rel = relative_error(tf, comp)
+    ok_phase, phase_frac, median_phase = phase_test(p, ph, lo, hi, quadrant_min)
+    ok_slope, slope_frac, n_pairs = slope_test(p, rho, lo, hi, slope_bound, slope_tol, slope_min)
+    ok_error, b, n_under = error_test(rel, p, lo, hi, bar_max, min_periods)
     h = held(tf, comp, held_bar_max)
-    out = dict(quadrant=inq, quadrant_frac=frac, median_phase_deg=med,
-               continuous=cont, rho_slope=slope, rho_slope_implied=implied,
-               short_slope=ss,
-               short_slope_band_s=("%g-%g" % ss_band if ss_band else "UNJUDGED: outside the live band"),
-               z_slope=z_slope(p, rho, lo, hi),
-               bar_10_1000=bar(tf, comp, lo, hi), rho_bar_10_1000=rho_bar(tf, comp, lo, hi),
-               held_lo_s=h[0], held_hi_s=h[1], held_n=h[2],
-               n_periods=int(np.isfinite(rho).sum()))
-    for a, b in BAR_BANDS:
-        out["bar_%g_%g" % (a, b)] = bar(tf, comp, a, b)
-    return out
-
-
-def earth(reading: dict, slope_tol=SLOPE_TOL, z_slope_cut=Z_SLOPE_CUT, bar_max=BAR_MAX) -> tuple:
-    """(the row is an earth, the clauses it failed).
-
-    Every clause of the rule, in the order the frozen tool applied them: quadrant and continuity together,
-    the short slope clause where its band survives the live band, the two guards a shape test cannot supply
-    (a row that holds at no period, a bar above its own value), and the impedance slope.
-    """
     why = []
-    if not reading.get("quadrant"):
-        why.append("the phase is out of quadrant (median %.0f deg, %.0f %% of the band inside)"
-                   % (reading.get("median_phase_deg", np.nan), 100 * (reading.get("quadrant_frac") or 0.0)))
-    if not reading.get("continuous"):
-        why.append("the rho curve is not continuous (slope %+.2f, the phase implies %+.2f)"
-                   % (reading.get("rho_slope", np.nan), reading.get("rho_slope_implied", np.nan)))
-    ss = reading.get("short_slope", np.nan)
-    if np.isfinite(ss) and abs(ss) > slope_tol:
-        why.append("the short slope is %+.2f over %s s, beyond +-%.1f"
-                   % (ss, reading.get("short_slope_band_s", ""), slope_tol))
-    if not reading.get("held_n"):
-        why.append("it holds at no period")
-    b = reading.get("bar_10_1000", np.nan)
-    if np.isfinite(b) and b > bar_max:
-        why.append("the bar is %.2f, above %.2f" % (b, bar_max))
-    if not np.isfinite(b):
-        why.append("no finite impedance in the band")
-    zs = reading.get("z_slope", np.nan)
-    if np.isfinite(zs) and zs < z_slope_cut:
-        why.append("d log|Z| / d log T is %+.3f, below %+.3f: an inductive loop, not an earth"
-                   % (zs, z_slope_cut))
-    return (not why), "; ".join(why)
+    if not ok_phase:
+        why.append("phase (median %.0f deg, %.0f %% of %g-%g s inside the quadrant, %.0f %% needed): a sign "
+                   "fault on an E or an H line"
+                   % (median_phase, 100 * (phase_frac if np.isfinite(phase_frac) else 0.0), lo, hi,
+                      100 * quadrant_min))
+    if not ok_slope:
+        why.append("slope (%.0f %% of the adjacent pairs inside +-%.2f, %.0f %% needed)"
+                   % (100 * (slope_frac if np.isfinite(slope_frac) else 0.0), slope_bound + slope_tol,
+                      100 * slope_min))
+    if not ok_error:
+        # "; " separates one failed test from the next, so no test's own sentence may carry one
+        why.append("error (bar %s over %g-%g s against a ceiling of %.2f, %d period(s) under it against "
+                   "%d needed)" % (("%.3f" % b) if np.isfinite(b) else "not finite", lo, hi, bar_max,
+                                   n_under, min_periods))
+    out = dict(pass_phase=ok_phase, phase_frac=phase_frac, median_phase_deg=median_phase,
+               pass_slope=ok_slope, slope_frac=slope_frac, n_slope_pairs=n_pairs,
+               pass_error=ok_error, bar=b, n_periods=n_under,
+               rho_bar=rho_bar(tf, comp, lo, hi),
+               held_lo_s=h[0], held_hi_s=h[1], held_n=h[2],
+               n_finite_rho=int(np.isfinite(rho).sum()),
+               passes=bool(ok_phase and ok_slope and ok_error), fails="; ".join(why))
+    for a, c in BAR_BANDS:
+        out["bar_%g_%g" % (a, c)] = bar(tf, comp, a, c)
+    return out
 
 
 # ------------------------------------------------------------------ agreement between two products
@@ -347,7 +286,7 @@ def agree(a, b, comp: str, lo=AGREE_BAND[0], hi=AGREE_BAND[1], agree_rho=AGREE_R
 
 RUN_STAMP = re.compile(r"^(?P<run>.+)_(?P<stamp>\d{8}_\d{4})$")
 FORM_NAME = re.compile(r"^(?P<form>.+?)_(?P<kind>%s)_(?P<rate>\d+)hz_(?P<params>.+)$"
-                       % "|".join(sorted(KINDS, key=len, reverse=True)))
+                       % "|".join(sorted(ALL_KINDS, key=len, reverse=True)))
 PRODUCT_COLS = ["site", "run", "stamp", "kind", "rate_hz", "params", "selection", "form", "path",
                 "on_disk", "candidate"]
 
@@ -390,7 +329,7 @@ def parse_form_name(path, sites) -> dict:
 
     The name is <site>_<form>_<kind>_<rate>hz_<params>.edi and both the site and the form carry
     underscores of their own, so the site is matched against the survey's own list, longest first, and the
-    kind is matched as one of the five code keys with the longest alternatives tried first.
+    kind is matched as one of the code keys with the longest alternatives tried first.
     """
     stem = Path(path).stem
     for site in sorted(sites, key=len, reverse=True):
@@ -461,6 +400,18 @@ def all_products(sv, sites, runs="all", work_root=None, forms=True, from_names=T
                               "form"]).reset_index(drop=True)
 
 
+def deliverable(products: pd.DataFrame, kinds=KINDS) -> tuple:
+    """(the products of the four reference kinds, the products of every other kind).
+
+    The second frame is what a workbook reports as read and ignored: a single-station product left on disk
+    by an earlier pass is named and not scored, so a file nobody deleted cannot enter a table or a figure.
+    """
+    if not len(products):
+        return products, products
+    keep = products.kind.isin(list(kinds))
+    return products[keep].reset_index(drop=True), products[~keep].reset_index(drop=True)
+
+
 def product_label(row) -> str:
     """The name a table and a figure call one product: the kind, the selection or form, and the rate."""
     form = str(getattr(row, "form", "") or "")
@@ -469,17 +420,32 @@ def product_label(row) -> str:
     return "%s%s %g Hz" % (row.kind, ("/" + tag) if tag else "", float(row.rate_hz))
 
 
+def product_key(row) -> str:
+    """The name an analyst writes in the choice cell: `stack_1hz`, `remote_10hz_f25`, or a form's own name.
+
+    A workbook 05 form is named by its form, which is what its file name carries and what forms.csv calls
+    it; a workbook 03 product is named by its kind, its rate and, where a 10 Hz pass ran on a selection of
+    hours, that selection.
+    """
+    form = str(getattr(row, "form", "") or "")
+    if form:
+        return form
+    sel = str(getattr(row, "selection", "") or PR.WHOLE_SELECTION)
+    tag = "" if sel in ("", PR.WHOLE_SELECTION, "nan") else ("_" + sel)
+    return "%s_%ghz%s" % (row.kind, float(row.rate_hz), tag)
+
+
 # ------------------------------------------------------------------ the readings table
 
-def readings_table(products: pd.DataFrame, read=None, band=QUALITY_BAND, live=None,
-                   agree_band=AGREE_BAND, agree_rho=AGREE_RHO, agree_phase=AGREE_PHASE,
-                   slope_tol=SLOPE_TOL, z_slope_cut=Z_SLOPE_CUT, bar_max=BAR_MAX,
-                   held_bar_max=HELD_BAR_MAX, short_slope_band=SHORT_SLOPE_BAND) -> pd.DataFrame:
-    """One row per product and component with every statistic, the earth flag and the agreement count.
+def readings_table(products: pd.DataFrame, read=None, band=QUALITY_BAND, agree_band=AGREE_BAND,
+                   agree_rho=AGREE_RHO, agree_phase=AGREE_PHASE, quadrant_min=QUADRANT_MIN,
+                   slope_bound=SLOPE_BOUND, slope_tol=SLOPE_TOL, slope_min=SLOPE_MIN, bar_max=BAR_MAX,
+                   min_periods=MIN_PERIODS, held_bar_max=HELD_BAR_MAX, kinds=KINDS) -> pd.DataFrame:
+    """One row per product and component with every statistic, the three verdicts and the agreement count.
 
     `read` turns a path into a TFData; the default reads each file once per call. The agreement count is the
-    number of OTHER reference kinds of the same site and component whose row is an earth and agrees with this
-    one over `agree_band`, which is what the product of record is chosen among.
+    number of OTHER reference kinds of the same site and component whose row passes the three tests and
+    agrees with this one over `agree_band`, which is what the product of record is chosen among.
     """
     read = read or PR.read_tf
     rows = []
@@ -503,52 +469,68 @@ def readings_table(products: pd.DataFrame, read=None, band=QUALITY_BAND, live=No
                 if tf is None:
                     reads[key] = None
                     continue
-                q = quality(tf, comp, band=band, live=live, held_bar_max=held_bar_max,
-                            short_slope_band=short_slope_band)
-                is_earth, why = earth(q, slope_tol=slope_tol, z_slope_cut=z_slope_cut, bar_max=bar_max)
-                reads[key] = dict(q, earth=is_earth, not_earth_because=why)
+                reads[key] = quality(tf, comp, band=band, quadrant_min=quadrant_min,
+                                     slope_bound=slope_bound, slope_tol=slope_tol, slope_min=slope_min,
+                                     bar_max=bar_max, min_periods=min_periods, held_bar_max=held_bar_max)
             for key, r in order:
                 rd = reads.get(key)
+                common = dict(site=site, component=comp, kind=r.kind,
+                              kind_word=KIND_WORD.get(r.kind, r.kind),
+                              selection=str(getattr(r, "selection", "") or PR.WHOLE_SELECTION),
+                              form=str(getattr(r, "form", "") or ""), run=r.run, stamp=r.stamp,
+                              rate_hz=float(r.rate_hz), product=product_key(r),
+                              candidate=bool(getattr(r, "candidate", True)), path=r.path)
                 if rd is None:
-                    rows.append(dict(site=site, component=comp, kind=r.kind,
-                                     kind_word=KIND_WORD.get(r.kind, r.kind),
-                                     selection=str(getattr(r, "selection", "") or PR.WHOLE_SELECTION),
-                                     form=str(getattr(r, "form", "") or ""), run=r.run, stamp=r.stamp,
-                                     rate_hz=float(r.rate_hz),
+                    rows.append(dict(common,
                                      status=("not on disk" if not r.on_disk else "unreadable"),
-                                     earth=False, not_earth_because="the file could not be read",
-                                     agree_kinds="", agree_n=0,
-                                     candidate=bool(getattr(r, "candidate", True)), path=r.path))
+                                     passes=False, fails="the file could not be read",
+                                     agree_kinds="", agree_n=0))
                     continue
                 partners = []
-                if rd["earth"]:
+                if rd["passes"]:
                     for other, ro in order:
                         # a product corroborates only where it could itself be delivered: a form workbook
                         # 05 did not promote is read and scored, and it does not vouch for another row
-                        if other == key or ro.kind == r.kind or not bool(getattr(ro, "candidate", True)):
+                        if (other == key or ro.kind == r.kind or ro.kind not in set(kinds)
+                                or not bool(getattr(ro, "candidate", True))):
                             continue
                         od = reads.get(other)
-                        if od is None or not od["earth"]:
+                        if od is None or not od["passes"]:
                             continue
                         a = agree(tfs[key], tfs[other], comp, agree_band[0], agree_band[1],
                                   agree_rho, agree_phase)
                         if a["agrees"]:
                             partners.append(ro.kind)
-                rows.append(dict(site=site, component=comp, kind=r.kind,
-                                 kind_word=KIND_WORD.get(r.kind, r.kind),
-                                 selection=str(getattr(r, "selection", "") or PR.WHOLE_SELECTION),
-                                 form=str(getattr(r, "form", "") or ""), run=r.run, stamp=r.stamp,
-                                 rate_hz=float(r.rate_hz), status="ok",
-                                 agree_kinds=" ".join(sorted(set(partners))),
-                                 agree_n=len(set(partners)),
-                                 candidate=bool(getattr(r, "candidate", True)), path=r.path, **rd))
+                rows.append(dict(common, status="ok", agree_kinds=" ".join(sorted(set(partners))),
+                                 agree_n=len(set(partners)), **rd))
     out = pd.DataFrame(rows)
     for c in READINGS_COLUMNS:
         if c not in out.columns:
             out[c] = np.nan
+    out = unique_product_names(out)
     front = [c for c in READINGS_COLUMNS if c in out.columns]
     rest = [c for c in out.columns if c not in front]
     return out[front + rest]
+
+
+def unique_product_names(readings: pd.DataFrame) -> pd.DataFrame:
+    """`product` made unique within a site and component by appending the run where two files share a name.
+
+    One row of the table is one product FILE, keyed by its run and its stamp. Two runs of a site can hold
+    the same kind, rate and selection -- a workbook 03 short-rate run and a workbook 05 form of the same
+    name -- and a choice cell naming that product would then be ambiguous, so the name carries the run.
+    """
+    if not len(readings) or "product" not in readings.columns:
+        return readings
+    d = readings.copy()
+    key = ["site", "component", "product"]
+    files = d.groupby(key).path.nunique()
+    clash = {k for k, n in files.items() if n > 1}
+    if not clash:
+        return d
+    d["product"] = [("%s@%s" % (r.product, r.run) if (r.site, r.component, r.product) in clash
+                     else r.product) for r in d.itertuples()]
+    return d
 
 
 def agreement_matrix(products: pd.DataFrame, read=None, comp="xy", agree_band=AGREE_BAND,
@@ -583,14 +565,14 @@ def _rate_words(rates) -> str:
     return "every rate's" if rates is None else " and ".join("%g Hz" % float(r) for r in rates)
 
 
-def product_of_record(readings: pd.DataFrame, bar_max=BAR_MAX, agree_band=AGREE_BAND,
-                      band=QUALITY_BAND, rates=(1.0,)) -> pd.DataFrame:
+def product_of_record(readings: pd.DataFrame, agree_band=AGREE_BAND, band=QUALITY_BAND,
+                      rates=(1.0,)) -> pd.DataFrame:
     """Per site and component the chosen product with the reason, or none with the reason there is none.
 
-    The pool is the rows at the delivery rate that are earths and agree with at least one product of another
-    reference kind. The choice inside it is the smallest bar over `band`, ties broken by the longest period
-    held. A component whose pool is empty has no product of record, and the row says whether the earths
-    did not corroborate each other or there was no earth at all.
+    The pool is the rows at the delivery rate that pass the three response tests and agree with at least one
+    product of another reference kind. The choice inside it is the smallest bar over `band`, ties broken by
+    the longest period held. A component whose pool is empty has no product of record, and the row says
+    whether the passing products did not corroborate each other or none passed at all.
 
     `rates` is the delivery rate or rates the choice is made among; None reads every rate in the table. The
     default is the 1 Hz row, because a 10 Hz product of this survey stops near 1,200 s and the row a
@@ -606,47 +588,49 @@ def product_of_record(readings: pd.DataFrame, bar_max=BAR_MAX, agree_band=AGREE_
         # efficiency and not a different answer, and an inter-site impedance is shown and never delivered
         if "candidate" in ok.columns:
             ok = ok[(ok.form == "") | ok.candidate.astype(bool)]
-        earths = ok[ok.earth.astype(bool)]
-        pool = earths[earths.agree_n > 0]
-        alt = "; ".join("%s %.4f" % (product_label(r), r.bar_10_1000) for r in
-                        earths.sort_values("bar_10_1000").itertuples()
-                        if np.isfinite(r.bar_10_1000)) or "none"
+        sound = ok[ok.passes.astype(bool)]
+        pool = sound[sound.agree_n > 0]
+        alt = "; ".join("%s %.4f" % (product_label(r), r.bar) for r in
+                        sound.sort_values("bar").itertuples() if np.isfinite(r.bar)) or "none"
         if len(pool):
             # the smallest bar, ties by the longest period held: two products of one record can carry the
             # same bar to the digit a table prints, and the one that reaches further is the one to deliver
-            best = pool.sort_values(["bar_10_1000", "held_hi_s"],
-                                    ascending=[True, False]).iloc[0]
-            tied = pool[np.isclose(pool.bar_10_1000, best.bar_10_1000, rtol=1e-9, atol=0)]
-            why = ("the smallest bar over %g-%g s among the %s earths that agree with another kind over "
-                   "%g-%g s%s" % (band[0], band[1], _rate_words(rates), agree_band[0], agree_band[1],
-                                  ("; %d tied on the bar and the longest period held broke it"
-                                   % len(tied)) if len(tied) > 1 else ""))
-            rows.append(dict(site=site, component=comp, product=product_label(best), kind=best.kind,
+            best = pool.sort_values(["bar", "held_hi_s"], ascending=[True, False]).iloc[0]
+            tied = pool[np.isclose(pool.bar, best.bar, rtol=1e-9, atol=0)]
+            why = ("the smallest bar over %g-%g s among the %s products that pass the three response tests "
+                   "and agree with another kind over %g-%g s%s"
+                   % (band[0], band[1], _rate_words(rates), agree_band[0], agree_band[1],
+                      ("; %d tied on the bar and the longest period held broke it"
+                       % len(tied)) if len(tied) > 1 else ""))
+            # best["product"] and not best.product: a Series carries its own product() method, and the
+            # attribute would hand a bound method to the table instead of the product's name
+            rows.append(dict(site=site, component=comp, product=best["product"], kind=best.kind,
                              kind_word=best.kind_word,
                              selection=best.get("selection", PR.WHOLE_SELECTION), form=best.form,
-                             run=best.run, stamp=best.stamp,
-                             rate_hz=best.rate_hz, bar_10_1000=best.bar_10_1000,
-                             held_hi_s=best.held_hi_s, held_n=best.held_n, earth=True,
+                             run=best.run, stamp=best.stamp, rate_hz=best.rate_hz, bar=best.bar,
+                             n_periods=best.n_periods, held_lo_s=best.held_lo_s,
+                             held_hi_s=best.held_hi_s, held_n=best.held_n, passes=True, fails="",
                              agree_n=int(best.agree_n), agree_kinds=best.agree_kinds,
                              reproducible=best.get("reproducible", ""), why=why, alternatives=alt,
                              flagged="", note="", path=best.path))
             continue
-        if len(earths):
-            why = ("no product of record: %d %s row(s) are earths and none agrees with a product of another "
-                   "kind over %g-%g s (%s)"
-                   % (len(earths), _rate_words(rates), agree_band[0], agree_band[1],
-                      ", ".join(sorted(set(earths.kind)))))
+        if len(sound):
+            why = ("no product of record: %d %s product(s) pass the three response tests and none agrees "
+                   "with a product of another kind over %g-%g s (%s)"
+                   % (len(sound), _rate_words(rates), agree_band[0], agree_band[1],
+                      ", ".join(sorted(set(sound.kind)))))
         elif len(ok):
-            reasons = sorted({str(r.not_earth_because).split(";")[0] for r in ok.itertuples()})
-            why = ("no product of record: no %s row is an earth (%s)"
+            reasons = sorted({str(r.fails).split(";")[0] for r in ok.itertuples()})
+            why = ("no product of record: no %s product passes the three response tests (%s)"
                    % (_rate_words(rates), "; ".join(reasons[:3])))
         else:
             why = ("no product of record: no %s product of this site and component could be read"
                    % _rate_words(rates))
         rows.append(dict(site=site, component=comp, product="none", kind="", kind_word="", selection="",
-                         form="", run="", stamp="", rate_hz=np.nan, bar_10_1000=np.nan, held_hi_s=np.nan,
-                         held_n=0, earth=False, agree_n=0, agree_kinds="", reproducible="",
-                         why=why, alternatives=alt, flagged="", note="", path=""))
+                         form="", run="", stamp="", rate_hz=np.nan, bar=np.nan, n_periods=0,
+                         held_lo_s=np.nan, held_hi_s=np.nan, held_n=0, passes=False, fails="",
+                         agree_n=0, agree_kinds="", reproducible="", why=why, alternatives=alt,
+                         flagged="", note="", path=""))
     out = pd.DataFrame(rows)
     for c in RECORD_COLUMNS:
         if c not in out.columns:

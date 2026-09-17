@@ -2451,7 +2451,7 @@ WB04_PARAMS = '''# ---- parameters: change these and re-run the workbook ----
 SURVEY = "queensland_phase1"  # any folder under surveys/: queensland_phase2 | queensland_phase3 | victoria
 SITES = "all"                 # "all" | "largest" (the register's largest group) | a group name | ["Q49", "Q50"]
 RUNS = "latest"               # "latest" = the newest stamp of every run name | "all" | ["first", "short10"]
-KINDS = "all"                 # "all" | a list of the code keys: ["single", "remote", "stack"]
+KINDS = "all"                 # "all" | a list of the code keys: ["remote", "stack", "obs"]
 RATES = "all"                 # "all" | [1] | [10]; both rates of a site sit on the same page
 COMPARE = "all"               # "all" | a list of the survey.yaml source names | "none" draws no comparison
 SHOW = None                   # None = the first chosen site; a site name shows that site's page inline
@@ -2483,7 +2483,7 @@ from IPython.display import Image, display
 from loguru import logger as _loguru
 _loguru.remove()
 
-from auslamp_proc import agreement as AG, products as PR, survey as SV
+from auslamp_proc import agreement as AG, products as PR, readings as RD, survey as SV
 from auslamp_proc.process import KIND_WORD
 from auslamp_proc.figures import products as FIG
 
@@ -2501,7 +2501,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 WRITTEN = []
 
 ASKED, WHY = SV.select_sites(sv, SITES, 0)
-PROD = PR.find_products(sv, ASKED, runs=RUNS, kinds=KINDS, rates=RATES)
+PROD, IGNORED = RD.deliverable(PR.find_products(sv, ASKED, runs=RUNS, kinds=KINDS, rates=RATES))
 CHOSEN = [s for s in ASKED if s in set(PROD.site)]
 NO_PRODUCT = [s for s in ASKED if s not in set(PROD.site)]
 PAIRS = PR.choose_runs(PR.ledger(WORK), RUNS)
@@ -2537,6 +2537,9 @@ for name, stamp in PAIRS:
           % (name, stamp, n, ", ".join("%g" % r for r in rates),
              PROD[PROD.run == name].site.nunique()))
 print("products     %d rows, %d on disk" % (len(PROD), int(PROD.on_disk.sum())))
+print("kinds        %s" % ", ".join("%s (%s)" % (KIND_WORD[k], k) for k in RD.KINDS))
+print("ignored      %d %s product(s) on disk: read by nothing in this workbook"
+      % (len(IGNORED), RD.DROPPED_KIND))
 print("periods      %g to %g s drawn and scored" % PERIOD_RANGE)
 print("agreement    within %.0f %% in rho and %.1f deg in phase over %g-%g s"
       % (100 * AGREE_RHO, AGREE_PHASE_DEG, AGREE_BAND[0], AGREE_BAND[1]))
@@ -2557,15 +2560,18 @@ before any interpolation, because some writers emit them unsorted and interpolat
 silently wrong. The yx phase is folded into the first quadrant by +180 deg in
 `auslamp_proc.products.rho_phase`, which is what every panel and table below reads.
 
-The five kinds are the same words the earlier workbooks use, and each is one product of the same record:
+The four kinds are the same words the earlier workbooks use, and each is one product of the same record:
 
 | word | what it is | code key |
 |---|---|---|
-| single station | the site's own H and E | `single` |
 | remote site | one other site's H as the reference | `remote` |
 | fleet stack | a coherence-weighted mean of several sites' H | `stack` |
 | observatory | an INTERMAGNET one-second record as the reference | `obs` |
 | stack + observatory | the stack with the observatory as a member | `stack_obs` |
+
+The single-station estimate is not one of them. It is biased low by whatever noise sits in the site's own H
+and its error bars do not carry that bias, so it is not a kind of this package: a single-station file left in
+a run folder by an earlier pass is counted and named in the first cell, and no table or figure below reads it.
 
 Four checks state their failure criterion in bold above the cell and print a verdict below it. A check that
 scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported FAILED and is
@@ -2631,8 +2637,12 @@ found = pd.DataFrame(rows)
 print(found.to_string(index=False))
 print()
 print("the reference kinds, as words and as the code keys the file names carry")
-print(PR.kind_words().to_string(index=False))
+print(PR.kind_words(RD.KINDS).to_string(index=False))
 print()
+if len(IGNORED):
+    print("%d %s product(s) sit in the chosen run folders and are ignored by this workbook: %s"
+          % (len(IGNORED), RD.DROPPED_KIND, " ".join(sorted(Path(p).name for p in IGNORED.path))[:400]))
+    print()
 spare = PR.unledgered(WORK, CHOSEN, PAIRS)
 print("%d EDI(s) sit in the chosen run folders without a ledger row%s"
       % (len(spare), (": " + "; ".join(Path(p).name for p in spare[:6])) if spare else ""))
@@ -2663,11 +2673,11 @@ answers are readable at once. The y limits of the rho panels are the 2nd to 98th
 drawn, padded half a decade each way; the phase panels are fixed at 0-90 deg. The header lines under the
 title are the product's own, taken from the EDI's processing_parameters.
 
-What to look for. The single station sits below the referenced kinds wherever the site's own H noise is
-coherent with itself, which is the short end at most sites. The remote-referenced kinds -- remote site, fleet
-stack, observatory, stack + observatory -- should lie on each other at 100-1000 s, where the field is large
-and every reference sees the same source; a kind that departs from the others there is the one to read, not
-the average of them. The error bars grow at the long end, where the record runs out of independent windows.
+What to look for. The four kinds -- remote site, fleet stack, observatory, stack + observatory -- should lie
+on each other at 100-1000 s, where the field is large and every reference sees the same source; a kind that
+departs from the others there is the one to read, not the average of them. At the short end the kinds part
+where the references stop seeing the same source, which is where the choice of reference is worth the most.
+The error bars grow at the long end, where the record runs out of independent windows.
 The tipper's real and imaginary parts are drawn together because a real part alone cannot be told from a leak.
 
 A page is written for every chosen site to `<work_root>/<site>/products_<run>.png`."""),
@@ -2708,9 +2718,11 @@ a table of no rows cannot support the reading above it."""),
 ("code", '''kk = AG.kind_vs_kind(PROD, read=read, bands=[tuple(b) for b in BANDS], agree_rho=AGREE_RHO,
                      agree_phase=AGREE_PHASE_DEG, agree_band=tuple(AGREE_BAND))
 band_tag = AG.band_label(*AGREE_BAND)
-scored = kk[(kk.band == band_tag) & (kk.n > 0)]
+# a survey whose chosen run holds one kind per site yields no pair at all, and kind_vs_kind comes back with
+# no rows and no columns: the check reads UNJUDGED rather than raising on a column that was never made
+scored = kk[(kk.band == band_tag) & (kk.n > 0)] if len(kk) else kk
 counts = []
-for (site, rate), g in scored.groupby(["site", "rate_hz"]):
+for (site, rate), g in (scored.groupby(["site", "rate_hz"]) if len(scored) else []):
     pairs = g.groupby(["kind_a", "kind_b"]).agrees.all()
     counts.append(dict(site=site, rate_hz=rate, pairs=int(len(pairs)), agreeing=int(pairs.sum()),
                        worst_rho_ratio=round(float(g.rho_ratio.iloc[
@@ -2724,7 +2736,7 @@ print("both components inside %.0f %% and %.1f deg over %s; a pair counts as agr
 print(agree_counts.to_string(index=False))
 print()
 print("the per-decade table, the first site as an example")
-if len(CHOSEN):
+if len(CHOSEN) and len(kk):
     ex = kk[(kk.site == CHOSEN[0]) & (kk.band != band_tag)]
     print(ex[["kind_a", "kind_b", "rate_hz", "band", "component", "rho_ratio", "phase_diff_deg",
               "n"]].round(3).to_string(index=False))
@@ -2926,9 +2938,10 @@ for src in SOURCES:
                 turn_n += 1
                 if np.nanmax(d) > 1e-9:
                     turn_bad.append("%s %s %s: %.2e" % (src["name"], site, label, float(np.nanmax(d))))
-    hit = tab[(tab.band == AG.band_label(*AGREE_BAND)) & (tab.n > 0)]
+    hit = tab[(tab.band == AG.band_label(*AGREE_BAND)) & (tab.n > 0)] if len(tab) else tab
     print("  scored     %d site(s), %d kind(s), %d row(s); %d of %d readings agree"
-          % (tab.site.nunique(), tab.kind.nunique(), len(tab), int((hit.reading == "agrees").sum()), len(hit)))
+          % (tab.site.nunique() if len(tab) else 0, tab.kind.nunique() if len(tab) else 0, len(tab),
+             int((hit.reading == "agrees").sum()) if len(hit) else 0, len(hit)))
     print()
 print("%d tensor invariant(s) tested across %d source(s)" % (turn_n, len(vs_tables)))
 '''),
@@ -2941,7 +2954,7 @@ two. The source's frame and note are printed above; the numbers are a shape chec
 
 ("code", '''for name, tab in vs_tables.items():
     src = [s for s in SOURCES if s["name"] == name][0]
-    mid = tab[(tab.band == "100-1000 s") & (tab.n > 0)]
+    mid = tab[(tab.band == "100-1000 s") & (tab.n > 0)] if len(tab) else tab
     if not len(mid):
         print("%s: nothing scored at 100-1000 s" % name)
         continue
@@ -3064,6 +3077,10 @@ print("%d files, %.1f MB, in %.1f minutes" % (len(files), files.kb.sum() / 1024,
 print(files.head(60).to_string(index=False))
 if len(files) > 60:
     print("   ... and %d more" % (len(files) - 60))
+print()
+print("ignored: %d %s product(s) on disk, read by nothing above" % (len(IGNORED), RD.DROPPED_KIND))
+for p in sorted(IGNORED.path):
+    print("   %s" % p)
 '''),
 ]
 
@@ -4847,29 +4864,39 @@ print(cost.to_string(index=False))
 
 WB06_PARAMS = '''# ---- parameters: change these and re-run the workbook ----
 SURVEY = "queensland_phase1"  # any folder under surveys/: queensland_phase2 | queensland_phase3 | victoria
-SITES = "all"                 # "all" | "largest" (the register's largest group) | a group name | ["Q49"]
+SITE = "Q53N"                 # one site, or "all": the rule's proposal is applied to every site with a
+                              # delivery and each choice is marked `rule`
 RUNS = "all"                  # "all" = every run folder of the site | "latest" | ["first", "short10"]
 RECORD_RATES = [1]            # the delivery rate the product of record is chosen among; [1, 10] admits a
                               # 10 Hz product as a whole row, which stops near 1,200 s at this survey
-HALVES = True                 # True runs the two half passes over each candidate; False reads the ones on
-                              # disk and leaves the reading UNJUDGED where there are none
-LANES = 3                     # concurrent single-site subprocesses for the half passes, as in workbook 03
+TRIM_TO_HELD = True           # the delivered file carries the periods inside the chosen product's held
+                              # band; False delivers every period the sources carry and marks the file
+HALVES = True                 # True runs the two half passes over each chosen product; False reads the
+                              # ones on disk and leaves the reading UNJUDGED where there are none
+LANES = 2                     # concurrent single-site subprocesses for the half passes
 TIPPER_FROM = "xy"            # "xy" | "yx" | a reference kind: which product the tipper is taken from
-COMPARE = "all"               # "all" | a list of the survey.yaml source names | "none" draws no comparison
+COMPARE = ["campaign_merged"]  # the survey.yaml source drawn behind the delivered curve; [] draws none
 RESAMPLE = False              # True writes final/<site>_resampled.edi on the ten-per-decade grid as well
 PER_PAGE = 6                  # sites a gallery page
-SHOW = None                   # None = the first site with a final; a site name shows that site's page
 WORK_ROOT = None              # None = survey.yaml work_root; every file this workbook writes lands under it
 '''
 
-WB06_RULES = '''# ---- the earth rule: a change here changes which products are earths and which is the record ----
-QUALITY_BAND = (10, 1000)     # the band the shape, the bar and the choice are read over, in s
-SLOPE_TOL = 1.2               # |d log rho / d log T| over the survey's live short band, at most this
+WB06_RULES = '''# ---- the three response tests: a change here changes which products are sound ----
+QUALITY_BAND = (10, 1000)     # the band the tests, the bar and the choice are read over, in s
+QUADRANT_MIN = 0.70           # the phase test: raise it and a product with a few noisy periods fails
+SLOPE_TOL = 0.25              # the slope test: the tolerance on |d log rho / d log T| <= 1, for noise
+SLOPE_MIN = 0.80              # ... lower it and a rougher curve passes
+BAR_MAX = 1.0                 # the error test: raise it and a product whose error bars are the size of
+                              # its own impedance is delivered
+MIN_PERIODS = 8               # ... the periods of the band that must carry an error under that ceiling
+HELD_BAR_MAX = 0.20           # a period is held where its bar is under this and its phase is in quadrant;
+                              # raise it and the delivered file reaches further with worse bars
+
+# ---- the choice: a change here changes which product is the record ----
 AGREE_RHO = 0.20              # two products agree within this fraction in apparent resistivity
 AGREE_PHASE = 5.0             # ... and this many degrees in phase
-AGREE_BAND = (5, 200)         # ... over this band, in s
-Z_SLOPE_CUT = -0.75           # d log|Z| / d log T below this is an inductive loop, not an earth
-BAR_MAX = 1.0                 # the median relative error of |Z| over QUALITY_BAND, at most this
+AGREE_BAND = (5, 200)         # ... over this band, in s; a product that agrees with no other kind is
+                              # never the product of record
 
 # ---- the splice: a change here changes which 10 Hz rows are delivered ----
 SPLICE_JOIN_S = 16            # the period the 10 Hz row joins the 1 Hz row at, in s
@@ -4881,7 +4908,7 @@ CONTROL_MARGIN = 0.20         # ... and the fraction of the control bar a select
 
 PERIOD_RANGE = (0.3, 50000)   # the periods drawn and scored, in s
 BANDS = [(5, 10), (10, 100), (100, 1000), (1000, 10000)]   # the decades every table reports, in s
-COMPARE_BAND = (100, 1000)    # the band the comparison table reports, in s
+COMPARE_BAND = (100, 1000)    # the band the comparison reports, in s
 '''
 
 WB06_SETUP = '''import os
@@ -4927,12 +4954,16 @@ OUT = WORK / "survey"
 OUT.mkdir(parents=True, exist_ok=True)
 WRITTEN = []
 
-ASKED, WHY = SV.select_sites(sv, SITES, 0)
-PROD = RD.all_products(sv, ASKED, runs=RUNS)
+EVERY, WHY = SV.select_sites(sv, "all", 0)
+ONE = str(SITE).strip()
+ASKED = list(EVERY) if ONE.lower() == "all" else [ONE]
+if ONE.lower() != "all" and ONE not in set(EVERY):
+    raise ValueError("%s is not a site of %s (%s)" % (ONE, SURVEY, " ".join(EVERY)))
+PROD, IGNORED = RD.deliverable(RD.all_products(sv, ASKED, runs=RUNS))
 CHOSEN = [s for s in ASKED if s in set(PROD.site)]
 NO_PRODUCT = [s for s in ASKED if s not in set(PROD.site)]
-LIVE = RD.live_band(sv)
-SHORT_BAND = RD.slope_band(LIVE)
+FOCUS = CHOSEN[0] if CHOSEN else ""
+CHOICES = FN.read_choices(FN.choices_path(sv))
 
 def _dec(cell):
     try:
@@ -4954,10 +4985,20 @@ def read(path):
 def final_dir(site):
     return WORK / str(site) / "final"
 
+def picks_for(site, record):
+    """The record rows of one site as the merge wants them, or an empty dict."""
+    out = {}
+    for r in record[(record.site == site) & (record["product"] != "none")].itertuples():
+        out[r.component] = dict(path=r.path, kind=r.kind, kind_word=r.kind_word, form=r.form,
+                                selection=r.selection, run=r.run, stamp=r.stamp, rate_hz=r.rate_hz,
+                                bar=r.bar, held_lo_s=r.held_lo_s, held_hi_s=r.held_hi_s,
+                                product=r.product)
+    return out
+
 print("survey       %s" % sv.cfg["name"])
 print("work root    %s" % WORK)
-print("sites        %d of %d asked for carry a product (%s)" % (len(CHOSEN), len(ASKED), WHY))
-print("             %s" % " ".join(CHOSEN))
+print("site         %s" % (", ".join(CHOSEN) if len(CHOSEN) < 6 else
+                           "%d sites: %s" % (len(CHOSEN), " ".join(CHOSEN))))
 if NO_PRODUCT:
     print("no product   %s -- run workbook 03 over them" % " ".join(NO_PRODUCT))
 print("products     %d rows, %d on disk, over %d run folder(s)"
@@ -4967,48 +5008,48 @@ for (run, stamp), g in PROD.groupby(["run", "stamp"]):
           % (run, stamp, len(g), ", ".join("%g" % r for r in sorted(set(g.rate_hz))), g.site.nunique(),
              ", ".join(sorted(set(g.selection)))))
 print("forms        %d product(s) workbook 05 left" % int((PROD.form != "").sum()))
-print("live band    %s, from survey.yaml" % ("%g-%g s" % LIVE if LIVE else "not declared"))
-print("short clause the 2-20 s slope clause is scored on %s"
-      % ("%g-%g s" % SHORT_BAND if SHORT_BAND else "nothing: the live band leaves none of 2-20 s"))
-print("delivery     the product of record is chosen among the %s Hz products"
-      % ", ".join(str(r) for r in RECORD_RATES))
+print("kinds        %s" % ", ".join("%s (%s)" % (KIND_WORD[k], k) for k in RD.KINDS))
+print("ignored      %d %s product(s) on disk: read by nothing in this workbook"
+      % (len(IGNORED), RD.DROPPED_KIND))
+print("delivery     the product of record is chosen among the %s Hz products; the delivered file is %s"
+      % (", ".join(str(r) for r in RECORD_RATES),
+         "trimmed to the chosen product's held band" if TRIM_TO_HELD else "not trimmed"))
+print("choices      %s: %d row(s), %d of them an analyst's"
+      % (FN.choices_path(sv), len(CHOICES), int((CHOICES.chosen_by == "analyst").sum())))
 print("engine       auslamp_proc %s" % auslamp_proc.__version__)
 '''
 
 WB06 = [
-("md", r"""# 06 -- The final transfer function
+("md", r"""# 06 -- one site's final transfer function
 
-This workbook reads every product a site has -- workbook 03's reference kinds at both rates and every
-selection of hours a 10 Hz pass ran on, and workbook 05's forms -- applies one rule to all of them, and
-delivers one EDI per site.
+A student goes through the sites one by one and sees what every processing produced, what worked and what
+did not, before the final curve is merged.
 
-The rule is the survey's own statement of what a sound transfer function looks like, and it is stated with
-its values before anything is chosen. A row is an earth where its phase sits in its quadrant, its apparent
-resistivity curve is continuous, its short-end slope is inside the bound on the band the record actually
-carries, the slope of its impedance is above the cut that separates an earth from an electric field
-following dB/dt, its error bar is under the ceiling, and it holds at at least one period. The bar always
-sits beside the shape call, because the shape rule alone passes on noise.
-
-The product of record per component is then a choice between the site's own products: among the earths that
-agree with a product of another reference kind, the one with the smallest bar. Corroboration comes from
-another kind because two references that share no magnetics cannot carry the same noise into the estimate.
-A component with no agreeing earth has no product of record, and that is a result rather than a gap: it
-says the record does not support a delivered row there, and the file says so where a reader will see it.
-
-The release and any earlier processing are never the arbiter of the choice. They are a shape check,
-reported beside it in section 7 and last.
-
-Six checks state their failure criterion in bold above the cell and print a verdict below it. A check that
-scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported FAILED and is
-not revised afterwards.
+This workbook reads every product one site has -- workbook 03's reference kinds at both rates and every
+selection of hours a 10 Hz pass ran on, and workbook 05's forms -- puts the same three tests to all of them,
+proposes one product per component, records the choice that was made, and writes one EDI.
 
 | word | what it is | code key |
 |---|---|---|
-| single station | the site's own H and E | `single` |
 | remote site | one other site's H as the reference | `remote` |
 | fleet stack | a coherence-weighted mean of several sites' H | `stack` |
 | observatory | an INTERMAGNET one-second record as the reference | `obs` |
-| stack + observatory | the stack with the observatory as a member | `stack_obs` |"""),
+| stack + observatory | the stack with the observatory as a member | `stack_obs` |
+
+The single station is not a kind of this package: it is biased low by whatever noise sits in H, and its error
+bars do not show that bias. A single-station file an earlier pass left in a run folder is counted, named and
+read by nothing here.
+
+The three tests a product is put to are the ones students learn first -- the phase in its quadrant, the
+apparent resistivity changing no faster than the period, and the error bar -- and a product passes them or
+fails one by name.
+
+A delivered file carries the measurement and nothing else: it holds the periods inside the chosen product's
+held band, and the periods dropped are named in the manifest with the reason.
+
+Five checks state their failure criterion in bold above the cell and print a verdict below it. A check that
+scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported FAILED and is
+not revised afterwards."""),
 
 ("code", WB06_PARAMS),
 ("code", WB06_RULES),
@@ -5016,282 +5057,233 @@ not revised afterwards.
 ("md", r"""## The products this workbook reads
 
 Everything below reads `<work_root>/survey/runs.csv` and the run folders `<site>/<run>_<stamp>/`. `RUNS`
-`"all"` keeps every run folder of every chosen site, which is what this workbook wants: the 1 Hz kinds, the
-10 Hz passes and workbook 05's forms are all products of the same record and are all scored by the same rule.
+`"all"` keeps every run folder of the site, which is what this workbook wants: the 1 Hz kinds, the 10 Hz
+passes and workbook 05's forms are all products of the same record and are all put to the same three tests.
 
 A product carries three labels beside its site: the reference kind, the selection of hours it was estimated
 on, and the form where workbook 05 made it. The 1 Hz pass runs on the whole record and its files carry no
 selection tag; the 10 Hz pass runs on the most coherent hours by 1-30 s E-H coherence and never on the whole
 record, so its files carry one: `f05`, `f10` and `f25` are the best 5, 10 and 25 per cent of hours and `r25`
 is the random 25 per cent that controls them. A whole-record 10 Hz product, where a run folder holds one, is
-a control and is read as `whole`."""),
+a control and is read as `whole`. The name each product answers to in the choice cell is `<kind>_<rate>hz`,
+with the selection appended where a 10 Hz pass ran on one, and a form's own name where workbook 05 made it.
+
+`SITE` names one site. `SITE = "all"` runs the same cells over every site of the survey and marks every
+choice `rule`."""),
 
 ("code", WB06_SETUP),
 
-("md", r"""## 1. Every product of the site, and the earth rule over it
+("md", r"""## 1. Everything this site produced
 
-One row per product and component with every statistic the rule reads. The rule, with its values:
+Every product of this site -- kind by rate by selection by form -- on the four panels, coloured by reference
+kind, 10 Hz dashed and a workbook 05 form dotted. A product that fails a test is drawn grey and carries the
+failed test's name at its curve. The readings table of the site is printed beside it.
 
-| clause | what it measures | the bound |
+The three tests, each read over QUALITY_BAND:
+
+| test | what it measures | the bound |
 |---|---|---|
-| quadrant | the phase over QUALITY_BAND, as its median and the fraction of the band inside | median in (0, 90) deg and 70 per cent of the band with it |
-| continuity | the log-log slope of rho against period, and its distance from the slope the phase implies (1 - phase / 45 deg), over the band and again over its short end | slope within 1.2 of zero and 1.0 of the implied one; 2.0 and 1.5 over the short end |
-| short slope | the log-log slope of rho over 2-20 s clipped to the survey's live band | within +-SLOPE_TOL, and UNJUDGED where the live band leaves no part of 2-20 s |
-| impedance slope | d log Z / d log T over the band | at or above Z_SLOPE_CUT |
-| the bar | the median of the error over the impedance magnitude across the band | at most BAR_MAX |
-| held | the periods whose impedance bar is under 0.20 with the phase in quadrant | at least one |
+| phase | the fraction of the band whose phase sits in (0, 90) deg, the yx phase folded by +180 deg | at least QUADRANT_MIN |
+| slope | the fraction of adjacent periods whose log-log slope of apparent resistivity lies inside the bound | at least SLOPE_MIN |
+| error | the median relative error of the impedance magnitude, and the periods carrying an error under that ceiling | at most BAR_MAX, and at least MIN_PERIODS |
 
-The yx phase is folded into the first quadrant by +180 deg, so the quadrant clause reads (0, 90) deg for
-both components; Zyx before the fold lies in (-180, -90) deg. One column name is one quantity:
-`bar_10_1000` is the impedance bar and `rho_bar_10_1000` is the apparent-resistivity bar, which is twice it.
+A product that fails the phase test carries a sign fault on an E or an H line, and the table says so. The
+slope bound is one decade of apparent resistivity a decade of period, which is the most a one-dimensional
+earth can produce (Weidelt 1972; Parker and Booker 1996), widened by SLOPE_TOL for noise; a two- or
+three-dimensional response can exceed it, so the test is a screen and not a law. The error test sits beside
+the two shape tests because a shape alone passes on noise.
 
-The impedance-slope clause is the one a shape test cannot supply. An electric field following dB/dt -- an
-inductive loop, Z proportional to omega with a flat phase -- reads -0.92 to -0.95 and passes the quadrant,
-the slope of rho, the bar and the held range alike; a uniform half-space reads -0.5. The cut is one-sided
-because the shallow side is structure and not a known fault.
+The held band is not a test. It is the periods whose bar is under HELD_BAR_MAX with the phase in quadrant,
+and it is the band the delivered file is trimmed to under TRIM_TO_HELD.
 
-**This check fails if any product sitting in the chosen run folders is missing from the readings table, or
-if any row flagged as an earth fails a guard recomputed independently in this cell from its own EDI.** The
-recomputation opens each file again and works out the held count, the bar and the impedance slope directly
-from the periods and the tensor, so the flag is scored against the file and not against the table that
-carries it.
+What to look for: the kinds lying on each other at 100-1000 s, where the field is large and every reference
+sees the same source; the grey curves, which are where a line, a sign or an error bar failed; and the held
+band in the table, which is how far the delivered file reaches.
 
-The figure draws each clause as its own statistic against its own criterion line, one point per product and
-component in the order of the table. What to look for: the bar panel separates into a dense band near 1e-3
-and a scatter of rows two to four decades above it, which is the same split the earth flag makes; the
-impedance-slope panel shows how far the survey's rows sit from the cut, so a cut that refused a crowd rather
-than a tail would be visible as a cluster on the line."""),
+**This check fails if any product in this site's run folders is missing from the readings table, or if any
+row's three test results cannot be recomputed from its own EDI.** The recomputation opens each file again and
+works out the two fractions, the bar and the period count directly from the periods and the tensor, so each
+verdict is scored against the file and not against the table that carries it."""),
 
 ("code", '''t_read = time.time()
-READINGS = RD.readings_table(PROD, read=read, band=tuple(QUALITY_BAND), live=LIVE,
-                             agree_band=tuple(AGREE_BAND), agree_rho=AGREE_RHO, agree_phase=AGREE_PHASE,
-                             slope_tol=SLOPE_TOL, z_slope_cut=Z_SLOPE_CUT, bar_max=BAR_MAX)
-print("%d readings over %d product(s) in %.1f s" % (len(READINGS), len(PROD), time.time() - t_read))
+READINGS = RD.readings_table(PROD, read=read, band=tuple(QUALITY_BAND), agree_band=tuple(AGREE_BAND),
+                             agree_rho=AGREE_RHO, agree_phase=AGREE_PHASE, quadrant_min=QUADRANT_MIN,
+                             slope_tol=SLOPE_TOL, slope_min=SLOPE_MIN, bar_max=BAR_MAX,
+                             min_periods=MIN_PERIODS, held_bar_max=HELD_BAR_MAX)
+print("%d reading(s) over %d product(s) of %d site(s) in %.1f s"
+      % (len(READINGS), len(PROD), len(CHOSEN), time.time() - t_read))
 print()
-cols = ["site", "component", "kind", "selection", "form", "rate_hz", "earth", "quadrant", "continuous",
-        "short_slope", "z_slope", "bar_10_1000", "rho_bar_10_1000", "held_n", "held_hi_s", "agree_n"]
-first = CHOSEN[0] if CHOSEN else ""
-print("the readings of %s, as an example of the table" % first)
-print(READINGS[READINGS.site == first][cols].round(4).to_string(index=False))
+SHOW = READINGS[READINGS.site == FOCUS].copy()
+SHOW["held_band_s"] = ["%.4g-%.4g" % (a, b) if np.isfinite(a) and np.isfinite(b) else "none"
+                       for a, b in zip(SHOW.held_lo_s, SHOW.held_hi_s)]
+cols = ["component", "product", "rate_hz", "selection", "form", "phase_frac", "slope_frac", "bar",
+        "n_periods", "held_band_s", "agree_kinds", "passes", "fails"]
+print("every product of %s, and what the three tests say of each" % FOCUS)
+print(SHOW[cols].round(3).to_string(index=False))
 print()
-print("earths per kind, selection and component, over %d site(s)" % len(CHOSEN))
+print("how many products pass, per kind and selection, over %d site(s)" % len(CHOSEN))
 print(READINGS[READINGS.status == "ok"].pivot_table(index=["kind", "selection"], columns="component",
-                                                    values="earth", aggfunc="sum").to_string())
+                                                    values="passes", aggfunc="sum").to_string())
 print()
-print("why a row is not an earth, the leading clause of each")
-lead = (READINGS[(READINGS.status == "ok") & (~READINGS.earth.astype(bool))]
-        .not_earth_because.str.split(";").str[0].str.split("(").str[0].str.strip())
-print(lead.value_counts().to_string())
+print("which test a product failed, the leading one of each")
+print(READINGS[(READINGS.status == "ok") & (~READINGS.passes.astype(bool))]
+      .fails.str.split(" ").str[0].value_counts().to_string())
 
-# the three guards worked out again from each EDI, not read back from the table above
-bad_flag, missing = [], []
+# the three tests worked out again from each EDI, not read back from the table above
 in_table = {str(p).lower() for p in READINGS.path}
+set_ignored = {str(p).lower() for p in IGNORED.path}
+walked, missing, bad = 0, [], []
 for folder in sorted({Path(p).parent for p in PROD.path}):
     for p in sorted(Path(folder).glob("*.edi")):
-        if str(p).lower() not in in_table:
+        walked += 1
+        if str(p).lower() not in in_table and str(p).lower() not in set_ignored:
             missing.append(str(p))
-for r in READINGS[READINGS.earth.astype(bool)].itertuples():
+for r in READINGS[READINGS.status == "ok"].itertuples():
     tf = read(r.path)
     i, j = PR.COMPONENTS[r.component]
     per = np.asarray(tf.period, float)
     zz, ee = tf.z[:, i, j], np.asarray(tf.z_err, float)[:, i, j]
     with np.errstate(divide="ignore", invalid="ignore"):
-        rel = ee / np.abs(zz)
+        rel = np.where(np.isfinite(zz) & (np.abs(zz) > 0) & np.isfinite(ee), ee / np.abs(zz), np.nan)
     ph = np.degrees(np.angle(zz)) + (180.0 if r.component == "yx" else 0.0)
     ph = np.where(ph > 180, ph - 360, ph)
-    held_n = int(np.sum(np.isfinite(rel) & (rel < 0.20) & (ph >= 0) & (ph <= 90)))
-    band = (per >= QUALITY_BAND[0]) & (per <= QUALITY_BAND[1]) & np.isfinite(rel)
-    bar = float(np.median(rel[band])) if band.any() else np.nan
-    fit = band & np.isfinite(zz) & (np.abs(zz) > 0)
-    zsl = (float(np.polyfit(np.log10(per[fit]), np.log10(np.abs(zz[fit])), 1)[0])
-           if fit.sum() >= 4 else np.nan)
-    why = []
-    if held_n <= 0:
-        why.append("held_n %d" % held_n)
-    if np.isfinite(bar) and bar > BAR_MAX:
-        why.append("bar %.3f" % bar)
-    if np.isfinite(zsl) and zsl < Z_SLOPE_CUT:
-        why.append("z_slope %.3f" % zsl)
-    if why:
-        bad_flag.append("%s %s %s/%s: %s" % (r.site, r.component, r.kind, r.selection, ", ".join(why)))
+    rho = 0.2 * per * np.abs(zz) ** 2
+    band = (per >= QUALITY_BAND[0]) & (per <= QUALITY_BAND[1])
+    mp = band & np.isfinite(ph)
+    qf = float(np.mean((ph[mp] > 0) & (ph[mp] < 90))) if mp.any() else np.nan
+    ms = band & np.isfinite(rho) & (rho > 0)
+    sl = (np.diff(np.log10(rho[ms])) / np.diff(np.log10(per[ms]))) if ms.sum() > 1 else np.zeros(0)
+    sf = float(np.mean(np.abs(sl) <= 1.0 + SLOPE_TOL)) if len(sl) else np.nan
+    me = band & np.isfinite(rel)
+    bb = float(np.median(rel[me])) if me.any() else np.nan
+    nn = int((rel[me] < BAR_MAX).sum())
+    got = (bool(qf >= QUADRANT_MIN), bool(sf >= SLOPE_MIN), bool(bb <= BAR_MAX and nn >= MIN_PERIODS))
+    if got != (bool(r.pass_phase), bool(r.pass_slope), bool(r.pass_error)):
+        bad.append("%s %s %s: the table says %s, the file says %s"
+                   % (r.site, r.component, r.product,
+                      (bool(r.pass_phase), bool(r.pass_slope), bool(r.pass_error)), got))
 
-path = OUT / "READINGS.csv"
-READINGS.round(6).to_csv(path, index=False)
-WRITTEN.append(path)
-fig_rule = FIG.rule_page(READINGS, OUT / "06_earth_rule.png", bar_max=BAR_MAX,
-                         z_slope_cut=Z_SLOPE_CUT, slope_tol=SLOPE_TOL,
-                         title="%s: the earth rule, each clause against its own criterion line"
-                               % sv.cfg["name"])
-WRITTEN.append(fig_rule)
-display(Image(filename=str(fig_rule)))
-print()
-print("-> %s (%d rows)" % (path, len(READINGS)))
+drawn = []
+for p, g in READINGS[(READINGS.site == FOCUS) & (READINGS.status == "ok")].groupby("path", sort=False):
+    r0 = g.iloc[0]
+    names = sorted({w.split(" ")[0] for s in g.fails for w in str(s).split("; ") if w})
+    drawn.append(dict(tf=read(p), label=r0["product"], kind=r0.kind, rate_hz=r0.rate_hz, form=r0.form,
+                      passes=bool(g.passes.all()),
+                      fails=("fails %s" % ", ".join(names)) if names else ""))
+fig_prod = FIG.products_page(
+    FOCUS, drawn, final_dir(FOCUS) / ("%s_products.png" % FOCUS), period_range=tuple(PERIOD_RANGE),
+    title="%s: every product of this site" % FOCUS,
+    caption="Every product %s carries, the reference kind as the colour, 10 Hz dashed and a workbook 05 "
+            "form dotted, over %g-%g s. A product that fails one of the three response tests over %g-%g s "
+            "is drawn grey, carries the failed test at its long end and does not set the y limits. The "
+            "tests are the phase in (0, 90) deg at %.0f per cent of the band, the log-log slope of rho "
+            "inside +-%.2f at %.0f per cent of the adjacent pairs, and the median error over the impedance "
+            "magnitude at or under %.2f with at least %d periods under it."
+            % (FOCUS, PERIOD_RANGE[0], PERIOD_RANGE[1], QUALITY_BAND[0], QUALITY_BAND[1],
+               100 * QUADRANT_MIN, 1.0 + SLOPE_TOL, 100 * SLOPE_MIN, BAR_MAX, MIN_PERIODS))
+WRITTEN.append(fig_prod)
+display(Image(filename=str(fig_prod)))
 
 n_scored = int((READINGS.status == "ok").sum())
 if not n_scored:
-    print("VERDICT: UNJUDGED -- no product of the chosen sites could be read, so no row was scored")
-elif missing or bad_flag:
-    print("VERDICT: FAIL -- %d EDI(s) in the chosen run folders are missing from the readings table (%s); "
-          "%d row(s) are flagged as earths while failing a guard recomputed from the file (%s)"
-          % (len(missing), "; ".join(Path(m).name for m in missing[:4]) or "none", len(bad_flag),
-             "; ".join(bad_flag[:4]) or "none"))
+    print("VERDICT: UNJUDGED -- no product of the chosen site(s) could be read, so no row was scored")
+elif missing or bad:
+    print("VERDICT: FAIL -- %d of the %d EDI(s) in the run folders are missing from the readings table "
+          "(%s); %d row(s) carry a verdict the file itself does not reproduce (%s)"
+          % (len(missing), walked, "; ".join(Path(m).name for m in missing[:4]) or "none", len(bad),
+             "; ".join(bad[:3]) or "none"))
 else:
-    print("VERDICT: PASS -- every one of the %d EDI(s) in the chosen run folders is in the readings table, "
-          "and all %d rows flagged as earths hold held_n > 0, a bar at or under %.2f and an impedance slope "
-          "at or above %+.2f when the three are recomputed from the files themselves"
-          % (len(in_table), int(READINGS.earth.astype(bool).sum()), BAR_MAX, Z_SLOPE_CUT))
+    print("VERDICT: PASS -- all %d EDI(s) in the run folders are in the readings table or are among the %d "
+          "%s product(s) named and ignored, and every one of the %d scored rows carries the three verdicts "
+          "the file itself gives when the phase fraction, the slope fraction, the bar and the period count "
+          "are worked out again" % (walked, len(IGNORED), RD.DROPPED_KIND, n_scored))
 '''),
 
-("md", r"""## 2. Agreement between the products
+("md", r"""## 2. The rule's proposal
 
-Every pair of products of one site and component, scored over AGREE_BAND. Two products agree where the
-median departure in apparent resistivity is within AGREE_RHO and the median departure in phase is within
-AGREE_PHASE -- 20 per cent and 5 deg over 5-200 s at the values above. The departure is the median of the
+Per component, the product of record as the rule chooses it: among the products at the delivery rate that
+pass the three tests and agree with at least one product of ANOTHER reference kind over AGREE_BAND, the one
+with the smallest bar over QUALITY_BAND, ties broken by the longest period held.
+
+Corroboration comes from another kind because two references that share no magnetics cannot carry the same
+noise into the estimate. Two products agree where the median departure in apparent resistivity is within
+AGREE_RHO and the median departure in phase is within AGREE_PHASE; the departure is the median of the
 absolute differences and not the difference of the medians, so a curve that wobbles about another by more
-than the tolerance is not called agreement; the median ratio and the median phase difference workbook 04
-reports are carried in the same row beside it.
+than the tolerance is not agreement.
 
-What to look for. Agreement between two kinds that share no magnetics is the evidence that neither is
-carrying its own noise into the estimate. A single station agreeing with nothing at the short end is the
-expected reading and not a fault: its own H noise is coherent with itself. A site where every referenced
-kind agrees and the single station does not is a site whose reference bought something; a site where
-nothing agrees with anything is a site whose record does not support a delivered row, and section 3 says so.
+The choice is made at the delivery rate, `RECORD_RATES`, which is 1 Hz. A 10 Hz product of this survey stops
+near 1,200 s and the row a long-period survey delivers has to cover the delivery band; the 10 Hz short end
+enters the file through the join below, at 16 s, and not as the whole row.
 
-This is a reading and not a check."""),
+Which products may be delivered is workbook 05's call. A workbook 03 product may always be delivered; a form
+may only where its forms.csv row marks it a candidate, which it does where the form beats every control it
+carries on the 10-1000 s bar by 20 per cent and is not an inter-site impedance. A form that is not a
+candidate is read, scored and reported in section 1, is never the product of record, and does not corroborate
+another row.
 
-("code", '''t_ag = time.time()
-PAIRS = pd.concat([RD.agreement_matrix(PROD, read=read, comp=c, agree_band=tuple(AGREE_BAND),
-                                       agree_rho=AGREE_RHO, agree_phase=AGREE_PHASE)
-                   for c in RD.COMPONENTS], ignore_index=True)
-print("%d pair(s) scored over %g-%g s in %.1f s" % (len(PAIRS), AGREE_BAND[0], AGREE_BAND[1],
-                                                    time.time() - t_ag))
-print()
-cross = PAIRS[~PAIRS.same_kind]
-by_site = (cross.groupby(["site", "component"])
-           .agg(pairs=("agrees", "size"), agreeing=("agrees", "sum"),
-                worst_rho_dev=("rho_dev", "max"), worst_phase_dev=("phase_dev_deg", "max"))
-           .reset_index().round(3))
-print("pairs of DIFFERENT kinds, which is what the product of record is chosen on")
-print(by_site.to_string(index=False))
-print()
-print("the agreement matrix of %s, component xy: the median departure in rho" % first)
-ex = PAIRS[(PAIRS.site == first) & (PAIRS.component == "xy")]
-if len(ex):
-    print(ex.pivot_table(index="a", columns="b", values="rho_dev").round(3).to_string())
-    print()
-    print("the same pairs in phase, deg")
-    print(ex.pivot_table(index="a", columns="b", values="phase_dev_deg").round(2).to_string())
-print()
-print("the earths and how many products of another kind each agrees with")
-counts = (READINGS[READINGS.earth.astype(bool)]
-          .groupby(["site", "component"]).agree_n.agg(["size", "max"])
-          .rename(columns={"size": "earths", "max": "most_agreeing"}).reset_index())
-print(counts.to_string(index=False))
-'''),
+A component with no proposal is a result. A component whose sound products do not corroborate each other is
+one where the references disagree; a component with nothing that passes the three tests is one whose record
+carries no transfer function of that orientation.
 
-("md", r"""## 3. The product of record
+The figure draws the proposed curves with their error bars over the products they were chosen against, each
+rejected product named in grey. What to look for: a rejected curve lying on the chosen one says the choice
+was between equals and the bar decided it; one parting from it at the long end says the references disagree
+where the field is small.
 
-Per site and component: the choice, the bars of the alternatives and the tie-break, or `none` with the
-reason there is none. The pool is the earths that agree with a product of another kind; inside it the choice
-is the smallest bar over QUALITY_BAND, ties broken by the longest period held.
+This is the proposal, and section 3 is where it is accepted or replaced."""),
 
-The choice is made among the products at the delivery rate, `RECORD_RATES`, which is 1 Hz. A 10 Hz product
-of this survey stops near 1,200 s, and the row a long-period survey delivers has to cover the delivery band;
-the 10 Hz short end enters the file through the splice of section 5, where it joins the chosen row at 16 s,
-and not as the whole row.
-
-Which products may be delivered is workbook 05's call and not this one's. A workbook 03 product may always
-be delivered; a form may only where its forms.csv row marks it a candidate, which it does where the form
-beats every control it carries on the 10-1000 s bar by 20 per cent and is not an inter-site impedance. A
-form that is not a candidate is read, scored and reported in section 1, is never the product of record, and
-does not corroborate another row: a selection of hours that does not beat a random selection of the same
-size bought efficiency, not a different answer, and it cannot vouch for anything either.
-
-A component with no product of record is a result. Two shapes of it are reported apart because they mean
-different things: a component whose rows are earths that do not corroborate each other is one where the
-references disagree, and a component with no earth at all is one whose record carries no transfer function
-of that orientation.
-
-**This check fails if any chosen product is not an earth, or does not agree with at least one product of
-another kind, or is not the smallest bar among the products that satisfy both and that forms.csv admits.**
-All three are recomputed in this cell from the readings table's own columns rather than read back from the
-choice.
-
-The figure is the choice as it was made: every product's bar at one site as a point, filled where the row is
-an earth that agrees with another kind, open where it is an earth agreeing with nothing, a cross where it is
-not an earth, and ringed where the rule chose it. What to look for: a column of open circles with no ring is
-a component whose references disagree, and a column of crosses alone is a component with no earth to
-choose."""),
-
-("code", '''RECORD = RD.product_of_record(READINGS, bar_max=BAR_MAX, agree_band=tuple(AGREE_BAND),
-                              band=tuple(QUALITY_BAND), rates=[float(r) for r in RECORD_RATES])
-show = ["site", "component", "product", "kind_word", "bar_10_1000", "held_hi_s", "held_n", "agree_n",
-        "agree_kinds"]
-print("the product of record, per site and component")
+("code", '''RECORD = RD.product_of_record(READINGS, agree_band=tuple(AGREE_BAND), band=tuple(QUALITY_BAND),
+                              rates=[float(r) for r in RECORD_RATES])
+show = ["site", "component", "product", "kind_word", "bar", "n_periods", "held_lo_s", "held_hi_s",
+        "agree_n", "agree_kinds"]
+print("the rule's proposal, per site and component")
 print(RECORD[show].round(5).to_string(index=False))
 print()
-none = RECORD[RECORD["product"] == "none"]
-print("%d of %d site-components have no product of record" % (len(none), len(RECORD)))
-if len(none):
-    print(none[["site", "component", "why"]].to_string(index=False))
+NONE = RECORD[RECORD["product"] == "none"]
+print("%d of %d site-components have no proposal" % (len(NONE), len(RECORD)))
+if len(NONE):
+    print(NONE[["site", "component", "why"]].to_string(index=False))
 print()
-print("the alternatives each choice was made among, the first ten")
-for r in RECORD[RECORD["product"] != "none"].head(10).itertuples():
-    print("  %-8s %s  %-20s  <- %s" % (r.site, r.component, r.product, r.why))
-    print("     the earths and their bars: %s" % r.alternatives)
+print("what the proposal at %s was chosen among" % FOCUS)
+for r in RECORD[(RECORD.site == FOCUS) & (RECORD["product"] != "none")].itertuples():
+    print("  %s  %-22s  <- %s" % (r.component, r.product, r.why))
+    print("     the sound products and their bars: %s" % r.alternatives)
+print()
+AGREEMENT = pd.concat([RD.agreement_matrix(PROD[PROD.site == FOCUS], read=read, comp=c,
+                                           agree_band=tuple(AGREE_BAND), agree_rho=AGREE_RHO,
+                                           agree_phase=AGREE_PHASE)
+                       for c in RD.COMPONENTS], ignore_index=True)
+ex = AGREEMENT[(AGREEMENT.component == "xy") & (~AGREEMENT.same_kind)] if len(AGREEMENT) else AGREEMENT
+if len(ex):
+    print("%s, component xy: the median departure in rho between products of different kinds" % FOCUS)
+    print(ex.pivot_table(index="a", columns="b", values="rho_dev").round(3).to_string())
 
-# recomputed here from the readings, not read back from the choice
-wrong = []
-pool_all = READINGS[(READINGS.status == "ok")
-                    & (READINGS.rate_hz.isin([float(x) for x in RECORD_RATES]))
-                    & ((READINGS.form == "") | READINGS.candidate.astype(bool))]
-for r in RECORD[RECORD["product"] != "none"].itertuples():
-    g = pool_all[(pool_all.site == r.site) & (pool_all.component == r.component)]
-    row = g[g.path == r.path]
-    if not len(row):
-        wrong.append("%s %s: the chosen product is not in the pool" % (r.site, r.component))
-        continue
-    row = row.iloc[0]
-    pool = g[g.earth.astype(bool) & (g.agree_n > 0)]
-    if not bool(row.earth):
-        wrong.append("%s %s: the chosen product is not an earth" % (r.site, r.component))
-    elif int(row.agree_n) < 1:
-        wrong.append("%s %s: the chosen product agrees with no other kind" % (r.site, r.component))
-    elif not len(pool) or float(row.bar_10_1000) > float(pool.bar_10_1000.min()) * (1 + 1e-9):
-        wrong.append("%s %s: bar %.5f, the smallest in the pool is %.5f"
-                     % (r.site, r.component, row.bar_10_1000,
-                        float(pool.bar_10_1000.min()) if len(pool) else np.nan))
-for r in none.itertuples():
-    g = pool_all[(pool_all.site == r.site) & (pool_all.component == r.component)]
-    pool = g[g.earth.astype(bool) & (g.agree_n > 0)]
-    if len(pool):
-        wrong.append("%s %s: called none while %d agreeing earth(s) exist"
-                     % (r.site, r.component, len(pool)))
-
-fig_rec = FIG.record_page(READINGS[READINGS.rate_hz.isin([float(x) for x in RECORD_RATES])], RECORD,
-                          OUT / "06_product_of_record.png",
-                          title="%s: every earth's bar per site and component, the choice ringed"
-                                % sv.cfg["name"])
-WRITTEN.append(fig_rec)
-display(Image(filename=str(fig_rec)))
-
-n_chosen = int((RECORD["product"] != "none").sum())
-if not len(RECORD):
-    print("VERDICT: UNJUDGED -- no site-component was scored, so no product of record was chosen")
-elif wrong:
-    print("VERDICT: FAIL -- %d of %d choices do not satisfy the rule when it is recomputed (%s)"
-          % (len(wrong), len(RECORD), "; ".join(wrong[:5])))
-else:
-    print("VERDICT: PASS -- all %d products of record are earths, agree with at least one other kind and "
-          "carry the smallest bar over %g-%g s among the products that do; the %d site-component(s) with "
-          "none have no agreeing earth at %s Hz"
-          % (n_chosen, QUALITY_BAND[0], QUALITY_BAND[1], len(none),
-             ", ".join(str(x) for x in RECORD_RATES)))
+USED = {str(r.path) for r in RECORD[(RECORD.site == FOCUS) & (RECORD["product"] != "none")].itertuples()}
+REJECTED = {}
+for r in READINGS[(READINGS.site == FOCUS) & READINGS.passes.astype(bool)].itertuples():
+    if str(r.path) not in USED:
+        REJECTED[r.product] = read(r.path)
+PROPOSED = [("%s: %s" % (r.component, r.product), r.kind, read(r.path))
+            for r in RECORD[(RECORD.site == FOCUS) & (RECORD["product"] != "none")].itertuples()]
+if PROPOSED:
+    fig_prop = FIG.over_rejected(
+        FOCUS, PROPOSED, sorted(REJECTED.items()),
+        final_dir(FOCUS) / ("%s_proposal.png" % FOCUS), period_range=tuple(PERIOD_RANGE),
+        title="%s: the rule's proposal over the products it was chosen against" % FOCUS,
+        caption="The proposed product of each component with its error bars, over the %d product(s) of %s "
+                "that pass the three response tests and were not chosen, drawn grey and named. The rule "
+                "takes the smallest median error over the impedance magnitude across %g-%g s among the "
+                "products that pass all three tests and agree with another reference kind within %.0f per "
+                "cent in rho and %.1f deg in phase over %g-%g s, ties broken by the longest period held."
+                % (len(REJECTED), FOCUS, QUALITY_BAND[0], QUALITY_BAND[1], 100 * AGREE_RHO, AGREE_PHASE,
+                   AGREE_BAND[0], AGREE_BAND[1]))
+    WRITTEN.append(fig_prop)
+    display(Image(filename=str(fig_prop)))
 '''),
 
-("md", r"""## 4. Reproducibility on halves
+("md", r"""### Reproducibility on halves
 
-A product of record is re-estimated twice, once on each half of its own record, and the two are put through
+Each proposed product is re-estimated twice, once on each half of its own record, and the two are put through
 the agreement rule over QUALITY_BAND. A product whose two halves disagree was estimated on something that
 changed inside the record.
 
@@ -5301,21 +5293,19 @@ product was. The split is at the midpoint sample index, so the two halves are th
 gaps hold; the days each half keeps after the transient mask are reported beside the verdict, because a
 record whose second half is mostly masked reproduces on a shorter record than its first.
 
-The cost is two passes per candidate. Only the candidates are run -- the products the rule chose, not every
-product -- and the count and the time are reported below. `HALVES` False reads the passes already on disk
-and leaves the reading UNJUDGED where there are none.
+The cost is two passes per proposed product, and only the proposed products are run. `HALVES` False reads
+the passes already on disk and leaves the reading UNJUDGED where there are none.
 
-A candidate that does not reproduce is flagged in the delivery record and is not removed: the rule chose it
-on its soundness and its corroboration, and the reason it did not reproduce is written beside it for a
-reader to weigh.
+A product that does not reproduce is flagged in the delivery record and is not removed: the rule chose it on
+its soundness and its corroboration, and the reason it did not reproduce is written beside it for a reader
+to weigh.
 
-**This check fails if the halves are UNJUDGED for every candidate -- no half pass ran and none was found on
-disk.** A reading over no items cannot support the column it fills.
+**This check fails if the halves are UNJUDGED for every proposed product -- no half pass ran and none was
+found on disk.** A reading over no items cannot support the column it fills.
 
-Two figures: the departure of each candidate's two halves from each other against the two criterion lines,
-and one candidate's two half curves drawn against the whole-record product they were split from. What to look
-for in the second: the halves should sit on the whole record through the middle band and part at the long
-end, where each half carries half the independent windows and its bars grow."""),
+The departures are two numbers per product and are printed beside the proposal, not drawn: the proposal
+table carries the median absolute departure in apparent resistivity and in phase between the two halves,
+and the verdict names every product that does not reproduce and the worst departure over all of them."""),
 
 ("code", '''import subprocess
 import concurrent.futures as cf
@@ -5324,7 +5314,7 @@ CAND = RD.candidates(RECORD)
 _stamps = sorted([s for s in {RD.split_run_folder(p.name)[1] for site in CHOSEN
                               for p in (WORK / site).glob("halves_*") if p.is_dir()} if s])
 HALF_STAMP = _stamps[-1] if _stamps else datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
-print("%d candidate product(s) of record, %d site lane job(s), stamp %s (%s)"
+print("%d proposed product(s), %d site lane job(s), stamp %s (%s)"
       % (len(CAND), CAND.groupby(["site", "rate_hz"]).ngroups if len(CAND) else 0, HALF_STAMP,
          "resumed" if _stamps else "new"))
 print(CAND.to_string(index=False))
@@ -5368,7 +5358,7 @@ for r in CAND.itertuples():
 HALF = HV.halves_table(HALF_RECORDS, out_path=OUT / "HALVES.csv")
 WRITTEN.append(OUT / "HALVES.csv")
 print()
-print("%d candidate(s), two half passes each; %.1f min of wall time in this cell"
+print("%d proposed product(s), two half passes each; %.1f min of wall time in this cell"
       % (len(CAND), (time.time() - t_half) / 60.0))
 print(HALF[["site", "kind", "rate_hz", "component", "half1_days", "half2_days", "rho_dev",
             "phase_dev_deg", "n", "reproducible"]].round(4).to_string(index=False))
@@ -5376,65 +5366,57 @@ print()
 print(HALF.reproducible.value_counts().to_string())
 
 # the reading goes into the record beside the choice, never in place of it
-rep = {(r.site, r.kind, r.component): (r.reproducible, r.why) for r in HALF.itertuples()}
-vals, whys = [], []
+rep = {(r.site, r.kind, r.component): (r.reproducible, r.why, r.rho_dev, r.phase_dev_deg)
+       for r in HALF.itertuples()}
+vals, whys, devs, dphs = [], [], [], []
 for r in RECORD.itertuples():
-    v, w = rep.get((r.site, r.kind, r.component), ("UNJUDGED", "no half pass for this product"))
+    v, w, rd, pdg = rep.get((r.site, r.kind, r.component),
+                            ("UNJUDGED", "no half pass for this product", np.nan, np.nan))
     vals.append(v if r.product != "none" else "")
     whys.append(w)
+    devs.append(rd)
+    dphs.append(pdg)
 RECORD["reproducible"] = vals
+RECORD["halves_rho_dev"] = devs
+RECORD["halves_phase_dev_deg"] = dphs
 RECORD["note"] = [("does not reproduce on halves: %s" % w) if v == "no" else n
                   for v, w, n in zip(vals, whys, RECORD.note)]
 RECORD["flagged"] = [("not reproducible" if v == "no" else
                       ("halves UNJUDGED" if v == "UNJUDGED" else "")) for v in vals]
-fig_half = FIG.halves_page(HALF, OUT / "06_halves.png", agree_rho=AGREE_RHO, agree_phase=AGREE_PHASE,
-                           title="%s: each half against the other over %g-%g s"
-                                 % (sv.cfg["name"], QUALITY_BAND[0], QUALITY_BAND[1]))
-WRITTEN.append(fig_half)
-display(Image(filename=str(fig_half)))
-shown_half = next((r for r in HALF.itertuples() if r.reproducible != "UNJUDGED"), None)
-if shown_half is not None:
-    rec = next(r for r in HALF_RECORDS if r["site"] == shown_half.site and r["kind"] == shown_half.kind)
-    # the whole-record product is the one the rule CHOSE, taken by its own path: the ledger can name a
-    # product of the same site and kind that a failed pass never wrote, and reading that raises
-    chose = RECORD[(RECORD.site == rec["site"]) & (RECORD.kind == rec["kind"])
-                   & (RECORD["product"] != "none")]
-    whole_path = str(chose.iloc[0].path) if len(chose) else ""
-    p = FIG.halves_curves(rec["site"], (read(whole_path) if Path(whole_path).exists() else None),
-                          read(rec["half1"]), read(rec["half2"]),
-                          WORK / rec["site"] / "final" / ("%s_halves.png" % rec["site"]),
-                          period_range=tuple(PERIOD_RANGE),
-                          title="%s %s: the whole record and its two halves"
-                                % (rec["site"], KIND_WORD.get(rec["kind"], rec["kind"])))
-    WRITTEN.append(p)
-    display(Image(filename=str(p)))
+print()
+print("the proposal with the split-half departures beside it")
+print(RECORD[RECORD["product"] != "none"][
+    ["site", "component", "product", "bar", "held_lo_s", "held_hi_s", "agree_n", "halves_rho_dev",
+     "halves_phase_dev_deg", "reproducible"]].round(4).to_string(index=False))
 
 judged = HALF[HALF.reproducible != "UNJUDGED"]
 if not len(CAND):
-    print("VERDICT: UNJUDGED -- no product of record was chosen, so there was no candidate to re-estimate")
+    print("VERDICT: UNJUDGED -- no product was proposed, so there was nothing to re-estimate on halves")
 elif not len(judged):
-    print("VERDICT: UNJUDGED -- the halves were scored for none of the %d candidate(s): %s"
+    print("VERDICT: UNJUDGED -- the halves were scored for none of the %d proposed product(s): %s"
           % (len(CAND), "; ".join(sorted(set(HALF.why)))[:200]))
 else:
     n_no = int((HALF.reproducible == "no").sum())
-    print("VERDICT: PASS -- %d of %d candidate-component readings were scored on two half passes each; %d "
-          "reproduce within %.0f %% in rho and %.1f deg in phase over %g-%g s and %d do not (%s), which is "
-          "flagged in the delivery record and not removed"
+    print("VERDICT: PASS -- %d of %d product-component readings were scored on two half passes each; %d "
+          "reproduce within %.0f %% in rho and %.1f deg in phase over %g-%g s and %d do not (%s); the "
+          "worst departure over all of them is %.3f in rho and %.2f deg in phase, and a product that does "
+          "not reproduce is flagged in the delivery record and not removed"
           % (len(judged), len(HALF), len(judged) - n_no, 100 * AGREE_RHO, AGREE_PHASE, QUALITY_BAND[0],
              QUALITY_BAND[1], n_no,
-             " ".join("%s %s" % (r.site, r.component)
-                      for r in HALF[HALF.reproducible == "no"].itertuples()) or "none"))
+             "; ".join("%s %s %.3f in rho, %.2f deg" % (r.site, r.component, r.rho_dev, r.phase_dev_deg)
+                       for r in HALF[HALF.reproducible == "no"].itertuples()) or "none",
+             float(np.nanmax(judged.rho_dev)), float(np.nanmax(judged.phase_dev_deg))))
 '''),
 
-("md", r"""## 5. The splice: the 10 Hz short end joined at 16 s
+("md", r"""### The 10 Hz join, as the splice rule chooses it
 
-The delivered file is the 1 Hz row above the join and a 10 Hz row below it, where the step at the join
+The delivered file is the 1 Hz row above SPLICE_JOIN_S and a 10 Hz row below it, where the step at the join
 holds. Three measurements decide it, in this order.
 
 **The decomposition first.** Each 10 Hz product is read against the 1 Hz product of the same kind over
 4-32 s. The median of that ratio over the kinds is the rate effect -- what the two processing paths say
 about the same band -- and the spread across kinds at one rate is the kind effect. A survey whose rate
-effect exceeds 4 per cent cannot be spliced at all, because the join would deliver the difference between
+effect exceeds 4 per cent cannot be joined at all, because the join would deliver the difference between
 two processing paths as a bend in the earth. Aurora at 10 Hz reads about 8 per cent low at 4-32 s against
 its own 1 Hz product (AusLAMP Victoria, 2026-09-11), and every 10 Hz product carries that sentence in its
 own file; this is the measurement that says whether this survey has a short end to deliver.
@@ -5454,29 +5436,25 @@ UNJUDGED on the gate and is not eligible, and the table says so rather than pass
 
 **The acceptance.** The step at the join is measured on two bands and the worse one governs: 8-16 s below,
 where the delivered row would be the 10 Hz one, and 32-100 s above, where it is the 1 Hz one. A row whose
-worse step exceeds SPLICE_MAX_STEP_PCT is reported not spliced and keeps its 1 Hz row untouched. The band
+worse step exceeds SPLICE_MAX_STEP_PCT is reported not joined and keeps its 1 Hz row untouched. The band
 between them is not scored: SPLICE_GUARD holds the Earth Data logger's 20.6 s instrument line, which is not
 an earth response and is reproducible only to 5-14 per cent between honest processing paths, so a 2 per cent
 criterion there would measure the line and not the join. The guard band is measured, printed and scored by
 nothing.
 
 Inside what the gate and the acceptance leave, the xy row is chosen on its 4-32 s level against the row it
-joins and the yx row on its own short-end bar. Nothing below SHORT_FLOOR_S is delivered, and an unspliced
-row is the 1 Hz row unchanged.
+joins and the yx row on its own short-end bar. Nothing below SHORT_FLOOR_S is delivered.
 
-The 1 Hz rows are merged into `final/<site>_1hz.edi` first, because the row a 10 Hz product joins is the
-delivered row and not one of the two sources it came from; that merge is section 6's check and this section
-takes it as given.
+The step is read against the proposed product of that same component, which is the row a 10 Hz product
+would join: the delivered row of a component is that product's own row.
 
-**This check fails if any period or value of a component that was not spliced differs from its 1 Hz input by
-more than 1e-12 relative, or if a spliced row's step exceeds SPLICE_MAX_STEP_PCT on either ruled band, or if
-anything below SHORT_FLOOR_S is delivered.** The first limb is the test the frozen tool failed: rounding the
-union grid's values moved one period of every unspliced row by 2.3e-7 of itself.
-
-The figure draws both ruled bands against the +-SPLICE_MAX_STEP_PCT lines and the guard band beside them in
-grey with no line at all. What to look for: a row whose two bands sit on opposite sides of zero is a row
-whose step is a bend and not an offset, and that is what the two-band rule exists to catch; the guard band
-panel should scatter more widely than either ruled band, which is why nothing scores it."""),
+The numbers are printed and not drawn. The table below carries, per 10 Hz row, the departure on each ruled
+band, the guard band, the 4-32 s level, the short-end bar, the control gate's verdict and `in_gate`, which
+says whether the row is one of the two the survey-wide rate gate was read over. What to look for: a row
+whose two ruled bands sit on opposite sides of zero is a row whose step is a bend and not an offset, and
+that is what the two-band rule exists to catch; the guard band should scatter more widely than either ruled
+band, which is why nothing scores it. The step of every row that was joined is scored again in section 4,
+from the delivered file against the 1 Hz row it joined."""),
 
 ("code", '''DEC = SP.decompose(PROD, read=read, band=tuple(SP.LEVEL_BAND), rate_max_pct=SP.RATE_PATH_MAX_PCT)
 if len(DEC):
@@ -5490,223 +5468,415 @@ if len(DEC):
     RATE_OK = {r.component: bool(r.can_splice) for r in RATE.itertuples()}
     print("the rate path gate: %s"
           % ", ".join("%s %s (median %+.2f %%, the ceiling is %.0f %%)"
-                      % (r.component, "passes" if r.can_splice else "REFUSES the splice",
+                      % (r.component, "passes" if r.can_splice else "REFUSES the join",
                          r.rate_pct_median, SP.RATE_PATH_MAX_PCT) for r in RATE.itertuples()))
 else:
     RATE_OK = {}
     print("no site carries both a 1 Hz and a 10 Hz product of the same kind: there is no rate path to read")
 print()
 
-def picks_for(site):
-    """The record rows of one site as the merge wants them, or an empty dict."""
-    out = {}
-    for r in RECORD[(RECORD.site == site) & (RECORD["product"] != "none")].itertuples():
-        out[r.component] = dict(path=r.path, kind=r.kind, kind_word=r.kind_word, form=r.form,
-                                selection=r.selection, run=r.run, stamp=r.stamp, rate_hz=r.rate_hz,
-                                bar_10_1000=r.bar_10_1000)
-    return out
+JOIN, SPLICE_SCORED = {}, []
+for site in CHOSEN:
+    proposed = picks_for(site, RECORD)
+    shorts = {}
+    for r in PROD[(PROD.site == site) & (PROD.rate_hz == 10.0) & PROD.on_disk].itertuples():
+        shorts[(r.kind, r.selection, r.form)] = (read(r.path), r.path)
+    for comp in RD.COMPONENTS:
+        if comp not in proposed or not shorts:
+            JOIN[(site, comp)] = dict(pick=None, scored=[], why=(
+                "no 10 Hz product of this site" if comp in proposed
+                else "no product of record on this component"))
+            continue
+        # the row a 10 Hz product joins is the delivered row, and on this component that IS the proposed
+        # product's own row, so the step is read against it and not against the other component's source
+        sel = SP.select_rows(site, read(proposed[comp]["path"]), shorts, READINGS, join=SPLICE_JOIN_S,
+                             max_step_pct=SPLICE_MAX_STEP_PCT, guard=tuple(SPLICE_GUARD),
+                             control_band=tuple(CONTROL_BAR_BAND), control_margin=CONTROL_MARGIN,
+                             rate_ok=RATE_OK)
+        JOIN[(site, comp)] = sel[comp]
+        p = sel[comp]["pick"] or {}
+        for c in sel[comp]["scored"]:
+            SPLICE_SCORED.append(dict(site=site, component=comp, kind=c["kind"],
+                                      selection=c["selection"], form=c.get("form", ""),
+                                      file=Path(c["file"]).name,
+                                      run=RD.split_run_folder(Path(c["file"]).parent.name)[0],
+                                      in_gate=bool(c["selection"] in SP.GATE_SELECTIONS),
+                                      passes=c["passes"], eligible=c["eligible"],
+                                      control_verdict=c["control_verdict"],
+                                      step_below_pct=c["step_below_pct"],
+                                      step_above_pct=c["step_above_pct"], step_pct=c["step_pct"],
+                                      guard_pct=c["guard_pct"], level_4_32_pct=c["level_4_32_pct"],
+                                      short_bar=c["short_bar"],
+                                      chosen=bool(p and c["file"] == p.get("file"))))
+print("the join the splice rule proposes, per site and component")
+for (site, comp), s in sorted(JOIN.items()):
+    print("  %-8s %s  %s" % (site, comp, s.get("why", "")))
+print()
+SCORED = pd.DataFrame(SPLICE_SCORED)
+if len(SCORED):
+    SCORED.round(4).to_csv(OUT / "SPLICE_CANDIDATES.csv", index=False)
+    WRITTEN.append(OUT / "SPLICE_CANDIDATES.csv")
+    print("every 10 Hz row that was scored, %d of them; the departures are in per cent of the 1 Hz level "
+          "over %g-%g s below the join, %g-%g s above it and %g-%g s in the guard band"
+          % (len(SCORED), SP.STEP_BELOW[0], SP.STEP_BELOW[1], SP.STEP_ABOVE[0], SP.STEP_ABOVE[1],
+             SPLICE_GUARD[0], SPLICE_GUARD[1]))
+    print(SCORED[["site", "component", "kind", "selection", "form", "run", "in_gate", "passes",
+                  "eligible", "step_below_pct", "step_above_pct", "guard_pct", "level_4_32_pct",
+                  "short_bar", "chosen"]].round(3).to_string(index=False))
+    print()
+    print("the guard band over every row, measured and scored by nothing: median %+.1f %%, worst %+.1f %%"
+          % (float(SCORED.guard_pct.median()),
+             float(SCORED.guard_pct.iloc[int(np.nanargmax(np.abs(SCORED.guard_pct.values)))])))
+'''),
 
-MERGES, SPLICE_ROWS, SPLICE_SCORED, IDENTITY, DELIVERED = [], [], [], [], {}
+("md", r"""## 3. The choice
+
+The cell below is the analyst's. `product` is `"rule"` or a product name from the table of section 1;
+`periods` is `"held"` or a pair `(lo_s, hi_s)`; `join` is `"rule"`, `None` for no 10 Hz row, or a period in
+s. The tipper takes `"rule"`, which is TIPPER_FROM, or a component.
+
+The delivery is rebuilt from the choice and not from the proposal; the two agree wherever the cell says
+`"rule"`. Every departure is written into the delivered file's header as a `choice=` line and into
+`surveys/<SURVEY>/final_choices.csv`, which this workbook reads before it proposes anything. A row there
+marked `analyst` binds and is never overwritten by the rule; a row marked `rule` is refreshed.
+`SITE = "all"` writes `rule` rows only where no analyst row stands.
+
+The tipper is refused where the vertical channel is not measuring the vertical field: Hz a copy of a
+horizontal channel, which reads a coherence of 1.00 with Hx, or Hz carrying the site's own horizontal field
+at 1000-4000 s while carrying nothing of a neighbour's vertical field. The test runs at every site that
+delivers, and a refused tipper is not written. A site whose magnetics are under 80 per cent finite is a test
+that ran and could not judge; the tipper is written and the count is printed beside the verdict.
+
+**This check fails if a chosen product does not pass the three tests, if chosen periods fall outside its
+held band without TRIM_TO_HELD False being set, if the merged file does not read back equal to its sources,
+or if the tipper refusal test was not run.**
+
+The choice is a table and not a figure: where it is the rule's, section 2 has already drawn it against the
+products it was made among, and where it is not, the departure is named here and written into the delivered
+file's header. The chosen curve itself is drawn in section 4, which is the file it becomes."""),
+
+("code", '''CHOICE = dict(xy=dict(product="rule", periods="held", join="rule"),
+              yx=dict(product="rule", periods="held", join="rule"),
+              tipper=dict(product="rule"))
+'''),
+
+("code", '''RULE_SPEC = dict(product="rule", periods="held", join="rule")
+
+def _f(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return np.nan
+
+def spec_for(site, comp):
+    """(the choice in force, who made it, its note): an analyst row first, then the cell, then the rule."""
+    a = CHOICES[(CHOICES.site == site) & (CHOICES.component == comp) & (CHOICES.chosen_by == "analyst")]
+    if len(a):
+        r = a.iloc[0]
+        lo, hi, j = _f(r.periods_lo), _f(r.periods_hi), _f(r["join"])
+        return (dict(product=str(r["product"]),
+                     periods=((lo, hi) if np.isfinite(lo) and np.isfinite(hi) else "held"),
+                     join=(j if np.isfinite(j) else None)), "analyst", str(r.note or ""))
+    if ONE.lower() != "all" and site == ONE:
+        return dict(CHOICE.get(comp, RULE_SPEC)), "rule", ""
+    return dict(RULE_SPEC), "rule", ""
+
+def row_named(site, comp, name):
+    """The readings row a product name picks out at one site and component, or None."""
+    g = READINGS[(READINGS.site == site) & (READINGS.component == comp) & (READINGS.status == "ok")
+                 & (READINGS["product"] == str(name))]
+    if not len(g):
+        return None
+    r = g.sort_values("bar").iloc[0]
+    return dict(path=r.path, kind=r.kind, kind_word=r.kind_word, form=r.form, selection=r.selection,
+                run=r.run, stamp=r.stamp, rate_hz=float(r.rate_hz), bar=float(r.bar),
+                held_lo_s=_f(r.held_lo_s), held_hi_s=_f(r.held_hi_s), product=str(r["product"]),
+                passes=bool(r.passes))
+
+MERGES, TIPPER_ONLY, DELIVERED, SPLICE_ROWS, IDENTITY = [], [], {}, [], []
+CHOICE_ROWS, DEPART, REFUSAL, OUTSIDE, NOT_SOUND = [], [], {}, [], []
 t_merge = time.time()
 for site in CHOSEN:
-    picks = picks_for(site)
+    rule_picks = picks_for(site, RECORD)
+    picks, bands, joins, lines, made_by = {}, {}, {}, [], {}
+    for comp in RD.COMPONENTS:
+        spec, by, note = spec_for(site, comp)
+        want = str(spec.get("product", "rule") or "rule")
+        pick = rule_picks.get(comp) if want in ("", "rule") else row_named(site, comp, want)
+        if pick is None:
+            if want not in ("", "rule"):
+                DEPART.append("%s %s: %s names no product of this site, so the row is empty"
+                              % (site, comp, want))
+            continue
+        if want in ("", "rule"):
+            g = READINGS[(READINGS.site == site) & (READINGS.component == comp)
+                         & (READINGS.path == pick["path"])]
+            pick["passes"] = bool(len(g) and bool(g.iloc[0].passes))
+        held = (_f(pick.get("held_lo_s")), _f(pick.get("held_hi_s")))
+        per = spec.get("periods", "held")
+        if isinstance(per, str):
+            band = (held if TRIM_TO_HELD and np.isfinite(held[0]) and np.isfinite(held[1]) else None)
+        else:
+            band = (float(per[0]), float(per[1]))
+            if np.isfinite(held[0]) and np.isfinite(held[1]) and (band[0] < held[0] or band[1] > held[1]):
+                OUTSIDE.append("%s %s: %g-%g s asked for, %g-%g s held"
+                               % (site, comp, band[0], band[1], held[0], held[1]))
+            DEPART.append("%s %s: periods %g-%g s instead of the held band"
+                          % (site, comp, band[0], band[1]))
+            lines.append("choice_%s_periods=%g-%g s, chosen by the analyst" % (comp, band[0], band[1]))
+        j = spec.get("join", "rule")
+        prop = JOIN.get((site, comp)) or {}
+        if isinstance(j, str) and j.strip().lower() == "rule":
+            joins[comp] = (prop.get("pick"), float(SPLICE_JOIN_S), prop.get("why", ""))
+        elif j is None:
+            joins[comp] = (None, float(SPLICE_JOIN_S),
+                           "the choice cell asks for no 10 Hz row on this component")
+            DEPART.append("%s %s: no 10 Hz row, against the rule's proposal" % (site, comp))
+            lines.append("choice_%s_join=none, chosen by the analyst" % comp)
+        else:
+            joins[comp] = (prop.get("pick"), float(j),
+                           "the choice cell joins at %g s; %s" % (float(j), prop.get("why", "")))
+            DEPART.append("%s %s: join at %g s instead of %g s" % (site, comp, float(j), SPLICE_JOIN_S))
+            lines.append("choice_%s_join=%g s, chosen by the analyst" % (comp, float(j)))
+        if want not in ("", "rule"):
+            DEPART.append("%s %s: product %s instead of the rule's %s"
+                          % (site, comp, want, (rule_picks.get(comp) or {}).get("product", "none")))
+            lines.append("choice_%s=product %s, chosen by the analyst%s"
+                         % (comp, want, (": " + note) if note else ""))
+        picks[comp], bands[comp], made_by[comp] = pick, band, (by, note)
     if not picks:
         continue
+    try:
+        REFUSAL[site] = DL.tipper_refusal(sv, site)
+    except Exception as exc:
+        REFUSAL[site] = dict(site=site, judged=False, refused=False,
+                             reason="the refusal test could not run: %s" % str(exc)[:120])
+    refused = bool(REFUSAL[site].get("refused"))
+    tspec = (str((CHOICE.get("tipper") or {}).get("product", "rule"))
+             if (ONE.lower() != "all" and site == ONE) else "rule")
+    tip = None if refused else (TIPPER_FROM if tspec in ("", "rule") else tspec)
+    lines.append("tipper_refusal=%s (Hz with its own Hx %.2f, with its own H %.2f, with %s's Hz %.2f)"
+                 % (REFUSAL[site].get("reason", ""), _f(REFUSAL[site].get("coh_hz_hx")),
+                    _f(REFUSAL[site].get("coh_hz_own_h")), REFUSAL[site].get("neighbour", "none"),
+                    _f(REFUSAL[site].get("coh_hz_neighbour_hz"))))
     base_path = final_dir(site) / ("%s_1hz.edi" % site)
-    m = FN.merge(sv, site, picks, base_path, tipper_from=TIPPER_FROM, record=RECORD, verbose=False)
+    m = FN.merge(sv, site, picks, base_path, tipper_from=tip, record=RECORD, keep_band=bands,
+                 extra_lines=lines, verbose=False)
     m["picks"] = picks
     MERGES.append(m)
     if not m.get("written"):
         continue
-    shorts = {}
-    for r in PROD[(PROD.site == site) & (PROD.rate_hz == 10.0) & PROD.on_disk].itertuples():
-        shorts[(r.kind, r.selection, r.form)] = (read(r.path), r.path)
-    chosen = {}
-    if shorts:
-        sel = SP.select_rows(site, read(base_path), shorts, READINGS, join=SPLICE_JOIN_S,
-                             max_step_pct=SPLICE_MAX_STEP_PCT, guard=tuple(SPLICE_GUARD),
-                             control_band=tuple(CONTROL_BAR_BAND), control_margin=CONTROL_MARGIN,
-                             rate_ok=RATE_OK)
-        for comp, s in sel.items():
-            chosen[comp] = s["pick"]
-            p = s["pick"] or {}
-            for c in s["scored"]:
-                SPLICE_SCORED.append(dict(site=site, component=comp, kind=c["kind"],
-                                          selection=c["selection"], form=c.get("form", ""),
-                                          earth=c["earth"], eligible=c["eligible"],
-                                          control_verdict=c["control_verdict"],
-                                          step_below_pct=c["step_below_pct"],
-                                          step_above_pct=c["step_above_pct"],
-                                          step_pct=c["step_pct"], guard_pct=c["guard_pct"],
-                                          level_4_32_pct=c["level_4_32_pct"],
-                                          short_bar=c["short_bar"],
-                                          chosen=bool(p and c["file"] == p.get("file"))))
-            SPLICE_ROWS.append(dict(site=site, component=comp, spliced=bool(s["pick"]),
-                                    kind=p.get("kind", ""), kind_word=p.get("kind_word", ""),
-                                    selection=p.get("selection", ""), form=p.get("form", ""),
-                                    control_verdict=p.get("control_verdict", ""),
-                                    bar_2_16=p.get("bar_2_16", np.nan),
-                                    control_bar_2_16=p.get("control_bar_2_16", np.nan),
-                                    step_pct=p.get("step_pct", np.nan),
-                                    step_below_pct=p.get("step_below_pct", np.nan),
-                                    step_above_pct=p.get("step_above_pct", np.nan),
-                                    guard_pct=p.get("guard_pct", np.nan),
-                                    level_4_32_pct=p.get("level_4_32_pct", np.nan),
-                                    short_bar=p.get("short_bar", np.nan), earth=p.get("earth", False),
-                                    why=s["why"], all_kinds=s["all_kinds"], file=p.get("file", "")))
-    else:
-        for comp in RD.COMPONENTS:
-            SPLICE_ROWS.append(dict(site=site, component=comp, spliced=False, kind="", selection="",
-                                    form="", why="no 10 Hz product of this site", all_kinds="", file=""))
+    joined = {c: (v[0] if v and v[0] else None) for c, v in joins.items()}
+    join_s = next((v[1] for c, v in joins.items() if v[0]), float(SPLICE_JOIN_S))
     out_path = final_dir(site) / ("%s.edi" % site)
-    res = SP.splice(base_path, {c: v for c, v in chosen.items() if v}, out_path, join=SPLICE_JOIN_S,
+    res = SP.splice(base_path, {c: v for c, v in joined.items() if v}, out_path, join=join_s,
                     floor=SHORT_FLOOR_S, guard=tuple(SPLICE_GUARD))
     ident = SP.unspliced_unchanged(base_path, out_path, spliced=res["spliced"])
     ident.update(site=site, spliced=" ".join(res["spliced"]) or "none",
                  periods_added=res["periods_added"])
     IDENTITY.append(ident)
     DELIVERED[site] = out_path
-    for row in SPLICE_ROWS:
-        if row["site"] == site and row["spliced"]:
-            pick = chosen.get(row["component"]) or {}
-            row["shortest_period_s"] = pick.get("shortest_period_s", np.nan)
-            row["n_short_periods"] = pick.get("n_short_periods", 0)
+    m["delivered"] = str(out_path)
+    m["n_delivered_periods"] = int(len(PR.read_tf(out_path).period)) if out_path.exists() else 0
+    for comp in RD.COMPONENTS:
+        p = joined.get(comp) or {}
+        SPLICE_ROWS.append(dict(site=site, component=comp, spliced=bool(p), kind=p.get("kind", ""),
+                                kind_word=p.get("kind_word", ""), selection=p.get("selection", ""),
+                                form=p.get("form", ""), control_verdict=p.get("control_verdict", ""),
+                                bar_2_16=p.get("bar_2_16", np.nan),
+                                control_bar_2_16=p.get("control_bar_2_16", np.nan),
+                                step_pct=p.get("step_pct", np.nan),
+                                step_below_pct=p.get("step_below_pct", np.nan),
+                                step_above_pct=p.get("step_above_pct", np.nan),
+                                guard_pct=p.get("guard_pct", np.nan),
+                                level_4_32_pct=p.get("level_4_32_pct", np.nan),
+                                short_bar=p.get("short_bar", np.nan), passes=p.get("passes", False),
+                                join_s=(join_s if p else np.nan),
+                                shortest_period_s=p.get("shortest_period_s", np.nan),
+                                n_short_periods=p.get("n_short_periods", 0),
+                                why=(joins.get(comp) or (None, 0.0, ""))[2], all_kinds="",
+                                file=p.get("file", "")))
+    for comp, pick in sorted(picks.items()):
+        by, note = made_by[comp]
+        CHOICE_ROWS.append(FN.choice_row(site, comp, pick["product"], periods=bands.get(comp),
+                                         join=(join_s if joined.get(comp) else None), chosen_by=by,
+                                         note=note))
+    CHOICE_ROWS.append(FN.choice_row(site, "tipper", (m.get("tipper_from") or "refused"), periods=None,
+                                     join=None, chosen_by="rule",
+                                     note=str(REFUSAL[site].get("reason", ""))))
+    NOT_SOUND += ["%s %s: %s fails the three response tests" % (site, c, v["product"])
+                  for c, v in picks.items() if not v.get("passes", True)]
 
-SPLICE = SP.splice_table(SPLICE_ROWS, out_path=OUT / "SPLICE.csv")
-WRITTEN.append(OUT / "SPLICE.csv")
-print("%d site(s) merged and spliced in %.1f min" % (len(MERGES), (time.time() - t_merge) / 60.0))
+SPLICE = SP.splice_table(SPLICE_ROWS)
+print("%d site(s) merged and joined in %.1f min" % (len(MERGES), (time.time() - t_merge) / 60.0))
 print()
-print("the splice, per site and component")
-print(SPLICE[["site", "component", "spliced", "kind", "selection", "form", "step_pct", "step_below_pct",
-              "step_above_pct", "guard_pct", "level_4_32_pct", "short_bar",
-              "shortest_period_s"]].round(3).to_string(index=False))
+print("the choice, per site and component")
+print(pd.DataFrame(CHOICE_ROWS)[["site", "component", "product", "periods_lo", "periods_hi", "join",
+                                 "chosen_by", "note"]].round(3).to_string(index=False)
+      if CHOICE_ROWS else "nothing was chosen")
 print()
-for r in SPLICE.itertuples():
-    print("  %-8s %s  %s" % (r.site, r.component, r.why))
+print("%d departure(s) from the rule" % len(DEPART))
+for d in DEPART:
+    print("   %s" % d)
 print()
-if len(SPLICE) and SPLICE.guard_pct.notna().any():
-    print("the guard band %g-%g s, measured and scored by nothing: median %+.1f %%, worst %+.1f %%"
-          % (SPLICE_GUARD[0], SPLICE_GUARD[1], float(SPLICE.guard_pct.median()),
-             float(SPLICE.guard_pct.iloc[int(np.nanargmax(np.abs(SPLICE.guard_pct.values)))])))
+print("the join, per site and component")
+print(SPLICE[["site", "component", "spliced", "kind", "selection", "form", "join_s", "step_pct",
+              "step_below_pct", "step_above_pct", "guard_pct", "level_4_32_pct", "short_bar",
+              "shortest_period_s"]].round(3).to_string(index=False) if len(SPLICE) else "nothing joined")
 print()
-ident = pd.DataFrame(IDENTITY)
-if len(ident):
-    print("every unspliced period and value against its 1 Hz input")
-    print(ident[["site", "spliced", "periods_added", "n_base_periods", "n_out_periods",
-                 "worst_period_relative", "worst_value_relative", "ok"]].to_string(index=False))
+WROTE = FN.write_choices(FN.choices_path(sv), CHOICE_ROWS)
+WRITTEN.append(WROTE["path"])
+print("-> %s: %d row(s) written, %d analyst row(s) kept, %d row(s) in the file"
+      % (WROTE["path"], WROTE["written"], WROTE["analyst_kept"], WROTE["rows"]))
 
-SCORED = pd.DataFrame(SPLICE_SCORED)
-if len(SCORED):
-    SCORED.round(4).to_csv(OUT / "SPLICE_CANDIDATES.csv", index=False)
-    WRITTEN.append(OUT / "SPLICE_CANDIDATES.csv")
-    print("every 10 Hz row that was scored, %d of them" % len(SCORED))
-    print(SCORED[["site", "component", "kind", "selection", "form", "earth", "eligible",
-                  "step_below_pct", "step_above_pct", "guard_pct", "level_4_32_pct", "short_bar",
-                  "chosen"]].round(3).to_string(index=False))
-    fig_sp = FIG.splice_page(SCORED, OUT / "06_splice.png", max_step_pct=SPLICE_MAX_STEP_PCT,
-                             guard=tuple(SPLICE_GUARD),
-                             title="%s: every 10 Hz row scored at the join, the joined rows ringed"
-                                   % sv.cfg["name"])
-    WRITTEN.append(fig_sp)
-    display(Image(filename=str(fig_sp)))
-
-shifted = [r.site for r in ident.itertuples() if not r.ok] if len(ident) else []
-over = [("%s %s %+.1f %%" % (r.site, r.component, r.step_pct)) for r in SPLICE.itertuples()
-        if r.spliced and np.isfinite(r.step_pct) and abs(r.step_pct) > SPLICE_MAX_STEP_PCT]
-low = []
-for site, p in DELIVERED.items():
-    tf = PR.read_tf(p)
-    for comp, (i, j) in PR.COMPONENTS.items():
-        m = np.isfinite(tf.z[:, i, j])
-        if m.any() and float(np.min(tf.period[m])) < SHORT_FLOOR_S:
-            low.append("%s %s at %.3f s" % (site, comp, float(np.min(tf.period[m]))))
-n_spliced = int(SPLICE.spliced.sum()) if len(SPLICE) else 0
-if not len(PROD[PROD.rate_hz == 10.0]):
-    print("VERDICT: UNJUDGED -- this survey has no 10 Hz product, so there is no row to join and the splice "
-          "is not scored; every delivered file is the 1 Hz row unchanged")
-elif shifted or over or low:
-    print("VERDICT: FAIL -- %d file(s) moved an unspliced period or value (%s); %d spliced row(s) exceed "
-          "%.1f %% at the join (%s); %d row(s) deliver a period below %g s (%s)"
-          % (len(shifted), " ".join(shifted) or "none", len(over), SPLICE_MAX_STEP_PCT,
-             "; ".join(over) or "none", len(low), SHORT_FLOOR_S, "; ".join(low) or "none"))
+bad_merge = [m["site"] for m in MERGES if not m.get("ok")]
+# the criterion is that the test RAN at every delivered site. A test that ran and could not judge -- a
+# site whose magnetics are under 80 per cent finite -- is a stated reading and is reported beside the
+# verdict, because the tipper it governs is still written and a reader has to know the test said nothing
+not_run = [s for s in sorted(DELIVERED) if s not in REFUSAL]
+unjudged = [s for s in sorted(DELIVERED) if s in REFUSAL and not REFUSAL[s].get("judged")]
+outside = OUTSIDE if TRIM_TO_HELD else []
+print()
+print("the tipper refusal test: %d delivered site(s) judged, %d refused, %d not judged (%s)"
+      % (len(DELIVERED) - len(unjudged) - len(not_run),
+         sum(1 for s in DELIVERED if REFUSAL.get(s, {}).get("refused")), len(unjudged),
+         "; ".join("%s: %s" % (s, REFUSAL[s].get("reason", "")) for s in unjudged) or "none"))
+if not MERGES:
+    print("VERDICT: UNJUDGED -- no site has a product on either component, so nothing was chosen or merged")
+elif NOT_SOUND or outside or bad_merge or not_run:
+    print("VERDICT: FAIL -- %d chosen product(s) do not pass the three response tests (%s); %d chosen "
+          "band(s) fall outside the held band with TRIM_TO_HELD True (%s); %d merged file(s) do not read "
+          "back equal to their sources (%s); the tipper refusal test was not run at %d delivered site(s) "
+          "(%s)"
+          % (len(NOT_SOUND), "; ".join(NOT_SOUND[:3]) or "none", len(outside),
+             "; ".join(outside[:3]) or "none", len(bad_merge), " ".join(bad_merge) or "none",
+             len(not_run), " ".join(not_run) or "none"))
 else:
-    print("VERDICT: PASS -- %d of %d rows joined at %g s, every one inside %.1f %% on both ruled bands; "
-          "every unspliced period and value came back identical to its 1 Hz input to better than %.0e "
-          "relative over %d file(s); nothing below %g s is delivered"
-          % (n_spliced, len(SPLICE), SPLICE_JOIN_S, SPLICE_MAX_STEP_PCT, SP.IDENTITY_TOL, len(ident),
-             SHORT_FLOOR_S))
+    print("VERDICT: PASS -- all %d chosen product(s) over %d site(s) pass the three response tests, every "
+          "chosen band lies inside its product's held band, all %d merged file(s) read back with every row "
+          "equal to its source to better than %.0e relative, and the tipper refusal test ran at all %d "
+          "delivered site(s), refusing %d and judging %d of them"
+          % (sum(len(m.get("picks") or {}) for m in MERGES), len(MERGES), len(MERGES), FN.READBACK_RTOL,
+             len(DELIVERED), sum(1 for s in DELIVERED if REFUSAL.get(s, {}).get("refused")),
+             len(DELIVERED) - len(unjudged)))
 '''),
 
-("md", r"""## 6. The final EDI
+("md", r"""## 4. The delivered file
 
-One file per site in `<work_root>/<site>/final/`. `<site>_1hz.edi` is the merge of the two 1 Hz products of
-record and `<site>.edi` is the delivered file, which is that merge with any spliced row joined below 16 s.
+One file per site in `<work_root>/<site>/final/`. `<site>_1hz.edi` is the merge of the two chosen 1 Hz
+products, trimmed, and `<site>.edi` is the delivered file, which is that merge with any 10 Hz row joined
+below the join period.
 
-The merge takes the first impedance row (Zxx, Zxy) from the xy product of record and the second (Zyx, Zyy)
-from the yx product, each with its errors, and the tipper from the product `TIPPER_FROM` names. A product on
-another period grid is aligned by nearest period within 1 per cent and never interpolated: an interpolated
-row is a third curve and not either product. A component with no product of record leaves its row empty and
-the INFO block says so, so a reader cannot take an empty row for a measurement.
+The merge takes the first impedance row (Zxx, Zxy) from the xy product and the second (Zyx, Zyy) from the yx
+product, each with its errors, and the tipper from the product the choice names. A product on another period
+grid is aligned by nearest period within 1 per cent and never interpolated: an interpolated row is a third
+curve and not either product. A component with no chosen product leaves its row empty and the INFO block
+says so, so a reader cannot take an empty row for a measurement.
+
+Under TRIM_TO_HELD the file carries the periods inside each row's chosen band and no others: a value outside
+that band is dropped from its row, and a period left carrying neither off-diagonal element is dropped from
+the grid with the tipper on it. Every dropped period is named in the manifest with the band that dropped it.
+With TRIM_TO_HELD False every period the sources carry is written and the file's INFO block says it was not
+trimmed.
 
 A site with no impedance on either component can still deliver its tipper, which is an H-only quantity and
 survives two dead electric lines. Its impedance rows are written as the EDI empty-data fill and two INFO
-lines name what the file is. The tipper is refused where the vertical channel is not measuring the vertical
-field: Hz a copy of a horizontal channel, which reads a coherence of 1.00 with Hx, or Hz carrying the site's
-own horizontal field at 1000-4000 s while carrying nothing of a neighbour's vertical field.
+lines name what the file is.
 
 The INFO block carries which product each row came from, the flags and the notes per component, the frame
-block, the splice line where a 10 Hz row is in the file, the notch record the cache carried, the 10 Hz
-caveat and the package version and date. The frame is stated in three lines: the tensor is served in the
-frame it was processed in, the IGRF declination is recorded and not applied, and the angle to turn the
-tensor by for true geographic north is given with the transformation.
+block, the trim line, the join line where a 10 Hz row is in the file, the notch record the cache carried,
+the 10 Hz caveat, any `choice=` line and the package version and date. The frame is stated in three lines:
+the tensor is served in the frame it was processed in, the IGRF declination is recorded and not applied, and
+the angle to turn the tensor by for true geographic north is given with the transformation.
 
 **This check fails if any merged file does not read back with its rows equal to its sources to 1e-9
-relative, or if the two-source control fails where the two sources carry different yx rows, or if any
-delivered file lacks the frame block or the declination.** The control is what says the merge took rows from
-two files: the merged Zyx must differ from the xy source's wherever the two sources differ there."""),
+relative, if the two-source control fails where the two sources carry different yx rows, if any period or
+value of a row that was not joined differs from its 1 Hz input by more than 1e-12 relative, if a joined row
+reads further than SPLICE_MAX_STEP_PCT from its 1 Hz row below the join or moves it above the join, or if
+any delivered file lacks the frame block or the declination.** The two-source control is what says the merge
+took rows from two files: the merged Zyx must differ from the xy source's wherever the two sources differ
+there. The step is worked out again here from the files -- the joined 10 Hz file against the 1 Hz row it
+joined below the join, and the delivered row against that same 1 Hz row above it -- so both numbers are
+scored against the files and not against the table that proposed them.
 
-("code", '''TIPPER_ONLY = []
-for site in CHOSEN:
-    if picks_for(site):
+The figure is the delivered curve with its own error bars and the join marked, and nothing behind it."""),
+
+("code", '''for site in CHOSEN:
+    if picks_for(site, RECORD) or site in DELIVERED:
         continue
     g = READINGS[(READINGS.site == site) & (READINGS.status == "ok") & (READINGS.rate_hz == 1.0)
                  & (READINGS.form == "")]
-    if not len(g) or not g.bar_10_1000.notna().any():
+    if not len(g) or not g.bar.notna().any():
         continue
-    src = g.loc[g.bar_10_1000.idxmin()]
+    src = g.loc[g.bar.idxmin()]
     if read(src.path).t is None:
         continue
     try:
         refusal = DL.tipper_refusal(sv, site)
     except Exception as exc:
         refusal = dict(site=site, judged=False, refused=False,
-                       reason="the refusal test could not run: %s" % str(exc)[:80])
+                       reason="the refusal test could not run: %s" % str(exc)[:120])
+    REFUSAL[site] = refusal
     out = FN.tipper_only(sv, site, src.path, final_dir(site) / ("%s.edi" % site), kind=src.kind_word,
                          refusal=refusal, record=RECORD)
     out["picks"] = {"tipper": dict(path=src.path, kind=src.kind, form=src.form, run=src.run,
                                    stamp=src.stamp, rate_hz=src.rate_hz)}
+    out["delivered"] = out.get("path")
     TIPPER_ONLY.append(out)
     if out.get("written"):
         DELIVERED[site] = Path(out["path"])
     print("   %-8s tipper only from the %s product: %s" % (site, src.kind_word, out.get("reason", "")))
 
 print()
-print("%d merged file(s), %d tipper-only file(s), %d chosen site(s) with nothing to deliver"
+print("%d merged file(s), %d tipper-only file(s), %d site(s) with nothing to deliver"
       % (len(MERGES), len([t for t in TIPPER_ONLY if t.get("written")]), len(CHOSEN) - len(DELIVERED)))
-mtab = pd.DataFrame([dict(site=m["site"], file=Path(m["path"]).name, xy=m.get("xy", ""),
-                          yx=m.get("yx", ""), tipper=m.get("tipper_from", ""),
-                          periods=m.get("n_periods", 0),
+mtab = pd.DataFrame([dict(site=m["site"], file=Path(m.get("delivered") or m["path"]).name,
+                          xy=m.get("xy", ""), yx=m.get("yx", ""), tipper=m.get("tipper_from", ""),
+                          periods=m.get("n_delivered_periods", 0), dropped=m.get("n_dropped", 0),
                           readback=("%.1e" % m.get("worst_readback_relative", np.nan)),
                           check=("PASS" if m.get("ok") else "FAIL"), control=m.get("control", ""),
                           xml=("yes" if m.get("xml") else ("no: " + str(m.get("xml_error", ""))[:40])))
                      for m in MERGES])
-print(mtab.to_string(index=False))
+print(mtab.to_string(index=False) if len(mtab) else "no site was merged")
 print()
-shown = SHOW or (sorted(DELIVERED)[0] if DELIVERED else "")
-if shown:
-    print("the INFO block of %s" % shown)
-    for line in PR.read_tf(DELIVERED[shown]).meta["lines"]:
+for m in MERGES:
+    if m.get("n_dropped"):
+        gone = np.asarray(m.get("dropped_periods_s", []), float)
+        print("   %-8s %d period(s) dropped, %.4g to %.4g s: %s"
+              % (m["site"], len(gone), float(np.min(gone)), float(np.max(gone)),
+                 m.get("dropped_reason", "")))
+print()
+IDENT = pd.DataFrame(IDENTITY)
+if len(IDENT):
+    print("every period and value of a row that was not joined, against its 1 Hz input")
+    print(IDENT[["site", "spliced", "periods_added", "n_base_periods", "n_out_periods",
+                 "worst_period_relative", "worst_value_relative", "ok"]].to_string(index=False))
+print()
+JOINED_AT = {r.site: float(r.join_s) for r in SPLICE.itertuples()
+             if r.spliced and np.isfinite(r.join_s)} if len(SPLICE) else {}
+if FOCUS in DELIVERED:
+    print("the INFO block of %s" % FOCUS)
+    for line in PR.read_tf(DELIVERED[FOCUS]).meta["lines"]:
         print("   %s" % line)
+    fig_del = FIG.delivered_page(
+        FOCUS, read(DELIVERED[FOCUS]), final_dir(FOCUS) / ("%s_delivered.png" % FOCUS),
+        period_range=tuple(PERIOD_RANGE), join_s=JOINED_AT.get(FOCUS),
+        title="%s: the delivered transfer function" % FOCUS,
+        caption="%s over %g-%g s with its own error bars: the xy row from %s, the yx row from %s, %s. The "
+                "file carries %d period(s)%s."
+                % (Path(DELIVERED[FOCUS]).name, PERIOD_RANGE[0], PERIOD_RANGE[1],
+                   ", ".join("%s" % v["product"] for c, v in sorted(
+                       (next((m for m in MERGES if m["site"] == FOCUS), {}).get("picks") or {}).items())
+                       if c == "xy") or "none",
+                   ", ".join("%s" % v["product"] for c, v in sorted(
+                       (next((m for m in MERGES if m["site"] == FOCUS), {}).get("picks") or {}).items())
+                       if c == "yx") or "none",
+                   "trimmed to the held band" if TRIM_TO_HELD else "not trimmed",
+                   int(len(read(DELIVERED[FOCUS]).period)),
+                   (", %d dropped by the trim" % next((m.get("n_dropped", 0) for m in MERGES
+                                                       if m["site"] == FOCUS), 0))))
+    WRITTEN.append(fig_del)
+    display(Image(filename=str(fig_del)))
 
 no_frame = []
 for site, p in sorted(DELIVERED.items()):
@@ -5717,28 +5887,67 @@ for site, p in sorted(DELIVERED.items()):
         no_frame.append("%s: %s" % (site, ", ".join(lack)))
 bad_merge = [m["site"] for m in MERGES if not m.get("ok")]
 no_control = [m["site"] for m in MERGES if "control FAIL" in str(m.get("control", ""))]
+shifted = [r.site for r in IDENT.itertuples() if not r.ok] if len(IDENT) else []
+# the two numbers the join has to answer for, worked out here from the files and not from the table above.
+# BELOW the join: the 10 Hz file that was joined against the 1 Hz row it joined, the median ratio of
+# apparent resistivity over the ruled band, which is the step. ABOVE it: the delivered row against the same
+# 1 Hz row, which must be the same numbers, because a join must not move the row it joined onto.
+STEP_BACK, over = [], []
+for r in (SPLICE.itertuples() if len(SPLICE) else []):
+    if not r.spliced or r.site not in DELIVERED or not str(r.file):
+        continue
+    pb, rb, _e, _ph, _pe = RD.curve(PR.read_tf(final_dir(r.site) / ("%s_1hz.edi" % r.site)), r.component)
+    ps, rs, _e2, _ph2, _pe2 = RD.curve(PR.read_tf(r.file), r.component)
+    pd_, rd_, _e3, _ph3, _pe3 = RD.curve(PR.read_tf(DELIVERED[r.site]), r.component)
+    mb = (pb >= SP.STEP_BELOW[0]) & (pb <= SP.STEP_BELOW[1]) & np.isfinite(rb) & (rb > 0)
+    ms = np.isfinite(rs) & (rs > 0)
+    v = np.exp(np.interp(np.log(pb[mb]), np.log(ps[ms]), np.log(rs[ms]),
+                         left=np.nan, right=np.nan)) / rb[mb] if mb.any() and ms.any() else np.zeros(0)
+    below = 100.0 * (float(np.median(v[np.isfinite(v)])) - 1.0) if np.isfinite(v).any() else np.nan
+    ma = (pb >= SP.STEP_ABOVE[0]) & (pb <= SP.STEP_ABOVE[1]) & np.isfinite(rb) & (rb > 0)
+    idx = [int(np.argmin(np.abs(pd_ - t))) for t in pb[ma]]
+    above = (float(np.nanmax(np.abs(np.asarray(rd_)[idx] / rb[ma] - 1.0))) if idx else np.nan)
+    STEP_BACK.append(dict(site=r.site, component=r.component, join_s=float(r.join_s),
+                          step_below_pct=below, worst_above_relative=above, n_below=int(np.isfinite(v).sum())))
+    if np.isfinite(below) and abs(below) > SPLICE_MAX_STEP_PCT:
+        over.append("%s %s %+.1f %% below the join" % (r.site, r.component, below))
+    if np.isfinite(above) and above > 1e-6:
+        over.append("%s %s moved the 1 Hz row above the join by %.2e relative"
+                    % (r.site, r.component, above))
+if STEP_BACK:
+    print()
+    print("the join scored again from the files: the joined 10 Hz row against the 1 Hz row over %g-%g s, "
+          "and the delivered row against the same 1 Hz row over %g-%g s"
+          % (SP.STEP_BELOW[0], SP.STEP_BELOW[1], SP.STEP_ABOVE[0], SP.STEP_ABOVE[1]))
+    print(pd.DataFrame(STEP_BACK).round(4).to_string(index=False))
 if not MERGES and not TIPPER_ONLY:
-    print("VERDICT: UNJUDGED -- no site has a product of record on either component, so no file was written")
-elif bad_merge or no_frame:
+    print("VERDICT: UNJUDGED -- no site has a chosen product on either component, so no file was written")
+elif bad_merge or no_frame or shifted or over:
     print("VERDICT: FAIL -- %d merged file(s) do not read back equal to their sources to %.0e relative or "
-          "fail the two-source control (%s; control failures %s); %d delivered file(s) lack a frame line "
-          "(%s)" % (len(bad_merge), FN.READBACK_RTOL, " ".join(bad_merge) or "none",
-                    " ".join(no_control) or "none", len(no_frame), "; ".join(no_frame) or "none"))
+          "fail the two-source control (%s; control failures %s); %d file(s) moved a period or a value of "
+          "a row that was not joined (%s); %d joined row(s) do not hold %.1f %% at the join or moved the "
+          "1 Hz row above it (%s); %d delivered file(s) lack a frame line (%s)"    # <- the join, rescored
+          % (len(bad_merge), FN.READBACK_RTOL, " ".join(bad_merge) or "none",
+             " ".join(no_control) or "none", len(shifted), " ".join(shifted) or "none",
+             len(over), SPLICE_MAX_STEP_PCT, "; ".join(over[:4]) or "none",
+             len(no_frame), "; ".join(no_frame) or "none"))
 else:
     n_control = sum(1 for m in MERGES if "control PASS" in str(m.get("control", "")))
     print("VERDICT: PASS -- all %d merged file(s) read back with every row equal to its source to better "
           "than %.0e relative; the two-source control holds at the %d site(s) whose two sources carry "
-          "different yx rows and is n/a at the other %d; all %d delivered file(s) carry the frame, the "
-          "declination and the angle to geographic north"
-          % (len(MERGES), FN.READBACK_RTOL, n_control, len(MERGES) - n_control, len(DELIVERED)))
+          "different yx rows and is n/a at the other %d; every period and value of a row that was not "
+          "joined came back identical to its 1 Hz input to better than %.0e relative over %d file(s); each "
+          "of the %d joined row(s) reads inside %.1f %% of its 1 Hz row below the join and leaves that row "
+          "untouched above it; all %d delivered file(s) carry the frame, the declination and the angle to "
+          "geographic north"
+          % (len(MERGES), FN.READBACK_RTOL, n_control, len(MERGES) - n_control, SP.IDENTITY_TOL,
+             len(IDENT), len(STEP_BACK), SPLICE_MAX_STEP_PCT, len(DELIVERED)))
 '''),
 
-("md", r"""## 7. The final against the products it came from, and last against the comparisons
+("md", r"""## 5. The comparison, last
 
-Per site, the delivered curve with the products of record under it in the kind colours, the earths the rule
-rejected in grey, and any declared comparison source in black behind everything. The delivered curve and the
-products it came from are the same numbers wherever the merge took a whole row; where they part, a row came
-from somewhere else and the splice line in the file says which.
+This site's delivered curve against `campaign_merged` alone, in black, one legend entry. The earlier
+per-kind processing is not drawn here; workbook 04 has it.
 
 The comparison comes last and is labelled a comparison, never the truth, for one reason: two independent
 processings of the same field are two measurements and neither is an oracle. A difference in level is a
@@ -5747,11 +5956,10 @@ never a difference in the earth at all. Every source declares the frame its tens
 `surveys/<SURVEY>/survey.yaml`, and a source that declares none is refused: a tensor drawn on our axes in an
 undeclared frame is a different object on the same picture.
 
-The reading per site and component is the same three explanations a difference can have -- a scale is a
-constant ratio with the phase untouched, a frame is a disagreement the declination turn removes, a fault is
-neither. It is a reading and not a check."""),
+The ratio of apparent resistivity and the difference in phase over COMPARE_BAND are printed per site and
+component. No verdict is drawn from them."""),
 
-("code", '''SOURCES = PR.comparison_sources(sv, COMPARE)
+("code", '''SOURCES = PR.comparison_sources(sv, list(COMPARE) if COMPARE else "none")
 for src in SOURCES:
     print("source       %s" % src["name"])
     print("  folder     %s" % src["folder"])
@@ -5759,10 +5967,12 @@ for src in SOURCES:
     print("  note       %s" % (src["note"] or "NOT DECLARED")[:180])
     if src["error"]:
         print("  REFUSED    %s" % src["error"])
+if not SOURCES:
+    print("this survey declares no comparison source under COMPARE, so nothing is drawn behind the curve")
+print()
 
-FINAL_TF = {s: read(p) for s, p in sorted(DELIVERED.items())}
-COMPS = {}
-for site in FINAL_TF:
+def comparisons_of(site):
+    """[(the source's name, the tensor in our frame)] for one site, over the declared sources."""
     got = []
     for src in SOURCES:
         if src["error"]:
@@ -5771,121 +5981,91 @@ for site in FINAL_TF:
             loaded = PR.load_comparison(src, site, DECLINATION.get(site))
         except Exception:
             loaded = {}
-        for kind, tf in sorted(loaded.items()):
-            got.append(("%s %s" % (src["name"], kind or "site"), tf))
-    COMPS[site] = got
+        for _kind, tf in sorted(loaded.items()):
+            got.append((src["name"], tf))
+    return got
 
-pages = []
-for site in sorted(FINAL_TF):
-    picks = picks_for(site)
-    sources = [("the %s product of record: %s (%s)" % (comp, KIND_WORD.get(v["kind"], v["kind"]),
-                                                       v["kind"]), v["kind"], read(v["path"]))
-               for comp, v in sorted(picks.items())]
-    used = {str(v["path"]) for v in picks.values()}
-    rej = {}
-    for r in READINGS[(READINGS.site == site) & READINGS.earth.astype(bool)].itertuples():
-        if str(r.path) in used:
-            continue
-        rej[RD.product_label(r)] = read(r.path)
-    head = ["final: %s" % Path(DELIVERED[site]).name]
-    # the header band is a fixed-width monospace strip, so a line longer than the canvas runs off it
-    head += [(ln if len(ln) <= 150 else ln[:147] + "...")
-             for ln in PR.read_tf(DELIVERED[site]).meta["lines"]
-             if ln.split("=")[0] in ("xy_rows", "yx_rows", "tipper", "splice_xy", "splice_yx",
-                                     "declination_deg", "to_geographic_north_deg")]
-    path, _index = FIG.final_page(
-        site, FINAL_TF[site], sources=sources, rejected=sorted(rej.items()),
-        comparisons=COMPS.get(site, []), out=final_dir(site) / ("%s_final.png" % site),
-        header_lines=head, period_range=tuple(PERIOD_RANGE),
-        title="%s: the final, its products of record, and the comparisons in black" % site)
-    pages.append(path)
-WRITTEN += pages
-print()
-print("%d final page(s) written" % len(pages))
-if shown and shown in FINAL_TF:
-    display(Image(filename=str(final_dir(shown) / ("%s_final.png" % shown))))
-'''),
-
-("md", r"""### The final against each comparison, per decade
-
-The table is the final over each declared source: the median ratio of apparent resistivity, the median phase
-difference in degrees, and the reading. A ratio above one means our level is the higher of the two. The
-frames and the notes are printed above; the numbers are a shape check."""),
-
-("code", '''def pseudo_for(src):
-    """The finals as a products frame, one row per kind the source offers for that site.
-
-    A per-kind source -- one folder per reference kind -- is read against the final once for each kind it
-    delivers, so the table says how the final sits against each of the source's own products rather than
-    against whichever one happens to share a key with our choice.
-    """
-    rows = []
-    for s, p in sorted(DELIVERED.items()):
-        kinds = sorted(PR.comparison_paths(src, s)) or [""]
-        for k in kinds:
-            rows.append(dict(site=s, run="final", stamp="", kind=k, rate_hz=1.0, params="",
-                             selection="whole", path=str(p), xml="", provenance="", remote=None,
-                             members=None, n_runs=None, seconds=None, peak_rss_mb=None,
-                             status="made", on_disk=True))
-    return pd.DataFrame(rows, columns=PR.PRODUCT_COLUMNS)
-
-VS = {}
-for src in SOURCES:
-    if src["error"] or not DELIVERED:
-        continue
-    PSEUDO = pseudo_for(src)
-    if not len(PSEUDO):
-        continue
-    tab = AG.versus_comparison(PSEUDO, src, DECLINATION, read=read, bands=[tuple(b) for b in BANDS],
-                               agree_rho=AGREE_RHO, agree_phase=AGREE_PHASE,
-                               agree_band=tuple(AGREE_BAND))
-    VS[src["name"]] = tab
-    mid = tab[(tab.band == AG.band_label(*COMPARE_BAND)) & (tab.n > 0)]
-    print("%s -- the final over the source at %g-%g s, frame %s"
-          % (src["name"], COMPARE_BAND[0], COMPARE_BAND[1], src["frame"]))
-    if not len(mid):
-        print("   nothing scored at %g-%g s" % COMPARE_BAND)
-        continue
-    print(mid.pivot_table(index=["site", "kind"], columns="component",
-                          values=["rho_ratio", "phase_diff_deg"]).round(3).to_string())
-    print()
-    off = mid[(np.abs(mid.rho_ratio - 1.0) > AGREE_RHO) | (np.abs(mid.phase_diff_deg) > AGREE_PHASE)]
-    print("   %d of %d site-component rows differ by more than %.0f %% or %.1f deg"
-          % (len(off), len(mid), 100 * AGREE_RHO, AGREE_PHASE))
-    calls = tab[(tab.band == AG.band_label(*AGREE_BAND)) & (tab.n > 0)]
-    print("   the scale / frame / fault reading over %s" % AG.band_label(*AGREE_BAND))
-    print(calls.reading.str.split(" ").str[0].value_counts().to_string())
-    path = OUT / ("final_vs_%s.csv" % src["name"])
-    tab.round(4).to_csv(path, index=False)
+COMPS = {s: comparisons_of(s) for s in sorted(DELIVERED)}
+rows = []
+for site, pairs in COMPS.items():
+    for label, other in pairs:
+        for comp in RD.COMPONENTS:
+            s = AG.band_stats(read(DELIVERED[site]), other, comp, COMPARE_BAND[0], COMPARE_BAND[1])
+            rows.append(dict(site=site, source=label, component=comp, rho_ratio=s["rho_ratio"],
+                             phase_diff_deg=s["phase_diff_deg"], n=s["n"]))
+VS = pd.DataFrame(rows)
+if len(VS):
+    print("the delivered curve over %s at %g-%g s: the median ratio of apparent resistivity and the median "
+          "phase difference in deg" % (", ".join(sorted(set(VS.source))), COMPARE_BAND[0], COMPARE_BAND[1]))
+    print(VS.round(3).to_string(index=False))
+    path = OUT / "final_vs_comparison.csv"
+    VS.round(4).to_csv(path, index=False)
     WRITTEN.append(path)
-    print("   -> %s (%d rows)" % (path, len(tab)))
-    print()
+    print("-> %s (%d rows)" % (path, len(VS)))
+else:
+    print("no delivered file has a curve in a declared source to be set beside")
+
+if FOCUS in DELIVERED and COMPS.get(FOCUS):
+    fig_vs = FIG.delivered_page(
+        FOCUS, read(DELIVERED[FOCUS]), final_dir(FOCUS) / ("%s_comparison.png" % FOCUS),
+        comparisons=COMPS[FOCUS], period_range=tuple(PERIOD_RANGE),
+        title="%s: the delivered curve and the comparison in black" % FOCUS,
+        caption="%s with its error bars over %s in black, from %g to %g s. The comparison is a second "
+                "measurement of the same field and not the truth; at %g-%g s the two sit at %s in "
+                "apparent resistivity and %s deg in phase."
+                % (Path(DELIVERED[FOCUS]).name, ", ".join(sorted({a for a, _b in COMPS[FOCUS]})),
+                   PERIOD_RANGE[0], PERIOD_RANGE[1], COMPARE_BAND[0], COMPARE_BAND[1],
+                   ", ".join("%s %.2f" % (r.component, r.rho_ratio)
+                             for r in VS[VS.site == FOCUS].itertuples()) or "no common band",
+                   ", ".join("%s %+.1f" % (r.component, r.phase_diff_deg)
+                             for r in VS[VS.site == FOCUS].itertuples()) or "none"))
+    WRITTEN.append(fig_vs)
+    display(Image(filename=str(fig_vs)))
 '''),
 
-("md", r"""## 8. The gallery and the delivery record
+("md", r"""## 6. The survey so far
 
-Every final on one gallery, PER_PAGE sites a page, with the comparisons in black behind. The y limits of
-each row are the delivered curve's own, so a comparison that disagrees by decades runs off its panel rather
-than squeezing every final on the page into a line. A row with no red curve is a site delivering its tipper
-alone.
+The manifest and the readings of every site delivered to date under this survey, whichever run delivered
+them: the four tables under `<work_root>/survey/` carry every site and a run over one site replaces only
+that site's rows. PRODUCTS_OF_RECORD.csv is the proposal per site and component with its reason,
+READINGS.csv every product and every statistic it was read on, SPLICE.csv what was done to each row at the
+join, and FINAL_MANIFEST.csv the sha256 of every delivered file and of every product it came from, so the
+delivery can be re-read without the files.
 
-The four tables the delivery rests on are written to
-`<work_root>/survey/`: PRODUCTS_OF_RECORD.csv (the choice per site and component with its reason),
-READINGS.csv (every product and every statistic the choice was made on), SPLICE.csv (what was done to each
-row at the join) and FINAL_MANIFEST.csv (the sha256 of every delivered file and of every product it came
-from, so the delivery can be re-read without the files).
+Then the gallery: one curve per site with its error bars, PER_PAGE sites a page. A site with no delivered
+file shows the reason in its panel and no curve. A second page set follows it with the comparison in black
+behind each curve.
 
-**This check fails if any site with a product of record has no delivered file, no gallery panel, or no row
-in the manifest.** The three are counted from the files and the index rather than from the list of sites."""),
+**This check fails if any delivered file in the manifest is missing, unreadable or does not match its
+sha256.** The three are read from the files themselves and not from the table that names them."""),
 
-("code", '''pages, index, index_path = FIG.final_gallery(
-    sorted(FINAL_TF), FINAL_TF, OUT, stem="gallery_final", per_page=int(PER_PAGE),
-    period_range=tuple(PERIOD_RANGE), comparisons=COMPS,
-    title="%s: the delivered transfer functions, the comparisons in black" % sv.cfg["name"])
-WRITTEN += list(pages) + [index_path]
-print("%d gallery page(s), %d curve(s) drawn" % (len(pages), len(index)))
-if len(pages):
-    display(Image(filename=str(pages[0])))
+("code", '''REC_OUT = FN.write_record(OUT, RECORD, READINGS, MERGES + TIPPER_ONLY, splice=SPLICE, sites=CHOSEN)
+WRITTEN += list(REC_OUT["written"].values())
+MAN = REC_OUT["manifest"]
+for name, p in sorted(REC_OUT["written"].items()):
+    print("   %-24s %s" % (name, p))
+print()
+SURVEY_RECORD = pd.read_csv(OUT / "PRODUCTS_OF_RECORD.csv")
+SURVEY_READINGS = pd.read_csv(OUT / "READINGS.csv")
+FINALS = MAN[MAN.role == "final"].drop_duplicates("site", keep="last")
+print("%d site(s) delivered to date under %s, from %d readings row(s) over %d product(s)"
+      % (len(FINALS), sv.cfg["name"], len(SURVEY_READINGS), SURVEY_READINGS.path.nunique()))
+print(FINALS[["site", "file", "n_periods", "n_dropped", "bytes", "sha256"]].to_string(index=False))
+
+TFS, REASON = {}, {}
+for r in FINALS.itertuples():
+    try:
+        TFS[r.site] = PR.read_tf(r.file)
+    except Exception:
+        TFS[r.site] = None
+for s in EVERY:
+    if s in TFS:
+        continue
+    g = SURVEY_RECORD[SURVEY_RECORD.site == s]
+    REASON[s] = (str(g.why.iloc[0]) if len(g) else
+                 "no delivery yet: this workbook has not been run on %s" % s)
+GALLERY = sorted(set(list(TFS) + list(REASON)))
+ALL_COMPS = {s: (COMPS.get(s) or comparisons_of(s)) for s in TFS}
 
 if RESAMPLE:
     for site, p in sorted(DELIVERED.items()):
@@ -5894,35 +6074,56 @@ if RESAMPLE:
     print("%d file(s) also written on the ten-per-decade grid, beside the delivered file and never in "
           "place of it" % len(DELIVERED))
 
-REC_OUT = FN.write_record(OUT, RECORD, READINGS, MERGES + TIPPER_ONLY, splice=SPLICE)
-WRITTEN += list(REC_OUT["written"].values())
-MAN = REC_OUT["manifest"]
+pages, index, index_path = FIG.final_gallery(
+    GALLERY, TFS, OUT, stem="gallery_final", per_page=int(PER_PAGE),
+    period_range=tuple(PERIOD_RANGE), reasons=REASON,
+    title="%s: the delivered transfer functions" % sv.cfg["name"],
+    caption="One row per site of %s: apparent resistivity and phase of the delivered file with its error "
+            "bars, over %g-%g s, the y limits taken from the curve itself. A panel carrying a sentence and "
+            "no curve is a site with no delivery, and the sentence is the reason."
+            % (sv.cfg["name"], PERIOD_RANGE[0], PERIOD_RANGE[1]))
+WRITTEN += list(pages) + [index_path]
 print()
-for name, p in sorted(REC_OUT["written"].items()):
-    print("   %-24s %s" % (name, p))
-print()
-print("the manifest, the first ten rows")
-print(MAN.head(10)[["site", "role", "component", "kind", "bytes", "sha256"]].to_string(index=False))
+print("%d gallery page(s), %d curve(s) drawn" % (len(pages), len(index)))
+if len(pages):
+    display(Image(filename=str(pages[0])))
 
-want = sorted({r.site for r in RECORD.itertuples() if r.product != "none"})
-no_file = [s for s in want if s not in DELIVERED or not Path(DELIVERED[s]).exists()]
-no_panel = [s for s in want if s not in set(index.site)] if len(index) else list(want)
-no_man = [s for s in want if s not in set(MAN[MAN.role == "final"].site)]
-if not want:
-    print("VERDICT: UNJUDGED -- no site has a product of record, so no final was written and none was drawn")
-elif no_file or no_panel or no_man:
-    print("VERDICT: FAIL -- of the %d site(s) with a product of record, %d have no delivered file (%s), %d "
-          "have no gallery panel (%s) and %d have no manifest row (%s)"
-          % (len(want), len(no_file), " ".join(no_file) or "none", len(no_panel),
-             " ".join(no_panel) or "none", len(no_man), " ".join(no_man) or "none"))
+pages2, index2, index2_path = FIG.final_gallery(
+    GALLERY, TFS, OUT, stem="gallery_comparison", per_page=int(PER_PAGE),
+    period_range=tuple(PERIOD_RANGE), comparisons=ALL_COMPS, reasons=REASON,
+    title="%s: the delivered transfer functions, the comparison in black" % sv.cfg["name"],
+    caption="The same gallery with each declared comparison drawn in black behind the delivered curve. The "
+            "y limits are the delivered curve's own, so a comparison that disagrees by decades runs off its "
+            "panel rather than squeezing every curve on the page into a line. A comparison is a second "
+            "measurement of the same field and not the truth.")
+WRITTEN += list(pages2) + [index2_path]
+print("%d comparison page(s), %d curve(s) drawn" % (len(pages2), len(index2)))
+if len(pages2):
+    display(Image(filename=str(pages2[0])))
+
+CHECKED = FN.manifest_check(MAN)
+print()
+print("every delivered file in the manifest, read back")
+print(CHECKED[["site", "exists", "readable", "sha256_matches"]].to_string(index=False)
+      if len(CHECKED) else "the manifest names no delivered file")
+gone = [r.site for r in CHECKED.itertuples() if not r.exists]
+unread = [r.site for r in CHECKED.itertuples() if r.exists and not r.readable]
+moved = [r.site for r in CHECKED.itertuples() if r.exists and not r.sha256_matches]
+if not len(CHECKED):
+    print("VERDICT: UNJUDGED -- the manifest names no delivered file, so none was read back")
+elif gone or unread or moved:
+    print("VERDICT: FAIL -- of the %d delivered file(s) in the manifest, %d are missing (%s), %d do not "
+          "read as a transfer function (%s) and %d do not match the sha256 recorded for them (%s)"
+          % (len(CHECKED), len(gone), " ".join(gone) or "none", len(unread), " ".join(unread) or "none",
+             len(moved), " ".join(moved) or "none"))
 else:
-    print("VERDICT: PASS -- all %d site(s) with a product of record carry a delivered file, a gallery panel "
-          "and a manifest row; %d file(s) in the manifest with their sha256, %d of them delivered and %d "
-          "the products they came from"
-          % (len(want), len(MAN), int((MAN.role == "final").sum()), int((MAN.role == "source").sum())))
+    print("VERDICT: PASS -- all %d delivered file(s) in the manifest are on disk, read as a transfer "
+          "function and match the sha256 recorded for them; %d row(s) in the manifest, %d of them the "
+          "products the files came from"
+          % (len(CHECKED), len(MAN), int((MAN.role == "source").sum())))
 '''),
 
-("md", r"""## 9. What was written"""),
+("md", r"""## 7. What was written"""),
 
 ("code", '''rows = []
 for p in list(WRITTEN) + [q for s in sorted(DELIVERED) for q in
@@ -5935,6 +6136,10 @@ print("%d files, %.1f MB, in %.1f minutes" % (len(files), files.kb.sum() / 1024,
 print(files.head(80).to_string(index=False))
 if len(files) > 80:
     print("   ... and %d more" % (len(files) - 80))
+print()
+print("ignored: %d %s product(s) on disk, read by nothing above" % (len(IGNORED), RD.DROPPED_KIND))
+for p in sorted(IGNORED.path):
+    print("   %s" % p)
 '''),
 ]
 
