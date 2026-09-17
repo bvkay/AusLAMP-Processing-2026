@@ -6,6 +6,12 @@ are reduced to one per (site, run, stamp, kind, rate) before anything else. runs
 name, only its latest stamp, so a 1 Hz run and a 10 Hz run under different names are both kept and a re-run of
 one name does not count twice.
 
+A product also carries the SELECTION of hours it was estimated on, which the file name states and the
+ledger's `selection` column names: `whole` is the whole record and carries no tag, and f05, f10, f25 and r25
+are the best 5, 10 and 25 per cent of hours by 1-30 s E-H coherence and the random 25 per cent that controls
+them (Ben, 2026-09-17: the 10 Hz pass runs on the most coherent hours, never the whole record). A ledger
+written before that column existed has none, and every one of its products is read as the whole record.
+
 read_tf applies two rules before a curve is used, both ported from scripts/qc/survey_pdf.py:55 read
 (D:/BEN/MTH5_Aurora_mt-io_2026):
 
@@ -51,8 +57,18 @@ COMPONENTS = {"xx": (0, 0), "xy": (0, 1), "yx": (1, 0), "yy": (1, 1)}
 OFF_DIAGONAL = ("xy", "yx")
 TIPPER_COMPONENTS = {"zx": (0, 0), "zy": (0, 1)}
 
-PRODUCT_COLUMNS = ["site", "run", "stamp", "kind", "rate_hz", "params", "path", "xml", "provenance",
-                   "remote", "members", "n_runs", "seconds", "peak_rss_mb", "status", "on_disk"]
+PRODUCT_COLUMNS = ["site", "run", "stamp", "kind", "rate_hz", "params", "selection", "path", "xml",
+                   "provenance", "remote", "members", "n_runs", "seconds", "peak_rss_mb", "status",
+                   "on_disk"]
+
+# The selection of hours a product was estimated on. A 1 Hz product is the whole record and carries no tag
+# in its file name; a 10 Hz product carries one, because the 10 Hz pass runs on the most coherent hours by
+# 1-30 s E-H coherence (Ben, 2026-09-17): f05, f10 and f25 are the best 5, 10 and 25 per cent of hours and
+# r25 is the random 25 per cent that is their control. `whole` is the untagged whole-record pass.
+WHOLE_SELECTION = "whole"
+SELECTION_TAGS = ("whole", "f05", "f10", "f25", "r25")
+PRODUCT_NAME = re.compile(r"^(?P<site>.+?)_(?P<kind>%s)_(?P<rate>\d+)hz_(?P<rest>.+)$"
+                          % "|".join(sorted(KINDS, key=len, reverse=True)))
 
 # the processing_parameters keys a page prints under its title, in the order it prints them
 METADATA_KEYS = ("reference_kind", "reference_members", "reference_coverage", "reference_weight_rule",
@@ -119,24 +135,55 @@ def run_folder(work_root, site, run, stamp) -> Path:
     return Path(work_root) / str(site) / ("%s_%s" % (run, stamp))
 
 
-def product_path(work_root, site, run, stamp, kind, rate_hz, params) -> Path:
+def product_path(work_root, site, run, stamp, kind, rate_hz, params, selection="") -> Path:
     """The EDI the run folder holds for one product, built from the folder rule rather than from the ledger.
 
     The ledger records the absolute path the run wrote, which is wrong for a work root that has since moved;
-    the folder rule is not.
+    the folder rule is not. A product estimated on a selection of hours carries the tag between the rate and
+    the parameter set; the whole record carries none, so an untagged name is unchanged.
     """
-    return run_folder(work_root, site, run, stamp) / ("%s_%s_%dhz_%s.edi"
-                                                      % (site, kind, int(float(rate_hz)), params))
+    tag = str(selection or "").strip()
+    tag = "" if tag in ("", WHOLE_SELECTION, "nan") else (tag + "_")
+    return run_folder(work_root, site, run, stamp) / ("%s_%s_%dhz_%s%s.edi"
+                                                      % (site, kind, int(float(rate_hz)), tag, params))
 
 
-def find_products(survey, sites, runs="latest", kinds="all", rates="all", work_root=None) -> pd.DataFrame:
+def parse_product_name(path) -> dict:
+    """{site, kind, rate_hz, selection, params} read off a product's file name, or an empty dict.
+
+    The parameter set carries an underscore of its own (kaiser20_75), so the selection is recognised as a
+    known tag at the head of what follows the rate rather than by splitting on underscores.
+    """
+    m = PRODUCT_NAME.match(Path(path).stem)
+    if not m:
+        return {}
+    rest = m.group("rest")
+    sel = WHOLE_SELECTION
+    for tag in SELECTION_TAGS:
+        if tag != WHOLE_SELECTION and rest.startswith(tag + "_"):
+            sel, rest = tag, rest[len(tag) + 1:]
+            break
+    return dict(site=m.group("site"), kind=m.group("kind"), rate_hz=float(m.group("rate")),
+                selection=sel, params=rest)
+
+
+def find_products(survey, sites, runs="latest", kinds="all", rates="all", work_root=None,
+                  selections="all") -> pd.DataFrame:
     """One row per product of the chosen sites and runs, from the ledger and the run folders.
 
     `sites` is a list of site names, `kinds` is "all" or a list of the code keys, `rates` is "all" or a list
-    of sample rates in Hz. `on_disk` says whether the EDI the ledger names is there.
+    of sample rates in Hz, and `selections` is "all" or a list of the tags. `on_disk` says whether the EDI
+    the ledger names is there.
+
+    The ledger's `selection` column names the selection of hours each product was estimated on. A ledger
+    written before that column existed has none, and every one of its products is the whole record.
     """
     work = Path(work_root or survey.cfg["work_root"])
     led = ledger(work)
+    if "selection" not in led.columns:
+        led = led.assign(selection=WHOLE_SELECTION)
+    led["selection"] = [WHOLE_SELECTION if (pd.isna(s) or not str(s).strip()) else str(s).strip()
+                        for s in led.selection]
     pairs = choose_runs(led, runs)
     keep = led[[(r, s) in pairs for r, s in zip(led.run, led.stamp)]]
     keep = keep[keep.site.isin(list(sites))]
@@ -144,13 +191,15 @@ def find_products(survey, sites, runs="latest", kinds="all", rates="all", work_r
         keep = keep[keep.kind.isin([str(k) for k in kinds])]
     if not isinstance(rates, str):
         keep = keep[keep.rate_hz.isin([float(x) for x in rates])]
+    if not isinstance(selections, str):
+        keep = keep[keep.selection.isin([str(x) for x in selections])]
     rows = []
     for r in keep.itertuples():
-        p = product_path(work, r.site, r.run, r.stamp, r.kind, r.rate_hz, r.params)
+        p = product_path(work, r.site, r.run, r.stamp, r.kind, r.rate_hz, r.params, r.selection)
         folder = run_folder(work, r.site, r.run, r.stamp)
         rows.append(dict(site=r.site, run=r.run, stamp=r.stamp, kind=r.kind, rate_hz=float(r.rate_hz),
-                         params=r.params, path=str(p), xml=str(p.with_suffix(".xml")),
-                         provenance=str(folder / "provenance.json"),
+                         params=r.params, selection=r.selection, path=str(p),
+                         xml=str(p.with_suffix(".xml")), provenance=str(folder / "provenance.json"),
                          remote=(None if pd.isna(r.remote) else r.remote),
                          members=(None if pd.isna(r.members) else r.members),
                          n_runs=r.n_runs, seconds=r.seconds, peak_rss_mb=r.peak_rss_mb,
@@ -158,7 +207,7 @@ def find_products(survey, sites, runs="latest", kinds="all", rates="all", work_r
     out = pd.DataFrame(rows, columns=PRODUCT_COLUMNS)
     order = {k: i for i, k in enumerate(KINDS)}
     if len(out):
-        out = out.sort_values(["site", "rate_hz", "run", "kind"],
+        out = out.sort_values(["site", "rate_hz", "run", "kind", "selection"],
                               key=lambda c: c.map(order) if c.name == "kind" else c)
     return out.reset_index(drop=True)
 
@@ -172,8 +221,11 @@ def unledgered(work_root, sites, pairs) -> list:
     work = Path(work_root)
     named = set()
     led = ledger(work)
+    if "selection" not in led.columns:
+        led = led.assign(selection=WHOLE_SELECTION)
     for r in led.itertuples():
-        named.add(str(product_path(work, r.site, r.run, r.stamp, r.kind, r.rate_hz, r.params)).lower())
+        named.add(str(product_path(work, r.site, r.run, r.stamp, r.kind, r.rate_hz, r.params,
+                                   getattr(r, "selection", ""))).lower())
     out = []
     for site in sites:
         for run, stamp in pairs:
@@ -196,14 +248,18 @@ def run_provenance(path) -> dict:
 def _mask_component(z, e):
     """One component with the EDI fill and the no-information convention masked out.
 
-    A zero with a finite bar under 1e9 is a measurement -- a one-dimensional earth has Zxx = Zyy = 0 exactly,
-    and masking it would leave the diagonal empty, which makes a frame turn of that period return nothing at
-    all because the turn mixes the four elements. A zero carrying the 1e9 bar,
-    or no bar at all, is the no-information convention and is masked.
+    A zero with a finite bar between zero and 1e9 is a measurement -- a one-dimensional earth has
+    Zxx = Zyy = 0 exactly, and masking it would leave the diagonal empty, which makes a frame turn of that
+    period return nothing at all because the turn mixes the four elements. A zero carrying the 1e9 bar, no
+    bar at all, or a bar of exactly zero is the no-information convention and is masked.
+
+    The zero bar is the one the EDI round trip produces: the writer emits the 1e32 empty-data value for a
+    row that carries nothing, and the reader hands that back as Z = 0 with an error of 0, so a blanked row
+    would otherwise read as a measurement of zero at every period. No estimator produces a zero error.
     """
     z = np.asarray(z, complex).copy()
     e = np.asarray(e, float).copy()
-    measured_bar = np.isfinite(e) & (e < NO_INFO_ERR)
+    measured_bar = np.isfinite(e) & (e > 0) & (e < NO_INFO_ERR)
     bad = ~np.isfinite(z) | (np.abs(z) >= FILL)
     bad |= np.isfinite(e) & (e >= NO_INFO_ERR)
     bad |= (np.abs(z) == 0.0) & ~measured_bar

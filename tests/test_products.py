@@ -25,7 +25,11 @@ def synthetic(n=24, rho=100.0, shuffle=False, fill_at=()):
     z = np.zeros((n, 2, 2), complex)
     z[:, 0, 1] = zxy
     z[:, 1, 0] = -zxy
-    err = 0.02 * np.abs(z)
+    # the diagonal of a one-dimensional tensor is zero, and its bar has to be a positive number: the EDI
+    # writer emits the 1e32 empty-data value for a row carrying nothing and the reader hands that back as
+    # Z = 0 with an error of 0, so a zero value with a zero bar is not distinguishable from an empty row in
+    # the file at all. An estimator's jackknife bar on a measured zero is small and never zero.
+    err = np.maximum(0.02 * np.abs(z), 1e-6 * float(np.abs(z).max()))
     for k in fill_at:
         z[k, 0, 1] = 1e32 + 0j
         err[k, 0, 1] = 1e32
