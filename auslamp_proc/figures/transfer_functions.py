@@ -94,13 +94,17 @@ def tf_panels(ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx, ax_tzx, ax_tzy, tf, labe
     return drawn
 
 
-def _dress(axes, rho_curves, period_range):
+def _dress(axes, rho_curves, period_range, comps=("xy", "yx")):
+    """The panel limits and titles. `comps` names the two components the panels carry, so a page drawn in a
+    turned frame titles them x'y' and y'x' and a page in the site's own frame titles them xy and yx."""
     ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx, ax_tzx, ax_tzy = axes
+    c_xy, c_yx = comps
     lo, hi = rho_limits(rho_curves)
-    for ax, title, ylabel in ((ax_rho_xy, "rho xy", "rho (Ohm.m)"), (ax_rho_yx, "rho yx", "")):
+    for ax, title, ylabel in ((ax_rho_xy, "rho %s" % c_xy, "rho (Ohm.m)"),
+                              (ax_rho_yx, "rho %s" % c_yx, "")):
         ax.set(xscale="log", yscale="log", ylim=(lo, hi), title=title, ylabel=ylabel)
-    for ax, title, ylabel in ((ax_ph_xy, "phase xy", "phase (deg)"),
-                              (ax_ph_yx, "phase yx + 180 deg", "")):
+    for ax, title, ylabel in ((ax_ph_xy, "phase %s" % c_xy, "phase (deg)"),
+                              (ax_ph_yx, "phase %s + 180 deg" % c_yx, "")):
         ax.set(xscale="log", ylim=PHASE_LIM, title=title, ylabel=ylabel)
     for ax, title, ylabel in ((ax_tzx, "Tzx: real filled, imaginary open on dotted", "tipper"),
                               (ax_tzy, "Tzy: real filled, imaginary open on dotted", "")):

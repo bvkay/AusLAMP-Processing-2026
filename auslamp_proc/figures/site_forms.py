@@ -167,12 +167,16 @@ def record_spans(t0, arrays, out, site="", channels=("Hx", "Ex", "Ey"), spans=()
 # -------------------------------------------------------- the transfer-function panels
 
 def form_panels(curves, site, out, title="", caption="", period_range=None, figsize=(13, 8),
-                tipper=False):
+                tipper=False, comps=("xy", "yx")):
     """Several transfer functions on the rho and phase panels of a page.
 
     `curves` is [(label, TFData, colour, linestyle)]. The panels and their limits are workbook 04's, so a
     form page and a transfer-function page read the same way. A form is drawn for comparison; not a
     transfer function.
+
+    `comps` names the two components the panel titles carry. Every curve on one page has to be in one frame
+    for the page to mean anything, so a page drawn in a turned frame passes the turned names -- x'y' and
+    y'x' for the arm diagonal -- and every tensor on it is turned into that frame before it is drawn.
     """
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(2 + (1 if tipper else 0), 2, figsize=figsize, sharex=True)
@@ -185,7 +189,7 @@ def form_panels(curves, site, out, title="", caption="", period_range=None, figs
             continue
         rho += tf_panels(ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx, ax_tzx, ax_tzy, tf, label,
                          colour=colour, ls=ls, marker="o", period_range=period_range, bars=True)
-    _dress((ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx, ax_tzx, ax_tzy), rho, period_range)
+    _dress((ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx, ax_tzx, ax_tzy), rho, period_range, comps=comps)
     ax_rho_xy.legend(fontsize=8, loc="best")
     return finish(fig, title or site, caption, out)
 

@@ -520,6 +520,37 @@ def turn_errors(e, angle_deg=THETA_NE):
     return np.sqrt(np.einsum("nij,kj->nik", np.asarray(e, float) ** 2, R ** 2))
 
 
+def turn_frame(z, t=None, angle_deg=THETA_NE):
+    """(Z', T') of a tensor estimated in the site's own frame, written in the frame at angle_deg.
+
+    turn_columns turns the H columns alone, which is all a pass on the NE cache needs: that cache already
+    carries the E row turn, so its estimate is R Z. A tensor estimated in the site's own frame carries
+    neither turn, so both are applied here -- the rows put E into the turned frame and the columns put H
+    into it -- and Z' = R Z R^T. The tipper's one row is Hz, which does not turn, so T' = T R^T.
+    """
+    R = FR.rotation_matrix(angle_deg)
+    return turn_columns(np.einsum("ik,nkj->nij", R, np.asarray(z)), t, angle_deg)
+
+
+def turn_frame_errors(e, angle_deg=THETA_NE):
+    """Errors combined in quadrature over both turns of turn_frame, as turn_errors does over the columns."""
+    R = FR.rotation_matrix(angle_deg)
+    rows = np.sqrt(np.einsum("ik,nkj->nij", R ** 2, np.asarray(e, float) ** 2))
+    return turn_errors(rows, angle_deg)
+
+
+def turn_tf(tf, angle_deg=THETA_NE):
+    """One read transfer function (transfer_functions.TFData) written in the frame at angle_deg.
+
+    The tensor and the tipper go through turn_frame and their error bars through turn_frame_errors, so a
+    transfer function estimated in the site's own frame is drawn and read against a pass whose cache already
+    carries the turn, on the same axes and in the same units.
+    """
+    z, t = turn_frame(tf.z, tf.t, angle_deg)
+    te = None if tf.t_err is None else turn_errors(np.asarray(tf.t_err, float), angle_deg)
+    return tf._replace(z=z, z_err=turn_frame_errors(tf.z_err, angle_deg), t=t, t_err=te)
+
+
 def turn_invariants(z_before, z_after, angle_deg=THETA_NE) -> dict:
     """The three tolerances of a column-only turn, and the trace as the counter-example.
 

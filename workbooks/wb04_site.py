@@ -718,25 +718,76 @@ WRITTEN.append(OUT / "11_diagonal_day.png")
 display(Image(filename=str(OUT / "11_diagonal_day.png")))
 '''),
 
-("md", r"""The diagonal pass against the baseline, where one was built. The x' row is the arm diagonal and
-not the xy component, so the two curves are not the same quantity and are not expected to lie on each other:
-what to look for is whether the x' row is smoother and carries a smaller bar than the row the shared centre
-sits in."""),
+("md", r"""The diagonal pass and the baseline in one frame, where a diagonal was built. The two are drawn in
+the diagonal frame: the pass on the NE cache already stands in it, and the whole-record baseline is turned
+into it by Z' = R Z R^T and T' = T R^T at the same theta, its error bars combined in quadrature over both
+turns. They are not two answers to compare. The NE cache holds the same two electric channels written in a
+turned frame, passed against the same magnetics and the same reference, and an estimate that is linear in E
+returns R Z, so the pass gives back the site's own tensor written in the diagonal frame. The robust
+weighting is the one departure from that linearity: it scores each electric channel on its own residuals,
+and the turned channels are not the two the baseline was weighted on, so the agreement is a fraction of a
+per cent and not exact. What the diagonal buys is the error bar: the shared centre's voltage cancels out of
+the x' row, which is the difference of the two arm potentials, and lands doubled on the y' row, which is
+their sum.
+
+What to look for is the two curves lying on each other on both rows, and the blue bars shorter than the
+black on the x' row and longer on the y' row. The reading under the figure puts numbers on both over
+100-1000 s, and names the largest departure it finds against the 1e-3 in rho a rotation on its own would
+hold to."""),
 
 ("code", '''r = made_tf("diagonal")
 if r and BASE:
-    fig = FF.form_panels([("whole", read(BASE), "k", "-"), ("diagonal", read(r["transfer_function"]), "C0", "-")],
-                         SITE, OUT / "12_diagonal_transfer_function.png",
-                         title="%s: the diagonal pass against the baseline" % SITE,
-                         caption="The pass on the arm-diagonal cache, turned back by theta = %+.2f deg = "
-                                 "atan2(-L_E, L_N) with L_N = %.4g m and L_E = %.4g m, against the "
-                                 "whole-record baseline in black. The x' row is the field along the arm "
-                                 "diagonal and not the xy component, so the two are different quantities "
-                                 "and are not expected to lie on each other; what the figure is for is the "
-                                 "size of the error bars on the row the shared centre sits in."
-                                 % (THETA, ARMS["L_N"], ARMS["L_E"]), period_range=(1, 50000))
+    DIAG_TF = read(r["transfer_function"])
+    BASE_D = CE.turn_tf(read(BASE), THETA)
+    fig = FF.form_panels([("the baseline turned into the diagonal frame", BASE_D, "k", "-"),
+                          ("the diagonal pass", DIAG_TF, "C0", "-")],
+                         SITE, OUT / "12_diagonal_transfer_function.png", comps=("x'y'", "y'x'"),
+                         title="%s: the diagonal pass and the baseline in the diagonal frame" % SITE,
+                         caption="One tensor in one frame: the whole-record baseline turned into the "
+                                 "diagonal frame in black, by Z' = R Z R^T at theta = %+.2f deg = "
+                                 "atan2(-L_E, L_N) with L_N = %.4g m, L_E = %.4g m and d = %.2f m, and the "
+                                 "pass on the arm-diagonal cache as it stands in blue -- the pass is the "
+                                 "same transfer function written in that frame, not a second estimate of a "
+                                 "different quantity, and what the diagonal buys is the error bar on the x' "
+                                 "row, which the shared centre's voltage has cancelled out of."
+                                 % (THETA, ARMS["L_N"], ARMS["L_E"],
+                                    CE.diagonal_length(ARMS["L_N"], ARMS["L_E"])),
+                         period_range=(1, 50000))
     WRITTEN.append(OUT / "12_diagonal_transfer_function.png")
     display(Image(filename=str(OUT / "12_diagonal_transfer_function.png")))
+
+    P_D = np.asarray(DIAG_TF.period, float)
+    IN_BAND = (P_D >= AGREE_BAND[0]) & (P_D <= AGREE_BAND[1])
+    ROWS_D = (("x'", (0, 1)), ("y'", (1, 0)))
+    print("the two estimates over %g-%g s, the diagonal pass against the turned baseline: a rotation of the "
+          "same channels gives the same tensor, so the ratio reads 1.000 and the difference 0.0 deg up to "
+          "the robust weighting" % AGREE_BAND)
+    for row, (i, j) in ROWS_D:
+        a, b = DIAG_TF.z[:, i, j], BASE_D.z[:, i, j]
+        m = IN_BAND & np.isfinite(a) & np.isfinite(b) & (np.abs(b) > 0)
+        if not m.any():
+            print("   the %s row: no period of the band carries both" % row)
+            continue
+        ratio = (np.abs(a[m]) / np.abs(b[m])) ** 2
+        diff = np.degrees(np.angle(a[m] / b[m]))
+        worst = int(np.argmax(np.abs(ratio - 1.0)))
+        print("   the %s row over %d period(s): median rho ratio %.4f, median phase difference %+.3f deg; "
+              "the largest departure is %.2f per cent in rho and %+.3f deg in phase, at %.0f s, which is %s "
+              "the 1e-3 in rho a rotation on its own would hold to"
+              % (row, int(m.sum()), np.median(ratio), np.median(diff), 100 * abs(ratio[worst] - 1.0),
+                 diff[int(np.argmax(np.abs(diff)))], P_D[m][worst],
+                 "within" if abs(ratio[worst] - 1.0) <= 1e-3 else "beyond"))
+    print("the error bar over the same periods, the diagonal pass over the turned baseline: the x' row "
+          "under 1 where the centre's voltage left it, the y' row above 1 where it landed")
+    for row, (i, j) in ROWS_D:
+        ea, eb = DIAG_TF.z_err[:, i, j], BASE_D.z_err[:, i, j]
+        m = IN_BAND & np.isfinite(ea) & np.isfinite(eb) & (eb > 0)
+        if not m.any():
+            print("   the %s row: no period of the band carries both bars" % row)
+            continue
+        bar = ea[m] / eb[m]
+        print("   the %s row over %d period(s): median ratio %.3f, range %.3f to %.3f"
+              % (row, int(m.sum()), np.median(bar), np.min(bar), np.max(bar)))
 else:
     print("no diagonal pass was built, so there is nothing to draw against the baseline")
 '''),
