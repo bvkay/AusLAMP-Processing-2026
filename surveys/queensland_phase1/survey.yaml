@@ -55,44 +55,11 @@ observatory:
   archive: E:/MT_Timeseries_DATA/Geomagnetic_Observatory_Data/INTERMAGNET_1sec
   code: CTA                         # Charters Towers; the nearest one-second observatory to the Queensland sites
 
-# No transfer function has been released for this phase.
-release_tensors: {}
-
 release_mth5: {}
 instrument_register: ""
 
 # Every dipole is on a deployment sheet, so no default is needed.
 dipole_default: {}
-
-# Ben's September 2026 processing of this same raw data, for the comparison in workbook 04 only (read-only).
-# frame: the frame the source's tensors are in. geomagnetic is ours and is compared as it is; geographic is
-# turned by the site's declination_deg into our frame; instrument is compared as laid. Workbook 04 refuses a
-# source that declares no frame and no note. layout names the tree under folder, with <kind> filled from
-# kind_map (our code key to theirs) and <params> from params.
-earlier_processing:
-  folder: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/processed_2026/phase1_v1
-  frame: geomagnetic
-  note: "Ben's September 2026 Aurora processing of Phase 1, single station and remote site, 1 Hz and 10 Hz;
-    the same raw data through a different code path, rotated so each site's mean Hy is zero (processed_2026
-    README, Site setup and the coordinate frame)"
-  layout: "aurora/<kind>_<params>/<site>.edi"
-  params: kaiser20_75
-  kind_map: {single: single, remote: partner, obs: obs_cta, stack: stack, stack_obs: hybrid}
-
-# Further comparison sources, each of the same shape as earlier_processing and each declaring its frame and
-# its note. phase1_v1 above holds five of the 23 sites, so the campaign's own deliverable is declared beside
-# it: one merged file per station, covering all 23.
-comparisons:
-  campaign_merged:
-    folder: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/processed_2026/final_2026-09-09/merged_edi
-    frame: geomagnetic
-    note: "the September 2026 campaign's deliverable, one merged EDI per station (qld_merge_edis.py,
-      2026-09-09): a 1 Hz long file, a middle piece below 100 s where a clean window beat the whole record,
-      and a 10 Hz short end below 20 s aligned onto the long file by a local level and phase factor, on a
-      common grid of ten periods a decade; it is one curve per site and not one per reference kind, rows that
-      are not products are blanked with the EDI 1e32 fill, and several sites stand on a stand-in H or a
-      window rather than the whole record (MERGED_INDEX.csv names what each file is made of)"
-    layout: "<site>.edi"
 
 # The deployment sheet position, compared in workbook 01 and never used as a value. The sheets were
 # transcribed into phase1_master.csv on 2026-09-05.

@@ -54,50 +54,11 @@ observatory:
   archive: E:/MT_Timeseries_DATA/Geomagnetic_Observatory_Data/INTERMAGNET_1sec
   code: CTA                         # Charters Towers; the nearest one-second observatory to the Queensland sites
 
-# The students' LEMI MT transfer functions for this phase, for the stage-7 comparison only. The stem rule
-# drops the trailing N of the site name; three sites have no EDI (15 files for 18 sites) and are listed so the
-# comparison does not silently miss a site.
-release_tensors:
-  folder: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/Phase2_EDI_V3
-  stem_rule: "Q<NN>N -> Q<NN>, Q82 -> Q82"
-  exceptions: {Q56N: "", Q58N: "", Q66N: ""}
-  frame: instrument
-  rho_factor: 1.42
-  release_note: "the students' LEMI MT EDIs; their rho is 1.42x low (the 2^23-count rail mapped to 70000 nT
-    instead of 58720), phase correct"
-  note: "the students' lemimt EDIs, as laid and never rotated; their rho is 1.42x low from the Bx/By
-    calibration constant (the 2^23-count rail mapped to 70000 nT where it gives 58720) with the phase
-    correct, so rho_factor 1.42 is applied to the comparison and stated in every figure and table it enters"
-
 release_mth5: {}
 instrument_register: ""
 
 # Every dipole is on the process spreadsheet, so no default is needed.
 dipole_default: {}
-
-# Ben's September 2026 processing of this same raw data, for the comparison in workbook 04 only (read-only).
-earlier_processing:
-  folder: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/processed_2026/aurora
-  frame: geomagnetic
-  note: "Ben's September 2026 Aurora processing of Phase 2, single station and remote site, 1 Hz and 10 Hz;
-    the same raw data through a different code path, rotated so each site's mean Hy is zero (processed_2026
-    README, Site setup and the coordinate frame)"
-  layout: "<kind>_<params>/<site>.edi"
-  params: kaiser20_75
-  kind_map: {single: none, remote: partner, obs: cta, stack: stack}
-
-# Further comparison sources, each of the same shape as earlier_processing and each declaring its frame and
-# its note.
-comparisons:
-  campaign_merged:
-    folder: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/processed_2026/final_2026-09-09/merged_edi
-    frame: geomagnetic
-    note: "the September 2026 campaign's deliverable, one merged EDI per station (qld_merge_edis.py,
-      2026-09-09): a 1 Hz long file, a middle piece below 100 s where a clean window beat the whole record,
-      and a 10 Hz short end below 20 s aligned onto the long file by a local level and phase factor, on a
-      common grid of ten periods a decade; it is one curve per site and not one per reference kind, and rows
-      that are not products are blanked with the EDI 1e32 fill"
-    layout: "<site>.edi"
 
 # The process spreadsheet's position, compared in workbook 01 and never used as a value. The spreadsheet's
 # Latitude and Longitude columns are transcribed into qld_positions.csv ref_latitude and ref_longitude, which
@@ -123,15 +84,6 @@ checks:
       t_end: "2026-03-23T02:00:00+00:00"
       source: "D:/BEN/MTH5_Aurora_mt-io_2026/scripts/processing/PROJECT_JOURNAL.md :1678-1683 and
         Q58N_EXPLANATION_2026-09-07.md :44-46, 2026-09-07; scratch q58n_clean_window_10hz.py"
-  # The campaign's product of record for the same composition, read-only, for the comparison alone.
-  recipe_comparison:
-    Q58N:
-      path: E:/MT_Timeseries_DATA/MT_AusLAMP_QLD/processed_2026/final_2026-09-09/products_of_record/Q58N_diagonal_frame_salvage.edi
-      frame: diagonal
-      band_s: [5, 100]
-      note: "the September 2026 campaign's salvage of Q58N in the arm-diagonal frame (-52.9 deg): row 1 and
-        the tipper from the 1 Hz diagonal over half the record, row 2 from the 14 h clean window at 10 Hz
-        rotated and interpolated, the periods above 1,066 s written as the EDI 1e32 fill"
 
 floors:
   member_chunk_days: 0.5

@@ -1,4 +1,4 @@
-"""The product reader, the frame turn and the per-decade comparison, on synthetic transfer functions.
+"""The product reader, the tensor turn and the per-decade comparison, on synthetic transfer functions.
 
 Every test states what would make it fail. Nothing here reads a survey's work root: each transfer function is
 built in the test and written to an EDI through mt_metadata, so a failure names the code and not the data.
@@ -109,14 +109,15 @@ def test_read_tf_gives_the_apparent_resistivity_it_was_built_from(tmp_path):
     assert np.allclose(rho, 100.0, rtol=1e-6)
 
 
-# ------------------------------------------------------------------ the frame turn
+# ------------------------------------------------------------------ the tensor turn
 
 @pytest.mark.parametrize("angle", [0.0, 8.978, -12.5, 90.0])
 def test_turn_is_a_rotation(angle):
     """Fails if the turn changes Zxy - Zyx, Zxx + Zyy or det Z by more than 1e-9 relative.
 
     The three are invariant under Z' = R Z R^T for any rotation R, so a turn that moves one of them is not a
-    rotation: it is a scale, a reflection or an index slip.
+    rotation: it is a scale, a reflection or an index slip. The turn under test is the one workbook 05's
+    diagonal frame applies.
     """
     rng = np.random.default_rng(3)
     z = rng.normal(size=(30, 2, 2)) + 1j * rng.normal(size=(30, 2, 2))
@@ -131,21 +132,21 @@ def test_turn_is_a_rotation(angle):
                        np.abs(t[:, 0, 0]) ** 2 + np.abs(t[:, 0, 1]) ** 2, rtol=1e-9)
 
 
-def test_turn_to_our_frame_and_back_is_the_identity(tmp_path):
-    """Fails if turning a tensor into our frame and back does not return it to 1e-9 of the tensor's own size.
+def test_turn_and_back_is_the_identity(tmp_path):
+    """Fails if turning a tensor and turning it back does not return it to 1e-9 of the tensor's own size.
 
     The bound is relative to the largest element at each period, not to the element itself: a 1-D tensor has
     Zxx = Zyy = 0 exactly, and a relative bound on zero is a bound no arithmetic can meet.
     """
     period, z, err = synthetic(n=18)
     tf = PR.read_tf(write_edi(tmp_path, period, z, err, "TURN"))
-    there = PR.turn_to_our_frame(tf, 9.5)
-    back = PR.turn_to_our_frame(there, -9.5)
+    there, _t = FR.turn_tensor(tf.z, tf.t, 9.5)
+    back, _b = FR.turn_tensor(there, None, -9.5)
     ok = np.isfinite(tf.z)
     scale = np.nanmax(np.abs(tf.z).reshape(len(tf.period), -1), axis=1)[:, None, None]
     scale = np.broadcast_to(scale, tf.z.shape)
     assert ok.sum() == tf.z.size
-    assert np.all(np.abs(back.z[ok] - tf.z[ok]) <= 1e-9 * scale[ok])
+    assert np.all(np.abs(back[ok] - tf.z[ok]) <= 1e-9 * scale[ok])
 
 
 # ------------------------------------------------------------------ on_grid and per_decade
@@ -171,9 +172,9 @@ def test_per_decade_against_itself_is_one_and_zero(tmp_path):
     assert np.allclose(scored.phase_diff_deg.values, 0.0, atol=1e-9)
 
 
-def test_per_decade_against_a_doubled_rho_reads_as_a_scale(tmp_path):
-    """Fails if a curve at twice the apparent resistivity does not give a ratio of 2.0 with no phase change,
-    or if the reading calls that anything but a scale."""
+def test_per_decade_against_a_doubled_rho_gives_a_ratio_of_two(tmp_path):
+    """Fails if a curve at twice the apparent resistivity does not give a ratio of 2.0 with no phase
+    change."""
     period, z, err = synthetic(n=24, rho=100.0)
     a = PR.read_tf(write_edi(tmp_path, period, z, err, "ONEX"))
     b = PR.read_tf(write_edi(tmp_path, period, z * np.sqrt(2.0), err * np.sqrt(2.0), "TWOX"))
@@ -185,7 +186,7 @@ def test_per_decade_against_a_doubled_rho_reads_as_a_scale(tmp_path):
     scored2 = rows2[rows2.n > 0]
     assert np.allclose(scored2.rho_ratio.values, 2.0, rtol=1e-6)
     now = AG.band_stats(b, a, "xy", 5.0, 200.0)
-    assert "SCALE" in AG.reading(now, dict(rho_ratio=np.nan, phase_diff_deg=np.nan))
+    assert np.isclose(now["rho_ratio"], 2.0, rtol=1e-6) and now["spread"] <= 1.001
 
 
 def test_agreement_rule_uses_its_own_thresholds():
@@ -208,11 +209,3 @@ def test_smoothness_finds_a_planted_jump(tmp_path):
     s_rough = AG.smoothness(rough)
     assert int(s_clean[s_clean.component == "xy"].n_jumps.iloc[0]) == 0
     assert int(s_rough[s_rough.component == "xy"].n_jumps.iloc[0]) >= 1
-
-
-def test_stem_candidates_cover_both_rules_in_use():
-    """Fails if the leading-zero rule or the trailing-N rule is not among the stems tried for a site."""
-    assert "VIC01" in PR._stem_candidates("VIC001")
-    assert "VIC16R" in PR._stem_candidates("VIC016R")
-    assert "Q79" in PR._stem_candidates("Q79N")
-    assert PR._stem_candidates("Q82")[0] == "Q82"

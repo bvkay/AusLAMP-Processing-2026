@@ -1,4 +1,4 @@
-"""The products of a run: where they are, what they hold, and the comparison sources declared beside them.
+"""The products of a run: where they are and what they hold.
 
 find_products reads the ledger <work_root>/survey/runs.csv and the run folders <site>/<run>_<stamp>/ that
 workbook 03 writes. The ledger is append-only and a resumed run appends a second row per product, so the rows
@@ -23,18 +23,6 @@ read_tf applies two rules before a curve is used, both ported from scripts/qc/su
 The yx phase is folded into the first quadrant by +180 deg in rho_phase, which is what every table and panel
 reads; read_tf itself returns the tensor as written.
 
-comparison_sources reads the survey.yaml blocks earlier_processing and release_tensors. Every source declares
-a frame and a note and is refused without them. The frames and what is done with each:
-
-    geomagnetic   the mean-field frame, ours: compared as it is
-    geographic    true north: turned by the site's declination_deg into our frame (Z' = R Z R^T, T' = T R^T,
-                  R = [[cos, sin], [-sin, cos]] at +declination, the inverse of the to_geographic_north_deg
-                  angle every product carries); the comparison moves, never our products
-    instrument    as laid: compared as it is, with the note printed beside the table
-
-A source may declare rho_factor, the multiple its apparent resistivity is out by; it is applied to the
-comparison as sqrt(rho_factor) on Z and stated in every figure title and table that carries it.
-
 @author: ben kay (ben@auscope.org.au)
 """
 from __future__ import annotations
@@ -47,7 +35,6 @@ import numpy as np
 import pandas as pd
 
 from .process import KINDS, KIND_WORD
-from .process import frame as FR
 
 # the EDI empty-data value, and the project's Z = 0 with an error of 1e9 for a period carrying no information
 FILL = 1e30
@@ -74,12 +61,6 @@ PRODUCT_NAME = re.compile(r"^(?P<site>.+?)_(?P<kind>%s)_(?P<rate>\d+)hz_(?P<rest
 METADATA_KEYS = ("reference_kind", "reference_members", "reference_coverage", "reference_weight_rule",
                  "mask", "runs", "selection", "h_rotation_deg", "declination_deg", "sample_rate_hz",
                  "parameter_set", "band_file", "engine", "days", "caveat_10hz")
-
-# the two survey.yaml keys that hold one source each, plus `comparisons:`, a mapping of any further named
-# blocks of the same shape
-SOURCE_BLOCKS = ("earlier_processing", "release_tensors")
-SOURCE_MAPPING = "comparisons"
-FRAMES = ("geomagnetic", "geographic", "instrument")
 
 
 class TFData(NamedTuple):
@@ -382,162 +363,6 @@ def tipper_parts(tf: TFData, comp: str):
         return None, None, None
     i, j = TIPPER_COMPONENTS[comp]
     return np.real(tf.t[:, i, j]), np.imag(tf.t[:, i, j]), np.asarray(tf.t_err)[:, i, j]
-
-
-# ------------------------------------------------------------------ the comparison sources
-
-def _stem_candidates(site: str) -> list:
-    """The file stems a site may be delivered under, most specific first.
-
-    Two rules are in use in the folders this package compares against: the leading zero of a three-digit site
-    number is dropped (VIC001 -> VIC01) and a trailing N is dropped (Q79N -> Q79).
-    """
-    s = str(site)
-    m = re.match(r"^([A-Za-z]+)(\d+)(.*)$", s)
-    if not m:
-        return [s]
-    head, digits, tail = m.groups()
-    numbers = [digits]
-    while numbers[-1].startswith("0") and len(numbers[-1]) > 1:      # leading zeros only, never a real digit
-        numbers.append(numbers[-1][1:])
-    tails = [tail] + ([tail[:-1]] if tail.upper().endswith("N") else [])
-    out = ["%s%s%s" % (head, n, t) for t in tails for n in numbers]
-    return list(dict.fromkeys(out))
-
-
-def _folder_index(folder: Path) -> dict:
-    return {p.stem.lower(): p for p in sorted(Path(folder).glob("*.edi"))}
-
-
-def comparison_sources(survey, names="all") -> list:
-    """The comparison sources survey.yaml declares, each with its frame and its note.
-
-    A block without a `frame:` or a `note:` is returned with `error` set and the workbook refuses it. A
-    comparison whose frame is not declared cannot be turned into ours, and a tensor in an unknown frame drawn
-    on our axes is a different object on the same picture.
-    """
-    if isinstance(names, str) and str(names).strip().lower() == "none":
-        return []
-    blocks = [(b, survey.cfg.get(b) or {}) for b in SOURCE_BLOCKS]
-    blocks += sorted((survey.cfg.get(SOURCE_MAPPING) or {}).items())
-    out = []
-    for block, spec in blocks:
-        if not spec or not spec.get("folder"):
-            continue
-        if not isinstance(names, str) and block not in list(names):
-            continue
-        src = dict(name=block, folder=str(spec["folder"]), frame=str(spec.get("frame") or ""),
-                   note=str(spec.get("note") or spec.get("release_note") or ""),
-                   rho_factor=float(spec.get("rho_factor") or 1.0),
-                   layout=str(spec.get("layout") or "<site>.edi"),
-                   params=str(spec.get("params") or ""),
-                   kind_map=dict(spec.get("kind_map") or {}),
-                   exceptions={str(k): str(v) for k, v in (spec.get("exceptions") or {}).items()},
-                   error="")
-        why = []
-        if src["frame"] not in FRAMES:
-            why.append("no frame: declaration (one of %s)" % ", ".join(FRAMES))
-        if not src["note"]:
-            why.append("no note: declaration")
-        if not Path(src["folder"]).exists():
-            why.append("the folder is not there: %s" % src["folder"])
-        src["error"] = "; ".join(why)
-        out.append(src)
-    return out
-
-
-def comparison_paths(source: dict, site: str) -> dict:
-    """{our kind key: the file} for one site of one source, over the kinds the source actually delivers.
-
-    A layout holding <kind> is a per-kind tree, one folder per reference kind and parameter set; a layout
-    without it is one file per site and the kind is "".
-    """
-    folder = Path(source["folder"])
-    if not folder.exists():
-        return {}
-    layout = source["layout"]
-    if "<kind>" in layout:
-        out = {}
-        for ours in KINDS:
-            theirs = (source["kind_map"] or {}).get(ours)
-            if not theirs:
-                continue
-            rel = layout.replace("<kind>", theirs).replace("<params>", source["params"])
-            sub = folder / Path(rel).parent
-            if not sub.exists():
-                continue
-            idx = _folder_index(sub)
-            for cand in _stem_candidates(site):
-                if cand.lower() in idx:
-                    out[ours] = idx[cand.lower()]
-                    break
-        return out
-    idx = _folder_index(folder)
-    forced = (source.get("exceptions") or {}).get(str(site))
-    if forced is not None:
-        if not str(forced).strip():
-            return {}
-        return {"": idx[forced.lower()]} if forced.lower() in idx else {}
-    for cand in _stem_candidates(site):
-        if cand.lower() in idx:
-            return {"": idx[cand.lower()]}
-    return {}
-
-
-def turn_to_our_frame(tf: TFData, declination_deg: float) -> TFData:
-    """A tensor in geographic north turned into our geomagnetic frame by +declination.
-
-    The angle is the inverse of the to_geographic_north_deg = -declination line every product carries, so the
-    comparison moves and our products never do. The errors are turned in quadrature over |R|.
-    """
-    d = float(declination_deg)
-    # a turn mixes all four elements, so a period missing one of them cannot be turned at all: those periods
-    # come back empty rather than as the NaN one masked element would spread over the other three
-    whole = np.all(np.isfinite(tf.z.reshape(len(tf.period), -1)), axis=1)
-    z, t = FR.turn_tensor(np.where(whole[:, None, None], tf.z, 0.0), tf.t, d)
-    z = np.where(whole[:, None, None], z, np.nan + 1j * np.nan)
-    r = np.abs(FR.rotation_matrix(d))
-    ze = np.sqrt(np.einsum("ij,njk,lk->nil", r ** 2, np.nan_to_num(tf.z_err) ** 2, r ** 2))
-    ze = np.where(np.isfinite(z), ze, np.nan)
-    te = None
-    if tf.t_err is not None:
-        flat = np.asarray(tf.t_err).reshape(np.asarray(tf.t_err).shape[0], -1)
-        te = np.sqrt((np.nan_to_num(flat) ** 2) @ (r ** 2).T).reshape(np.asarray(tf.t_err).shape)
-    meta = dict(tf.meta, turned_deg=round(d, 4), n_turned=int(whole.sum()),
-                n_not_turned=int((~whole).sum()),
-                frame_note="turned by %+.3f deg from geographic north into our geomagnetic frame" % d)
-    return TFData(tf.period, z, ze, t, te, meta)
-
-
-def scale_rho(tf: TFData, rho_factor: float) -> TFData:
-    """A comparison whose apparent resistivity is a known multiple out, corrected on Z by sqrt(rho_factor)."""
-    f = float(rho_factor)
-    if not np.isfinite(f) or f == 1.0:
-        return tf
-    s = np.sqrt(f)
-    meta = dict(tf.meta, rho_factor=f,
-                rho_factor_note="rho multiplied by %.3f (Z by %.4f) as survey.yaml declares" % (f, s))
-    return TFData(tf.period, tf.z * s, tf.z_err * s, tf.t, tf.t_err, meta)
-
-
-def load_comparison(source: dict, site: str, declination_deg=None) -> dict:
-    """{kind: TFData in OUR frame} for one site of one source, turned and scaled as the source declares.
-
-    A geographic source is turned by the site's declination; an instrument or geomagnetic source is compared
-    as it is. A declared rho_factor is applied to every curve of the source.
-    """
-    out = {}
-    for kind, path in comparison_paths(source, site).items():
-        tf = read_tf(path)
-        if source["frame"] == "geographic":
-            if declination_deg is None or not np.isfinite(float(declination_deg)):
-                continue
-            tf = turn_to_our_frame(tf, float(declination_deg))
-        tf = scale_rho(tf, source.get("rho_factor", 1.0))
-        tf.meta.update(source=source["name"], source_frame=source["frame"], source_kind=kind,
-                       source_note=source["note"])
-        out[kind] = tf
-    return out
 
 
 def kind_words(keys=KINDS) -> pd.DataFrame:

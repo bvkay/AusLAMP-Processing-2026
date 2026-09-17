@@ -2,8 +2,7 @@
 
 The grid for a comparison between two of our own products is the ten-per-decade grid T = 10^(k/10) from
 3.16 s (k = 5) to 50,119 s (k = 47), ported from scripts/qc/edi_resample.py:69-71
-(D:/BEN/MTH5_Aurora_mt-io_2026). A comparison against a source outside the run is scored on OUR periods, so
-nothing of ours is moved.
+(D:/BEN/MTH5_Aurora_mt-io_2026). A pair scored on one curve's own periods moves nothing of that curve.
 
 on_grid interpolates linearly in log10 period, of log10 |Z| and of the unwrapped phase, over the source's own
 valid nodes. There is no extrapolation and no bridging of a hole wider than 0.30 decades, both from the same
@@ -13,12 +12,6 @@ further apart than that, gets no value.
 per_decade reports, per band and per off-diagonal component, the median apparent-resistivity ratio
 (|Z_a|^2 / |Z_b|^2) and the median phase difference in degrees, with the count the medians were taken over.
 The bands are 5-10, 10-100, 100-1000 and 1000-10000 s.
-
-reading is the scale / frame / fault call of scripts/processing/vic_vs_ga.py:51-99, with its thresholds as
-arguments: two curves agree within AGREE_RHO and AGREE_PHASE_DEG; a difference is a SCALE where the ratio's
-75th over its 25th percentile is at most SPREAD_MAX and the phase agrees, which is a dipole length or a gain;
-a FRAME where turning by the declination brings the ratio inside TURNED_LO..TURNED_HI with the phase
-agreeing; anything else is a FAULT. It is a reading and never a check.
 
 smoothness is the per-curve score of scripts/qc/curve_consistency.py: each point against a weighted quadratic
 through its neighbours, the residual over the combined sigma, a jump above JUMP_Z; the phase step per decade;
@@ -43,8 +36,6 @@ AGREE_BAND = (5.0, 200.0)     # the band the agreement rule is read over
 
 AGREE_RHO = 0.20              # agreement: the rho ratio within this fraction of one
 AGREE_PHASE_DEG = 5.0         # ... and the phase difference within this many degrees
-SPREAD_MAX = 1.3              # a scale: the ratio's 75th over its 25th percentile at most this
-TURNED_LO, TURNED_HI = 0.8, 1.25   # a frame: the turned ratio inside this range
 
 JUMP_Z = 4.0                  # |z| above this is a jump
 SMOOTH_HALF = 3               # neighbours each side the quadratic is fitted to
@@ -238,82 +229,6 @@ def run_vs_run(products: pd.DataFrame, read=None, bands=BANDS) -> pd.DataFrame:
                                      run_b="%s_%s" % (rb, sb), band=r.band, component=r.component,
                                      rho_ratio=r.rho_ratio, phase_diff_deg=r.phase_diff_deg, n=int(r.n)))
     return pd.DataFrame(rows)
-
-
-def versus_comparison(products: pd.DataFrame, source: dict, declinations: dict, read=None, bands=BANDS,
-                      agree_rho=AGREE_RHO, agree_phase=AGREE_PHASE_DEG,
-                      agree_band=AGREE_BAND) -> pd.DataFrame:
-    """Ours against one declared source, per site, kind and band, with the scale / frame / fault reading.
-
-    `declinations` is {site: declination_deg} from sites.csv; it is what turns a geographic source into our
-    frame and what the frame reading tries as an explanation for a disagreement.
-    """
-    from .products import load_comparison, read_tf, turn_to_our_frame
-    read = read or read_tf
-    rows = []
-    for site, grp in products.groupby("site", sort=True):
-        dec = declinations.get(site)
-        try:
-            theirs = load_comparison(source, site, dec)
-        except Exception as exc:
-            rows.append(dict(site=site, kind="", rate_hz=np.nan, band="", component="", rho_ratio=np.nan,
-                             phase_diff_deg=np.nan, n=0, spread=np.nan, rho_ratio_turned=np.nan,
-                             phase_diff_turned_deg=np.nan, reading="",
-                             error="%s: %s" % (type(exc).__name__, str(exc)[:100]), their_file=""))
-            continue
-        if not theirs:
-            continue
-        for r in grp.itertuples():
-            if not r.on_disk:
-                continue
-            tf_them = theirs.get(r.kind, theirs.get(""))
-            if tf_them is None:
-                continue
-            ours = read(r.path)
-            for lo, hi in bands:
-                for comp in OFF_DIAGONAL:
-                    s = band_stats(ours, tf_them, comp, lo, hi)
-                    rows.append(dict(site=site, kind=r.kind, rate_hz=r.rate_hz, band=band_label(lo, hi),
-                                     component=comp, rho_ratio=s["rho_ratio"], spread=s["spread"],
-                                     phase_diff_deg=s["phase_diff_deg"], n=s["n"],
-                                     rho_ratio_turned=np.nan, phase_diff_turned_deg=np.nan,
-                                     reading="", error="", their_file=str(tf_them.meta.get("path", ""))))
-            for comp in OFF_DIAGONAL:
-                s = band_stats(ours, tf_them, comp, agree_band[0], agree_band[1])
-                turned = dict(rho_ratio=np.nan, phase_diff_deg=np.nan, spread=np.nan, n=0)
-                if dec is not None and np.isfinite(float(dec)):
-                    turned = band_stats(ours, turn_to_our_frame(tf_them, float(dec)), comp,
-                                        agree_band[0], agree_band[1])
-                rows.append(dict(site=site, kind=r.kind, rate_hz=r.rate_hz,
-                                 band=band_label(*agree_band), component=comp,
-                                 rho_ratio=s["rho_ratio"], spread=s["spread"],
-                                 phase_diff_deg=s["phase_diff_deg"], n=s["n"],
-                                 rho_ratio_turned=turned["rho_ratio"],
-                                 phase_diff_turned_deg=turned["phase_diff_deg"],
-                                 reading=reading(s, turned, agree_rho, agree_phase), error="",
-                                 their_file=str(tf_them.meta.get("path", ""))))
-    return pd.DataFrame(rows)
-
-
-def reading(now: dict, turned: dict, agree_rho=AGREE_RHO, agree_phase=AGREE_PHASE_DEG,
-            spread_max=SPREAD_MAX, turned_lo=TURNED_LO, turned_hi=TURNED_HI) -> str:
-    """scale / frame / fault, or agreement. A reading of what a difference looks like, never a check.
-
-    A constant rho ratio with the phase untouched is a scale -- a dipole length or a gain. A disagreement the
-    declination turn removes is a frame. The rest is a fault: the ratio wanders with period, or the phase
-    disagrees and the turn does not fix it.
-    """
-    r, sp, d = now.get("rho_ratio"), now.get("spread"), now.get("phase_diff_deg")
-    if not (np.isfinite(r) and np.isfinite(d)):
-        return "not scored"
-    if abs(r - 1.0) <= agree_rho and abs(d) <= agree_phase:
-        return "agrees"
-    rt, dt = turned.get("rho_ratio"), turned.get("phase_diff_deg")
-    if np.isfinite(rt) and np.isfinite(dt) and turned_lo <= rt <= turned_hi and abs(dt) <= agree_phase:
-        return "FRAME (turned %.2f, %+.1f deg)" % (rt, dt)
-    if np.isfinite(sp) and sp <= spread_max and abs(d) <= agree_phase:
-        return "SCALE x%.2f in rho (a dipole or a gain)" % r
-    return "FAULT (ratio %.2f, spread %.2f, %+.1f deg)" % (r, sp if np.isfinite(sp) else np.nan, d)
 
 
 # ------------------------------------------------------------------ smoothness, per curve

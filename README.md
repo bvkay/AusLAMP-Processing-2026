@@ -33,9 +33,9 @@ silently escapes the environment where `python -m jupyterlab` and `python -m nbc
 | `01_survey` | reads the raw folder into a site table (instrument, serial, dipoles, positions from the logger's own GPS, dates with the EDL week rollover, declination), draws the map and the deployment register, and checks or fetches the observatory record for the span |
 | `02_records` | builds each site's cache (every file placed on one absolute axis, gaps NaN, no sign or frame) and draws its record, band coherence, coherence maps, spectra and spectrograms, with the magnetometer DC test and the per-day state of each electric line -- look before processing |
 | `03_process` | Aurora over the chosen sites and the four reference kinds (remote site, fleet stack, observatory, stack + observatory): at 1 Hz over the record, at 10 Hz on the most coherent hours with a random selection as the control; one folder per run with its provenance, and a figure for what each step did |
-| `04_products` | every product of a site, group or survey on one page; run against run; the release turned into our frame as a comparison |
+| `04_products` | every product of a site, group or survey on one page; kind against kind, rate against rate, run against run; each curve's smoothness; the survey gallery |
 | `05_site` | one site in depth: the magnetics day by day, the fleet and clock tests, day masks, windows and best hours each with a random control, the arm diagonal for a shared centre, the 10 Hz short end, a magnetic channel borrowed from a neighbour, and the recipe that composes them -- one frame and, per impedance row, which hours at which rate -- into one product |
-| `06_final` | one site's final transfer function: every product put to the three response tests (phase in quadrant, the slope bound, the error bar), the rule's proposal, the analyst's choice recorded, the 10 Hz join, one EDI per site, the comparison last |
+| `06_final` | one site's final transfer function: every product put to the three response tests (phase in quadrant, the slope bound, the error bar), the rule's proposal, the analyst's choice recorded, the 10 Hz join, one EDI per site |
 
 Each workbook is generated from `workbooks/make_workbooks.py`, which holds it as one Python list of markdown and
 code cells, and is executed in place by `workbooks/run_workbooks.py`, which fails on a non-zero nbconvert exit, on
@@ -46,8 +46,7 @@ the notebook itself.
 
 Products are processed and served in geomagnetic north: each site's horizontal magnetics are rotated so the mean Hy
 is zero, which removes the hand-compass misalignment. The IGRF declination is recorded in every file and not applied.
-The release EDIs (geographic north) are turned by the declination when compared. Magnetics in nT, electrics in mV/km,
-periods in s.
+Magnetics in nT, electrics in mV/km, periods in s.
 
 ## Layout
 

@@ -65,20 +65,8 @@ observatory:
   archive: E:/MT_Timeseries_DATA/Geomagnetic_Observatory_Data/INTERMAGNET_1sec
   code: decide              # the nearest INTERMAGNET observatory with 1 s data over the span, or none
 
-# The release's transfer functions, for the comparison in workbook 04 only.
-release_tensors:
-  folder: ""
-  stem_rule: ""             # how a site name maps to an EDI stem, if they differ
-  exceptions: {}            # every site the rule does not reach, so the comparison cannot miss one silently
-
 release_mth5: {}            # instrument: folder of the release's own MTH5 files (compared, never used)
 instrument_register: ""     # a CSV of logger serials against sites, if the release ships one
-
-# An earlier processing of the same raw data, for the comparison in workbook 04 only (read-only).
-earlier_processing: {}
-# earlier_processing:
-#   folder: ""
-#   note: ""
 
 # A position from outside the instrument -- a deployment sheet, a site metadata table. Workbook 01 compares it
 # against the position the instrument's own GPS recorded and never reads a value from it.

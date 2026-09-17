@@ -4,12 +4,12 @@ The panel conventions are ported from Processing_Run/wamt_tools.py:465-488 plot_
 (D:/BEN/MTH5_Aurora_mt-io_2026): period on a log x axis labelled `period (s)`; apparent resistivity on a log
 axis in Ohm.m; phase 0-90 deg with the yx panel labelled `+ 180 deg`; the tipper -0.8..0.8 with the real part
 as filled circles and the imaginary part as open triangles on a dotted line over a zero line; grids at
-alpha 0.25; the series in C0..C9; a comparison source black with its own error bars, drawn first at zorder 1.
+alpha 0.25; the series in C0..C9.
 
 The page layout is ported from scripts/processing/vic_site_figure.py: every product of the site on one page,
-the comparison behind, the phase folded, the y limits taken from the data. Kinds are the colours, rates are
-the line style (1 Hz solid, 10 Hz dashed) and runs are the marker, so three axes of one page are readable at
-once. The header lines the products carry are printed under the title.
+the phase folded, the y limits taken from the data. Kinds are the colours, rates are the line style (1 Hz
+solid, 10 Hz dashed) and runs are the marker, so three axes of one page are readable at once. The header
+lines the products carry are printed under the title.
 
 The gallery is the simpler form of scripts/processing/vic_gallery_all.py: N sites a page (6 by default), rho
 and phase for xy and yx per site, one legend on the first page, and an index CSV naming every curve drawn.
@@ -39,7 +39,6 @@ GRID_ALPHA = 0.25
 KIND_COLOUR = {k: "C%d" % i for i, k in enumerate(KINDS)}
 RATE_STYLE = {1: "-", 10: "--"}
 RUN_MARKER = ("o", "s", "^", "D", "v", "P")
-COMPARISON_COLOUR = "k"
 
 
 def rho_limits(curves) -> tuple:
@@ -120,12 +119,12 @@ def _dress(axes, rho_curves, period_range):
         ax.set_xlabel("period (s)")
 
 
-def site_page(site, products, read, out, comparisons=(), title="", header_lines=(), period_range=None,
+def site_page(site, products, read, out, title="", header_lines=(), period_range=None,
               figsize=(13.0, 12.5), tipper=True):
-    """Every product of one site on one page, the comparisons behind, written to `out`.
+    """Every product of one site on one page, written to `out`.
 
-    `products` is the site's rows of find_products, `read` turns a path into a TFData, and `comparisons` is a
-    list of (label, TFData) already in our frame. Returns (the path, the index rows it drew).
+    `products` is the site's rows of find_products and `read` turns a path into a TFData. Returns (the path,
+    the index rows it drew).
     """
     import matplotlib.pyplot as plt
 
@@ -144,12 +143,6 @@ def site_page(site, products, read, out, comparisons=(), title="", header_lines=
     panels = (ax[0][0], ax[0][1], ax[1][0], ax[1][1], ax_tzx, ax_tzy)
 
     rho_curves, index = [], []
-    for k, (label, tf) in enumerate(comparisons):
-        rho_curves += tf_panels(*panels, tf, "%s (comparison, not truth)" % label,
-                                colour=COMPARISON_COLOUR, ls="-", marker=".", lw=1.0, ms=3, alpha=0.9,
-                                zorder=1, period_range=period_range)
-        index.append(dict(site=site, curve="comparison", label=label,
-                          path=str(tf.meta.get("path", "")), colour=COMPARISON_COLOUR))
     runs = sorted({(r.run, r.stamp) for r in products.itertuples()})
     for r in products.itertuples():
         if not r.on_disk:

@@ -2446,7 +2446,6 @@ SITES = "all"                 # "all" | "largest" (the register's largest group)
 RUNS = "latest"               # "latest" = the newest stamp of every run name | "all" | ["first", "short10"]
 KINDS = "all"                 # "all" | a list of the code keys: ["remote", "stack", "obs"]
 RATES = "all"                 # "all" | [1] | [10]; both rates of a site sit on the same page
-COMPARE = "all"               # "all" | a list of the survey.yaml source names | "none" draws no comparison
 SHOW = None                   # None = the first chosen site; a site name shows that site's page inline
 PER_PAGE = 6                  # sites a gallery page
 WORK_ROOT = None              # None = survey.yaml work_root; every figure and table lands under it
@@ -2501,15 +2500,6 @@ PAIRS = PR.choose_runs(PR.ledger(WORK), RUNS)
 RUN_TAG = "-".join(sorted({name for name, _stamp in PAIRS})) or "none"
 SHOW_SITE = SHOW or (CHOSEN[0] if CHOSEN else "")
 
-def _dec(cell):
-    try:
-        return float(str(cell).strip())
-    except ValueError:
-        return None
-
-DECLINATION = {r.site: _dec(r.declination_deg) for r in sv.sites.itertuples()}
-DECLINATION = {k: v for k, v in DECLINATION.items() if v is not None and np.isfinite(v)}
-
 _cache = {}
 def read(path):
     """One TFData per file. A page, four tables and the gallery all ask for the same file."""
@@ -2539,11 +2529,11 @@ print("agreement    within %.0f %% in rho and %.1f deg in phase over %g-%g s"
 '''
 
 WB04 = [
-("md", r"""# 04 -- The products: every product on one page, run against run, the comparisons last
+("md", r"""# 04 -- The products: every product on one page, run against run
 
 This workbook reads the transfer functions workbook 03 wrote and puts every product a site has on one page.
 It reports what the products say about each other -- kind against kind, rate against rate, run against run --
-and only then, in the last section, sets them beside a processing done outside this run.
+then each curve's own smoothness, and draws the survey's gallery.
 
 Nothing here is estimated again and no product is altered. Every file is read through
 `auslamp_proc.products.read_tf`, which applies two rules before a curve is used: the EDI empty-data value
@@ -2566,14 +2556,9 @@ The single-station estimate is not one of them. It is biased low by whatever noi
 and its error bars do not carry that bias, so it is not a kind of this package: a single-station file left in
 a run folder by an earlier pass is counted and named in the first cell, and no table or figure below reads it.
 
-Four checks state their failure criterion in bold above the cell and print a verdict below it. A check that
+Three checks state their failure criterion in bold above the cell and print a verdict below it. A check that
 scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported as FAIL and is
-not revised afterwards.
-
-The last section is a comparison, not a test of the truth: two independent processings of the same field are
-two measurements. Every source outside this run declares the frame its tensors are in -- geomagnetic,
-geographic or instrument -- in `surveys/<SURVEY>/survey.yaml`, and the workbook refuses one that declares
-none."""),
+not revised afterwards."""),
 
 ("code", WB04_PARAMS),
 ("code", WB04_RULES),
@@ -2859,169 +2844,6 @@ print(ranked.head(5).to_string(index=False))
 print()
 print("the five roughest")
 print(ranked.tail(5).to_string(index=False))
-'''),
-
-("md", r"""## The comparisons, last
-
-This section sets our products beside a processing done outside this run. It comes last and is a comparison,
-never the truth: two independent processings of the same field are two measurements. A difference in level
-is a gain, a dipole length or a frame before it is the earth, and a difference the declination turn removes
-was never a difference in the earth.
-
-Every source is declared in `surveys/<SURVEY>/survey.yaml` with the frame its tensors are in and a note
-saying what it is, and `auslamp_proc.products.comparison_sources` refuses one that declares neither:
-
-| frame | what is done to the source |
-|---|---|
-| geomagnetic | compared as it is: the source is already in the mean-field frame ours are served in |
-| geographic | turned into our frame by +declination_deg from sites.csv (Z' = R Z R^T, T' = T R^T, R = [[cos, sin], [-sin, cos]]), which is the inverse of the to_geographic_north_deg angle every product of ours carries |
-| instrument | compared as laid, with the note printed beside the table |
-
-The comparison is what moves; our products are never turned. A source declaring `rho_factor` -- a level its
-own record says it is out by -- is multiplied by it in apparent resistivity, and the factor is stated in every
-figure title and every table row it enters.
-
-The reading per site, kind and component names one of three explanations: a scale is a constant ratio with
-the phase untouched, which is a dipole length or a gain and the only one a number can fix; a frame is a
-disagreement the declination turn removes; a fault is neither -- the ratio wanders with period, or the phase
-disagrees and the turn does not fix it. It is a reading and not a check.
-
-**This check fails if a declared source lacks a frame declaration, or if the frame turn applied to any tensor
-changes a rotation invariant by more than 1e-9 relative.** The second limb is an independent observable of the
-turn itself: Zxy - Zyx, Zxx + Zyy and det Z are unchanged by Z' = R Z R^T for any rotation R, so a turn that
-moves one of them is a scale, a reflection or an index slip and not a rotation. Each is compared with the
-largest element of the same tensor at the same period, because a one-dimensional site has Zxx + Zyy = 0
-exactly and a relative bound on zero is one no arithmetic can meet."""),
-
-("code", '''SOURCES = PR.comparison_sources(sv, COMPARE)
-vs_tables, no_frame, turn_bad, turn_n = {}, [], [], 0
-for src in SOURCES:
-    print("source       %s" % src["name"])
-    print("  folder     %s" % src["folder"])
-    print("  frame      %s" % (src["frame"] or "NOT DECLARED"))
-    print("  note       %s" % (src["note"] or "NOT DECLARED"))
-    if src["rho_factor"] != 1.0:
-        print("  rho_factor %.3f applied to the comparison, as survey.yaml declares" % src["rho_factor"])
-    if src["error"]:
-        no_frame.append("%s: %s" % (src["name"], src["error"]))
-        print("  REFUSED    %s" % src["error"])
-        print()
-        continue
-    tab = AG.versus_comparison(PROD, src, DECLINATION, read=read, bands=[tuple(b) for b in BANDS],
-                               agree_rho=AGREE_RHO, agree_phase=AGREE_PHASE_DEG,
-                               agree_band=tuple(AGREE_BAND))
-    vs_tables[src["name"]] = tab
-    for site in sorted(set(PROD.site)):
-        dec = DECLINATION.get(site)
-        if dec is None:
-            continue
-        for _kind, tf in PR.load_comparison(src, site, dec).items():
-            turned = PR.turn_to_our_frame(tf, dec)
-            ok = np.all(np.isfinite(tf.z.reshape(len(tf.period), -1)), axis=1)
-            if not ok.any():
-                continue
-            scale = np.nanmax(np.abs(tf.z[ok]).reshape(int(ok.sum()), -1), axis=1)
-            for label, f in (("Zxy - Zyx", lambda a: a[:, 0, 1] - a[:, 1, 0]),
-                             ("Zxx + Zyy", lambda a: a[:, 0, 0] + a[:, 1, 1]),
-                             ("det Z", lambda a: a[:, 0, 0] * a[:, 1, 1] - a[:, 0, 1] * a[:, 1, 0])):
-                d = np.abs(f(turned.z[ok]) - f(tf.z[ok])) / np.maximum(scale ** (2 if label == "det Z" else 1),
-                                                                       1e-30)
-                turn_n += 1
-                if np.nanmax(d) > 1e-9:
-                    turn_bad.append("%s %s %s: %.2e" % (src["name"], site, label, float(np.nanmax(d))))
-    hit = tab[(tab.band == AG.band_label(*AGREE_BAND)) & (tab.n > 0)] if len(tab) else tab
-    print("  scored     %d site(s), %d kind(s), %d row(s); %d of %d readings agree"
-          % (tab.site.nunique() if len(tab) else 0, tab.kind.nunique() if len(tab) else 0, len(tab),
-             int((hit.reading == "agrees").sum()) if len(hit) else 0, len(hit)))
-    print()
-print("%d tensor invariant(s) tested across %d source(s)" % (turn_n, len(vs_tables)))
-'''),
-
-("md", r"""### What the comparison says, per site and kind
-
-The table below is the 100-1000 s band: the median ratio of our apparent resistivity to the source's, the
-median phase difference in degrees, and the reading. A ratio above one means our level is the higher of the
-two. The source's frame and note are printed above; the numbers are a shape check."""),
-
-("code", '''for name, tab in vs_tables.items():
-    src = [s for s in SOURCES if s["name"] == name][0]
-    mid = tab[(tab.band == "100-1000 s") & (tab.n > 0)] if len(tab) else tab
-    if not len(mid):
-        print("%s: nothing scored at 100-1000 s" % name)
-        continue
-    piv = mid.pivot_table(index=["site", "kind"], columns="component",
-                          values=["rho_ratio", "phase_diff_deg"]).round(3)
-    print("%s -- ours over the source at 100-1000 s, frame %s%s"
-          % (name, src["frame"],
-             "" if src["rho_factor"] == 1.0 else ", the source scaled by %.2f in rho" % src["rho_factor"]))
-    print(piv.to_string())
-    off = mid[(np.abs(mid.rho_ratio - 1.0) > AGREE_RHO) | (np.abs(mid.phase_diff_deg) > AGREE_PHASE_DEG)]
-    print()
-    print("%d of %d site-kind-component rows differ by more than %.0f %% or %.1f deg"
-          % (len(off), len(mid), 100 * AGREE_RHO, AGREE_PHASE_DEG))
-    if len(off):
-        print(off[["site", "kind", "component", "rho_ratio", "phase_diff_deg", "n"]]
-              .round(3).to_string(index=False))
-    print()
-    calls = tab[(tab.band == AG.band_label(*AGREE_BAND)) & (tab.n > 0)]
-    print("the reading over %s" % AG.band_label(*AGREE_BAND))
-    print(calls.reading.str.split(" ").str[0].value_counts().to_string())
-    path = OUT / ("vs_%s_%s.csv" % (name, RUN_TAG))
-    tab.round(4).to_csv(path, index=False)
-    WRITTEN.append(path)
-    print("-> %s (%d rows)" % (path, len(tab)))
-    print()
-'''),
-
-("md", r"""### The page redrawn with the source behind
-
-The same page as above with every declared source drawn in black with its own error bars, behind our products.
-The title says what it is. Written to `<work_root>/<site>/products_<run>_vs_<source>.png`."""),
-
-("code", '''vs_pages = []
-for src in SOURCES:
-    if src["error"]:
-        continue
-    for site in CHOSEN:
-        dec = DECLINATION.get(site)
-        try:
-            loaded = PR.load_comparison(src, site, dec)
-        except Exception:
-            loaded = {}
-        if not loaded:
-            continue
-        comps = [("%s %s" % (src["name"], k or "site"), tf) for k, tf in sorted(loaded.items())]
-        grp = PROD[PROD.site == site]
-        on = grp[grp.on_disk]
-        head = PR.metadata_lines(read(on.iloc[0].path).meta) if len(on) else []
-        head = head + ["comparison: %s, frame %s%s" % (src["name"], src["frame"],
-                                                       "" if src["rho_factor"] == 1.0 else
-                                                       ", rho x %.2f" % src["rho_factor"]),
-                       "comparison note: %s" % src["note"][:100]]
-        path, _index = FIG.site_page(
-            site, grp, read, WORK / site / ("products_%s_vs_%s.png" % (RUN_TAG, src["name"])),
-            comparisons=comps, header_lines=head, period_range=PERIOD_RANGE,
-            title="%s: our products with %s behind in black -- a comparison, not truth" % (site, src["name"]))
-        vs_pages.append(path)
-WRITTEN += vs_pages
-print("%d page(s) redrawn with a source behind" % len(vs_pages))
-if vs_pages:
-    shown = [p for p in vs_pages if Path(p).parent.name == SHOW_SITE] or vs_pages
-    display(Image(filename=str(shown[0])))
-
-if not SOURCES:
-    print("VERDICT: UNJUDGED -- survey.yaml declares no comparison source, or COMPARE is \\"none\\"")
-elif no_frame or turn_bad:
-    print("VERDICT: FAIL -- %d declared source(s) carry no frame or no note (%s); %d of %d rotation "
-          "invariants move by more than 1e-9 relative (%s)"
-          % (len(no_frame), "; ".join(no_frame) or "none", len(turn_bad), turn_n,
-             "; ".join(turn_bad[:4]) or "none"))
-elif not turn_n:
-    print("VERDICT: UNJUDGED -- no comparison tensor was found to test the frame turn on")
-else:
-    print("VERDICT: PASS -- all %d declared source(s) carry a frame and a note (%s), and the frame turn "
-          "leaves every one of the %d rotation invariants tested unchanged to better than 1e-9 relative"
-          % (len(SOURCES), ", ".join("%s %s" % (s["name"], s["frame"]) for s in SOURCES), turn_n))
 '''),
 
 ("md", r"""## The gallery
@@ -5103,31 +4925,6 @@ else:
           % (len(ROW_READINGS),
              "; ".join("%s %s at %g Hz" % (d["row"], d["hours"], d["rate_hz"]) for d in ROW_READINGS),
              ("; " + "; ".join(note)) if note else "", readings))
-'''),
-
-("md", r"""The comparison, last and never truth. The campaign's own product of this composition, where
-`survey.yaml` `checks.recipe_comparison` names one for this site, read row by row in the same frame over the
-band it names. It is a shape check on two paths to the same product and carries no verdict: the two were
-estimated from the same raw record and agree or differ for reasons neither file can settle."""),
-
-("code", '''cmp_row = ((sv.cfg.get("checks") or {}).get("recipe_comparison") or {}).get(SITE) or {}
-cmp_path = Path(str(cmp_row.get("path", "")))
-if not cmp_row:
-    print("survey.yaml checks.recipe_comparison names no product for %s: there is nothing to compare "
-          "against, which is the case at every site but the one the campaign salvaged by hand" % SITE)
-elif not ASSEMBLED:
-    print("no assembled product, so the comparison with %s is not made" % cmp_path.name)
-elif not cmp_path.exists():
-    print("%s is named in survey.yaml but is not on disk, so the comparison is not made" % cmp_path)
-else:
-    lo, hi = tuple(cmp_row.get("band_s", (5, 100)))
-    tab = RC.row_comparison(read(ASSEMBLED["path"]), read(str(cmp_path)), lo, hi)
-    print("%s against %s, %g-%g s, the campaign's product over ours" % (Path(ASSEMBLED["path"]).name,
-                                                                        cmp_path.name, lo, hi))
-    print(tab.round(4).to_string(index=False))
-    print()
-    print("the frame of the comparison is %s and ours is %s; %s"
-          % (cmp_row.get("frame"), FRAME["frame"], str(cmp_row.get("note"))[:400]))
 '''),
 
 ("md", r"""## 11. The forms table
