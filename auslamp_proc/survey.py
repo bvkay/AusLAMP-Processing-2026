@@ -12,8 +12,10 @@ Cell grammar:
     decide           not decided; a later workbook measures it and writes it back with its source
     empty            not known, and nothing depends on it
 
-write_table preserves every assume: and decide cell a file already holds. diff_tables reports the cells that
-differ between two versions of a table.
+write_table preserves a stored assume: or decide cell where the incoming cell is empty, and lets a caller
+holding a value write it: a workbook that computed nothing leaves the cell empty and the analyst's input
+survives, and an analyst's own write fills the cell. diff_tables reports the cells that differ between two
+versions of a table.
 
 Renamed from auslamp_proc/config.py 2026-09-16; the cell grammar and validate are ported from it.
 
@@ -46,6 +48,9 @@ SITES_COLUMNS = [
 DECISIONS_COLUMNS = [
     "site",
     "sign_hx", "sign_hy", "sign_hz", "sign_ex", "sign_ey", "sign_source",
+    "e_exchange", "e_exchange_source", "e_shift_s", "e_shift_source",
+    "h_exchange", "h_gain", "h_gain_source",
+    "h_lender", "h_lender_channels", "h_lender_source",
     "rot_regimes", "rot_drop", "windows", "keep_mask",
     "remote_site", "remote_source", "stack_members", "flags",
 ]
@@ -144,10 +149,14 @@ def validate(survey: Survey) -> list[str]:
 
 
 def write_table(path: Path, new: pd.DataFrame, columns: list[str], key: str = "site") -> str:
-    """Write `new` to `path`, keeping every assume: and decide cell the file already holds.
+    """Write `new` to `path`, keeping a stored assume: or decide cell only where the incoming cell is empty.
 
-    A cell set to assume:<value> or left at decide is an input, not a computed value, and is not replaced by a
-    re-run. Returns one line describing what was written.
+    A cell set to assume:<value> or left at decide is an input, not a computed value, and a workbook that
+    computed nothing must not blank it: that is the case the guard was built for, and it is the case where
+    the incoming cell is empty. A caller that has an actual value has measured something and is allowed to
+    write it -- otherwise the function cannot FILL a `decide` cell, which is exactly what an analyst's own
+    write does (D1 stage 1, measured: writing the analyst's filled frame over the file reverted 27 of the
+    56 cells it carried). Returns one line describing what was written.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     # object dtype: a column holds 50.0 at one site and 'assume:50' at the next, which no typed column accepts
@@ -167,7 +176,7 @@ def write_table(path: Path, new: pd.DataFrame, columns: list[str], key: str = "s
                 continue
             v = str(old.loc[k, c])
             if v.strip().lower() == DECIDE or v.lower().startswith(ASSUME):
-                if str(out.at[i, c]) != v:
+                if is_blank(out.at[i, c]) and str(out.at[i, c]) != v:
                     out.at[i, c] = v
                     kept += 1
     out.to_csv(path, index=False)
@@ -195,6 +204,20 @@ def diff_tables(old: pd.DataFrame, new: pd.DataFrame, key: str = "site") -> pd.D
             if a != b:
                 rows.append({key: k, "column": c, "old": a, "new": b})
     return pd.DataFrame(rows, columns=[key, "column", "old", "new"])
+
+
+def is_blank(v) -> bool:
+    """True where a caller supplied nothing at all: None, NaN, or a cell that is empty after a strip.
+
+    Narrower than is_empty on purpose. `none` is a WORD this grammar uses -- h_lender `none` says the site's
+    own H stands, which is a decision and not a silence -- so write_table's guard must not read it as an
+    empty cell and revert the stored `decide` over it.
+    """
+    if v is None:
+        return True
+    if isinstance(v, float) and v != v:
+        return True
+    return str(v).strip().lower() in ("", "nan", "<na>")
 
 
 def is_empty(v) -> bool:

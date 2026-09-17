@@ -441,6 +441,85 @@ def load(site, work_root, rate=1):
     return t0, arrays, meta
 
 
+def on_grid(arrays: dict, t_src: float, t0: float, n: int, fs: float) -> dict:
+    """One record's channels placed on another's grid at the same rate, NaN outside the overlap."""
+    out = {}
+    off = int(round((float(t_src) - float(t0)) * float(fs)))
+    for c, v in arrays.items():
+        x = np.full(int(n), np.nan)
+        a0, a1 = max(0, off), min(int(n), off + len(v))
+        if a1 > a0:
+            x[a0:a1] = np.asarray(v, float)[a0 - off:a1 - off]
+        out[c] = x
+    return out
+
+
+def load_decided(site, survey, rate=1, with_lender=True):
+    """(t0, the five channels with decisions.csv applied, the applied decisions as strings, the record).
+
+    The read side of process.frame.apply_decisions, and the only place a lender's record is read. The cache
+    is the record as laid; this function reads it, reads the lender's cache where decisions.csv h_lender
+    names one -- the lender's own decisions applied to it, its own mean-field frame, its lag against this
+    site measured by the 5-20 s rule of process.align.shift_for and taken out with the Lanczos delay, and
+    the whole placed on this site's grid -- and hands both to apply_decisions, which applies everything in
+    one fixed order. Nothing applies a decision anywhere else.
+
+    A lender of a lender is not followed: the lender's own h_lender cell is not read, because a borrowed
+    channel that is itself borrowed is nobody's measurement. `with_lender` False reads the site's own
+    channels with every other decision applied, which is what a member or a remote of a reference needs.
+
+    `record` carries the signs, the undecided sign channels, the open decisions, the lender's angle and its
+    lag. The npz meta is returned in the record under `meta`.
+    """
+    from ..process import align as AL, frame as FR
+    work = Path(survey.cfg["work_root"])
+    fs = float(rate)
+    t0, arrays, meta = load(site, work, rate)
+    try:
+        dec = survey.decision(site)
+    except KeyError:
+        dec = None
+    try:
+        srow = survey.site(site)
+    except (KeyError, AttributeError):
+        srow = None
+    lender_arrays, lag_s, why = None, float("nan"), ""
+    name = FR.read_lender(dec)
+    if name and with_lender:
+        lt0, larr, _lmeta = load(name, work, rate)
+        try:
+            ldec = survey.decision(name)
+        except KeyError:
+            ldec = None
+        try:
+            lsrow = survey.site(name)
+        except (KeyError, AttributeError):
+            lsrow = None
+        larr, _lapplied, _lrec = FR.apply_decisions(larr, ldec, lsrow, None, fs)
+        lregimes = FR.parse_regimes(ldec.get("rot_regimes") if ldec is not None else "")
+        ldrop = FR.parse_regimes(ldec.get("rot_drop") if ldec is not None else "")
+        larr, _lang = FR.rotate_to_mean_field(larr, regimes=lregimes, drop=ldrop, fs=fs)
+        n = len(arrays["Hx"])
+        lender_arrays = on_grid({c: larr[c] for c in ("Hx", "Hy", "Hz") if c in larr}, lt0, t0, n, fs)
+        own = {c: np.asarray(arrays[c], float) for c in ("Hx", "Hy") if c in arrays}
+        lag_s, why = AL.shift_for(own, {c: lender_arrays[c] for c in own}, fs, None)
+        if lag_s:
+            lender_arrays = {c: AL.shift(v, float(lag_s), fs) for c, v in lender_arrays.items()}
+    out, applied, rec = FR.apply_decisions(arrays, dec, srow, lender_arrays, fs)
+    rec["meta"] = meta
+    if name and with_lender:
+        rec["lender_lag_s"] = float(lag_s)
+        applied.append("h_lender=%s: the lender's lag against this site's own H over the %g-%g s band is "
+                       "%+.3f s and is taken out with the Lanczos delay%s"
+                       % (name, 1 / AL.SHORT_BAND[1], 1 / AL.SHORT_BAND[0], float(lag_s),
+                          "" if not why else "; the lag was refused and the lender is kept at lag 0 (%s)"
+                          % why))
+    elif name and not with_lender:
+        applied.append("h_lender=%s: the lender's channels are NOT substituted in this read; these are the "
+                       "site's own channels with every other decision applied" % name)
+    return t0, out, applied, rec
+
+
 def sidecar(site, work_root) -> dict:
     """The sidecar of one site, or an empty dict where none has been written."""
     p = Path(work_root) / "cache_1hz" / ("%s.json" % site)

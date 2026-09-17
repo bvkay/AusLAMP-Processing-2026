@@ -5,8 +5,12 @@ fields the run used, the sites.csv and decisions.csv rows verbatim, the referenc
 engine and its version, the band object, the parameter set, the mask statistics per product, the rate, the
 dates, the machine time and peak resident memory per product, and `caveats`.
 
-`caveats` is never empty when one applies: an undecided sign, an assumed dipole, a reference refused with its
-reason, and at 10 Hz the short-end caveat each add a line.
+`decisions_applied` carries, verbatim, the list process.frame.apply_decisions returned for this site's own
+channels -- one string per decision actually applied, the same strings the EDI carries as `decision=` lines.
+An empty list means decisions.csv asked for nothing beyond the signs.
+
+`caveats` is never empty when one applies: an undecided sign, an open decision, an assumed dipole, a
+reference refused with its reason, and at 10 Hz the short-end caveat each add a line.
 
 @author: ben kay (ben@auscope.org.au)
 """
@@ -27,15 +31,21 @@ def _now() -> str:
 
 
 def caveats(site_row, applied_signs, undecided_signs, references: dict, rate, extra=(),
-            work_root=None) -> list:
+            work_root=None, open_decisions=()) -> list:
     """One line per open input. Empty only where nothing is open.
 
     `work_root` is where the survey's own measured 10 Hz departure is read from; without one the 10 Hz line
     says the departure has not been measured rather than quoting a figure from another survey.
+    `open_decisions` names the decisions.csv columns this site still reads `decide` in, from the record
+    process.frame.apply_decisions returned: an undecided cell changes nothing and is recorded as open.
     """
     out = []
     if undecided_signs:
         out.append("signs undecided at %s: used as +1 and recorded" % ", ".join(sorted(undecided_signs)))
+    if open_decisions:
+        out.append("decisions undecided at this site: %s; each was applied as its neutral value (no "
+                   "exchange, no lender, gain 1, shift 0) and recorded"
+                   % ", ".join(sorted(set(str(x) for x in open_decisions))))
     for col, ch in (("dipole_n_m", "Ex"), ("dipole_e_m", "Ey")):
         cell = str(site_row.get(col, "") if hasattr(site_row, "get") else site_row[col])
         if cell.lower().startswith("assume:"):
@@ -59,7 +69,8 @@ def caveats(site_row, applied_signs, undecided_signs, references: dict, rate, ex
 
 def write(path, survey_cfg, site_row, decision_row, references, bands, params_name, params, rate,
           run_name, stamp, products, mask_stats, cache_sidecar, engine, engine_version, extra_caveats=(),
-          pool=None, rot_segments=(), rot_drop=(), weight_rule="fleet", selection=None):
+          pool=None, rot_segments=(), rot_drop=(), weight_rule="fleet", selection=None,
+          decisions_applied=()):
     """Write provenance.json into a run folder and return the dict it holds.
 
     `selection` is the hour selection record of process.selection where the run was made on one: the band and
@@ -86,6 +97,7 @@ def write(path, survey_cfg, site_row, decision_row, references, bands, params_na
         sites_row={k: (None if v is None else str(v)) for k, v in dict(site_row).items()},
         decisions_row=({k: (None if v is None else str(v)) for k, v in dict(decision_row).items()}
                        if decision_row is not None else None),
+        decisions_applied=[str(x) for x in (decisions_applied or [])],
         references=references,
         engine=dict(name=engine, version=str(engine_version)),
         bands=dict(file=str(bands.file), name=Path(bands.file).name, levels=int(bands.levels),

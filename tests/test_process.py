@@ -32,6 +32,167 @@ def test_apply_signs_flips_and_records():
     assert sorted(undecided) == ["Ey", "Hz"]
 
 
+def _decision_row(**kw):
+    """One decisions.csv row with every cell of the grammar, `decide` unless the test names it."""
+    cells = {c: "decide" for c in
+             ("sign_hx", "sign_hy", "sign_hz", "sign_ex", "sign_ey", "e_exchange", "e_shift_s",
+              "h_exchange", "h_gain", "h_lender", "h_lender_channels")}
+    cells.update(sign_hx="+1", sign_hy="+1", sign_hz="+1", sign_ex="+1", sign_ey="+1",
+                 e_exchange="no", e_shift_s="0", h_exchange="no", h_gain="1", h_lender="none",
+                 h_lender_channels="none")
+    cells.update(kw)
+    return pd.Series(cells)
+
+
+_SITE_ROW = pd.Series(dict(site="TST", dipole_n_m="10", dipole_e_m="20"))
+
+
+def _five(n=200):
+    return {"Hx": np.full(n, 1.0), "Hy": np.full(n, 2.0), "Hz": np.full(n, 3.0),
+            "Ex": np.full(n, 4.0), "Ey": np.full(n, 5.0)}
+
+
+def test_apply_decisions_does_nothing_where_every_cell_is_neutral():
+    """Fails if a row of no/0/1/none moves a sample: the neutral row is the control every other case is
+    read against."""
+    a = _five()
+    out, applied, rec = FR.apply_decisions({k: v.copy() for k, v in a.items()}, _decision_row(),
+                                           _SITE_ROW, None, 1.0)
+    for c in FR.CHANNELS:
+        assert np.array_equal(out[c], a[c])
+    assert applied == [] and rec["open"] == []
+
+
+def test_e_exchange_swaps_the_channels_and_rescales_by_the_arm_lengths():
+    """Fails if Ex does not take the Ey channel scaled by L_E/L_N, or Ey the Ex channel scaled by L_N/L_E.
+
+    The cache holds mV/km computed with the wrong length for a swapped channel, so the swap alone would
+    leave both levels wrong by (L_E/L_N)^2 in rho.
+    """
+    a = _five()
+    out, applied, _rec = FR.apply_decisions(a, _decision_row(e_exchange="yes"), _SITE_ROW, None, 1.0)
+    assert np.allclose(out["Ex"], 5.0 * (20.0 / 10.0))
+    assert np.allclose(out["Ey"], 4.0 * (10.0 / 20.0))
+    assert np.allclose(out["Hx"], 1.0) and np.allclose(out["Hz"], 3.0)
+    assert any(s.startswith("e_exchange=yes") for s in applied)
+
+
+def test_e_exchange_without_arm_lengths_swaps_and_does_not_rescale():
+    """Fails if a site whose arm lengths are unknown has its levels moved by a made-up ratio, or if the
+    product is not told."""
+    row = pd.Series(dict(site="TST", dipole_n_m="decide", dipole_e_m=""))
+    out, _applied, rec = FR.apply_decisions(_five(), _decision_row(e_exchange="yes"), row, None, 1.0)
+    assert np.allclose(out["Ex"], 5.0) and np.allclose(out["Ey"], 4.0)
+    assert any("no arm length" in s or "not both known" in s for s in rec["notes"])
+
+
+def test_h_exchange_swaps_only_the_horizontal_pair():
+    """Fails if Hz or an electric channel moves with an H exchange."""
+    out, applied, _rec = FR.apply_decisions(_five(), _decision_row(h_exchange="yes"), _SITE_ROW, None, 1.0)
+    assert np.allclose(out["Hx"], 2.0) and np.allclose(out["Hy"], 1.0)
+    assert np.allclose(out["Hz"], 3.0) and np.allclose(out["Ex"], 4.0)
+    assert any(s.startswith("h_exchange=yes") for s in applied)
+
+
+def test_h_gain_divides_every_magnetic_channel_and_no_electric_one():
+    """Fails if the gain reaches an electric channel, or does not reach Hz: a tipper is unchanged by it
+    only because all three magnetic channels are divided alike."""
+    out, applied, _rec = FR.apply_decisions(_five(), _decision_row(h_gain="1.17"), _SITE_ROW, None, 1.0)
+    assert np.allclose(out["Hx"], 1.0 / 1.17) and np.allclose(out["Hz"], 3.0 / 1.17)
+    assert np.allclose(out["Ex"], 4.0)
+    assert any(s.startswith("h_gain=1.17") for s in applied)
+
+
+def test_e_shift_advances_both_electric_channels_by_the_lanczos_delay():
+    """Fails if the shift is not align.shift of the same channel, or if it reaches a magnetic one.
+
+    Positive is ADVANCED: out[t] takes the recorded value at t + s, the correction for an E line that lags
+    H. The same convention as process.align.shift and as the campaign's qld_align.py:14-16.
+    """
+    from auslamp_proc.process import align as AL
+    n = 4096
+    t = np.arange(n, dtype=float)
+    a = {"Hx": np.sin(t / 30.0), "Hy": np.cos(t / 30.0), "Hz": t * 0,
+         "Ex": np.sin(t / 30.0), "Ey": np.cos(t / 30.0)}
+    out, _applied, _rec = FR.apply_decisions({k: v.copy() for k, v in a.items()},
+                                             _decision_row(e_shift_s="+0.95"), _SITE_ROW, None, 1.0)
+    for c in ("Ex", "Ey"):
+        want = AL.shift(a[c], 0.95, 1.0)
+        g = np.isfinite(want) & np.isfinite(out[c])
+        assert np.nanmax(np.abs(out[c][g] - want[g])) < 1e-12
+    assert np.array_equal(out["Hx"], a["Hx"])
+    # an advance takes the future value: the sample at t is sin((t + 0.95)/30), not sin((t - 0.95)/30)
+    want_ahead = np.sin((t[100:200] + 0.95) / 30.0)
+    want_behind = np.sin((t[100:200] - 0.95) / 30.0)
+    assert np.all(np.isfinite(out["Ex"][100:200]))
+    assert np.max(np.abs(out["Ex"][100:200] - want_ahead)) < 1e-3
+    assert np.max(np.abs(out["Ex"][100:200] - want_behind)) > 0.05, \
+        "the shift cannot be told from a delay, so the test proves nothing"
+
+
+def test_the_order_is_exchange_then_gain_then_shift_then_signs():
+    """Fails if the order moves: the signs are of the LINE and not of the channel it was recorded on, so a
+    site with e_exchange and sign_ex -1 must negate the line that ENDS on Ex, not the one that started
+    there. Applying the signs first would negate the other line."""
+    out, _applied, _rec = FR.apply_decisions(_five(), _decision_row(e_exchange="yes", sign_ex="-1",
+                                                                    h_exchange="yes", h_gain="2",
+                                                                    sign_hx="-1"),
+                                             _SITE_ROW, None, 1.0)
+    assert np.allclose(out["Ex"], -(5.0 * 2.0))          # the Ey channel, rescaled, then negated
+    assert np.allclose(out["Ey"], 4.0 * 0.5)
+    assert np.allclose(out["Hx"], -(2.0 / 2.0))          # the Hy channel, divided by the gain, then negated
+    assert np.allclose(out["Hy"], 1.0 / 2.0)
+    # the control: signs first would have negated the OTHER line and left Ex at +10
+    signed, _s, _u = FR.apply_signs(_five(), _decision_row(sign_ex="-1"))
+    assert np.allclose(signed["Ex"], -4.0), "the control does not hold, so the test proves nothing"
+
+
+def test_h_lender_takes_the_named_channels_and_leaves_the_electrics_alone():
+    """Fails if a borrowed channel is not the lender's, if an electric channel is borrowed, or if the
+    borrowed pair does not come back as the lender's own mean-field pair after the rotation."""
+    n = 2000
+    rng = np.random.default_rng(11)
+    a = {"Hx": 25000 + rng.standard_normal(n), "Hy": 3000 + rng.standard_normal(n),
+         "Hz": rng.standard_normal(n), "Ex": rng.standard_normal(n), "Ey": rng.standard_normal(n)}
+    lender = {"Hx": 26000 + rng.standard_normal(n), "Hy": np.zeros(n), "Hz": 5 + rng.standard_normal(n)}
+    out, applied, rec = FR.apply_decisions({k: v.copy() for k, v in a.items()},
+                                           _decision_row(h_lender="LEND", h_lender_channels="Hx Hy Hz"),
+                                           _SITE_ROW, lender, 1.0)
+    assert np.array_equal(out["Ex"], a["Ex"]) and np.array_equal(out["Ey"], a["Ey"])
+    assert np.array_equal(out["Hz"], lender["Hz"])
+    assert rec["lender"] == "LEND" and rec["lender_channels"] == ["Hx", "Hy", "Hz"]
+    assert any("inter-site impedance" in s for s in applied)
+    turned, _ang = FR.rotate_to_mean_field(out)
+    assert np.max(np.abs(turned["Hx"] - lender["Hx"])) < 1e-6
+    assert np.max(np.abs(turned["Hy"] - lender["Hy"])) < 1e-6
+
+
+def test_h_lender_borrows_one_channel_and_keeps_the_other():
+    """Fails if naming one channel borrows both: a whole-pair borrow is an inter-site impedance and a
+    one-channel borrow is not, so the two must not be the same operation."""
+    n = 500
+    a = _five(n)
+    lender = {"Hx": np.full(n, 7.0), "Hy": np.full(n, 8.0), "Hz": np.full(n, 9.0)}
+    out, applied, rec = FR.apply_decisions(a, _decision_row(h_lender="LEND", h_lender_channels="Hy"),
+                                           _SITE_ROW, lender, 1.0)
+    assert rec["lender_channels"] == ["Hy"]
+    assert np.allclose(out["Hx"], 1.0) and np.allclose(out["Hz"], 3.0)
+    assert not np.allclose(out["Hy"], 2.0)
+    assert not any("inter-site impedance" in s for s in applied)
+
+
+def test_an_undecided_cell_changes_nothing_and_is_recorded_as_open():
+    """Fails if a `decide` cell moves a sample, or if it is not named in the record the provenance reads."""
+    a = _five()
+    row = _decision_row(e_exchange="decide", h_exchange="decide", h_gain="decide", e_shift_s="decide",
+                        h_lender="decide")
+    out, applied, rec = FR.apply_decisions({k: v.copy() for k, v in a.items()}, row, _SITE_ROW, None, 1.0)
+    for c in FR.CHANNELS:
+        assert np.array_equal(out[c], a[c])
+    assert applied == []
+    assert sorted(rec["open"]) == ["e_exchange", "e_shift_s", "h_exchange", "h_gain", "h_lender"]
+
+
 def test_rotate_to_mean_field_zeroes_mean_hy_and_keeps_h():
     """Fails if the rotated mean Hy exceeds 1e-9 nT or |H| changes at any sample."""
     rng = np.random.default_rng(3)
@@ -190,6 +351,54 @@ class _FakeSurvey:
 
     def decision(self, name):
         raise KeyError(name)
+
+
+class _LenderSurvey:
+    """Four sites: B lends its H to A, and C has borrowed D's."""
+
+    def __init__(self, tmp):
+        self.cfg = dict(work_root=str(tmp), name="test")
+        self.sites = pd.DataFrame(dict(site=["A", "B", "C", "D"]))
+        self._dec = {
+            "A": _decision_row(h_lender="B", stack_members="B C D"),
+            "B": _decision_row(h_lender="none", stack_members="A C D"),
+            "C": _decision_row(h_lender="D", stack_members="A B D"),
+            "D": _decision_row(h_lender="none", stack_members="A B C"),
+        }
+
+    def decision(self, name):
+        if name not in self._dec:
+            raise KeyError(name)
+        return self._dec[name]
+
+    def site(self, name):
+        raise KeyError(name)
+
+
+def test_a_site_with_a_lender_is_never_a_member_and_a_lender_never_feeds_the_site_it_lends_to(tmp_path):
+    """Fails if a borrowed record enters a reference, or if a lender enters the reference that feeds the
+    site it lends to, or if either refusal is not named for the sidecar.
+
+    The first is a record counted twice under two names; the second is a reference compared with a channel
+    it already carries (site/replace.py:29-34).
+    """
+    st = REF.Store(_LenderSurvey(tmp_path), ["A", "B", "C", "D"], rate=1)
+    members, why = st.members_for("A")
+    assert members == ["D"], members
+    refusals = st.member_refusals("A")
+    assert set(refusals) == {"B", "C"}
+    assert "lends" in refusals["B"] and "h_lender" in refusals["C"]
+    assert "stack_members" in why
+
+    # the control: B, which neither borrows nor is the target's lender, is kept for every target
+    assert st.members_for("D")[0] == ["B"], "the control refuses too much, so the test proves nothing"
+    assert not st.membership_refusal("D", "B")
+    assert not st.membership_refusal("A", "D")
+    # A and C both borrow, so both are refused membership of D's reference on the first rule
+    assert st.membership_refusal("D", "A").startswith("decisions.csv gives A the H of B")
+    assert st.membership_refusal("D", "C").startswith("decisions.csv gives C the H of D")
+    # and C's own reference refuses D twice over: D lends to C, and C's members are judged for C
+    assert "lends C its H" in st.membership_refusal("C", "D")
 
 
 def test_stack_refuses_fewer_than_two_members(tmp_path):

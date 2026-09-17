@@ -180,7 +180,12 @@ def _selection_mask(work, site, tag, t0, n, fs, say):
 
 
 def load_local(sv, site, rate):
-    """(t0, the signed and rotated five channels, the angle, the signs applied, the undecided channels).
+    """(t0, the decided and rotated five channels, the angle, the signs, the undecided channels, the record).
+
+    Every decisions.csv decision is applied by raw.cache.load_decided, which calls the one place that
+    applies one, process.frame.apply_decisions: the exchanges, the gain, the E shift, the signs and the
+    lender's channels, in that fixed order, before the rotation. The record it returns carries the applied
+    decisions as strings, which the EDI and provenance.json both carry verbatim.
 
     Above 1 Hz the horizontal magnetics go through the gap-edge screen first, the same one a member of the
     reference store goes through, so a site's own H and its H as somebody's reference are one record. It
@@ -188,10 +193,9 @@ def load_local(sv, site, rate):
     run floor would then drop. The electric lines are not screened: their bursts are masked by interval
     from the tail scan, which is the mask the product's header reports.
     """
-    work = Path(sv.cfg["work_root"])
-    t0, arrays, meta = cache.load(site, work, rate)
     dec = sv.decision(site)
-    arrays, applied, undecided = FR.apply_signs(arrays, dec)
+    t0, arrays, decisions_applied, rec = cache.load_decided(site, sv, rate)
+    applied, undecided = rec["signs"], rec["undecided"]
     if int(rate) > 1:
         for c in ("Hx", "Hy"):
             arrays[c] = REF.gap_edge_screen(arrays[c], float(rate))
@@ -199,7 +203,8 @@ def load_local(sv, site, rate):
     drop = FR.parse_regimes(dec.get("rot_drop"))
     turned, ang = FR.rotate_to_mean_field(arrays, regimes=regimes, drop=drop, fs=float(rate))
     local = {c: np.asarray(turned[c], float) for c in mth5_build.LOCAL_CHANNELS}
-    return t0, local, ang, applied, undecided, meta
+    rec["decisions_applied"] = list(decisions_applied)
+    return t0, local, ang, applied, undecided, rec
 
 
 def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None, redo=False,
@@ -244,13 +249,17 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
                      for p in (prev.get("products") or [])}
     try:
         for rate in rates:
-            t0, local, ang, applied, undecided, _meta = load_local(sv, site, rate)
+            t0, local, ang, applied, undecided, rec = load_local(sv, site, rate)
+            decisions_applied = list(rec.get("decisions_applied") or [])
+            open_decisions = list(rec.get("open") or [])
             n = len(local["Hx"])
             fs = float(rate)
             say("%s: %d samples at %g Hz from cache_%dhz, rotation %s deg, signs %s, undecided %s"
                 % (site, n, fs, int(rate), ang,
                    " ".join("%s%+d" % (k, v) for k, v in sorted(applied.items())),
                    ", ".join(undecided) or "none"))
+            for _d in decisions_applied:
+                say("   decision=%s" % _d)
             if TR.load_series(site, work) is None:
                 say("!! %s has no tail scan under %s: the transient mask is empty and the pool cannot judge "
                     "it" % (site, TR.tails_dir(work)))
@@ -338,6 +347,7 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
                         plines = EDI.reference_lines(kind, info)
                         plines += EDI.mask_lines(stats, len(segs), floor)
                         plines += EDI.sign_lines(applied, undecided)
+                        plines += ["decision=%s" % d for d in decisions_applied]
                         plines += ["h_rotation_deg=%s" % ang,
                                    "sample_rate_hz=%g" % fs,
                                    "parameter_set=%s (%s)" % (params_name,
@@ -399,7 +409,8 @@ def one_site(survey_name, site, run_name, kinds, rates, params_name, stamp=None,
                    aurora_run.AURORA_PARAMS[params_name], rates[0], run_name, stamp, products, mask_all,
                    sidecar, "Aurora", aurora.__version__,
                    extra_caveats=PROV.caveats(site_row, applied, undec, ref_info_all, max(rates),
-                                              work_root=work),
+                                              work_root=work, open_decisions=open_decisions),
+                   decisions_applied=decisions_applied,
                    pool=pool, rot_segments=FR.parse_regimes(dec_row.get("rot_regimes")),
                    rot_drop=FR.parse_regimes(dec_row.get("rot_drop")),
                    selection=SEL.read_selection(work, site) if sels != [""] else {})

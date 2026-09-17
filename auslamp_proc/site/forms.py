@@ -61,26 +61,48 @@ def cache_dir(work_root, rate=1, variant="") -> Path:
     return Path(work_root) / ("cache_%dhz%s" % (int(rate), ("_" + variant) if variant else ""))
 
 
-def load_local(sv, site, rate=1, variant="", apply_e_signs=True):
-    """(t0, the five channels signed and rotated, the angle, the signs applied, the undecided channels).
+def load_local(sv, site, rate=1, variant="", apply_e_signs=True, decisions_applied=None):
+    """(t0, the five channels decided and rotated, the angle, the signs applied, the undecided channels).
 
     `variant` names a cache beside the original -- ne, the arm diagonal -- which is read in its place.
     `apply_e_signs` is False for a variant whose electric channels are already signed (the NE cache), because
     signing them twice would undo the difference the variant exists for.
+
+    Every decisions.csv decision is applied by process.frame.apply_decisions, the one place that applies
+    one; the unvaried cache goes through raw.cache.load_decided, which is also where a lender's record is
+    read. The strings it returns are appended to `decisions_applied` where a list is given, for the form's
+    own provenance. A variant cache is read here directly and no lender is substituted into it: workbook 05
+    builds a borrowed form itself, from site.replace, and says so.
     """
-    z = np.load(cache_dir(sv.cfg["work_root"], rate, variant) / ("%s.npz" % site), allow_pickle=False)
-    t0 = int(z["t0"][0])
-    arrays = {c: np.asarray(z[c], np.float64) for c in CHANNELS}
-    z.close()
+    from ..raw import cache as CA
     try:
         dec = sv.decision(site)
     except KeyError:
         dec = None
-    if not apply_e_signs and dec is not None:
-        dec = dict(dec)
-        dec["sign_ex"] = "+1"
-        dec["sign_ey"] = "+1"
-    arrays, applied, undecided = FR.apply_signs(arrays, dec)
+    if not variant:
+        t0, arrays, applied_list, rec = CA.load_decided(site, sv, rate)
+        applied, undecided = rec["signs"], rec["undecided"]
+    else:
+        z = np.load(cache_dir(sv.cfg["work_root"], rate, variant) / ("%s.npz" % site), allow_pickle=False)
+        t0 = int(z["t0"][0])
+        arrays = {c: np.asarray(z[c], np.float64) for c in CHANNELS}
+        z.close()
+        if not apply_e_signs and dec is not None:
+            dec = dict(dec)
+            dec["sign_ex"] = "+1"
+            dec["sign_ey"] = "+1"
+        try:
+            srow = sv.site(site)
+        except KeyError:
+            srow = None
+        arrays, applied_list, rec = FR.apply_decisions(arrays, dec, srow, None, float(rate))
+        applied, undecided = rec["signs"], rec["undecided"]
+        if FR.read_lender(dec):
+            applied_list.append("h_lender=%s: the %s variant cache is read with the site's own channels; a "
+                                "borrowed form is built by site.replace and named as one"
+                                % (FR.read_lender(dec), variant))
+    if decisions_applied is not None:
+        decisions_applied.extend(applied_list)
     if int(rate) > 1:
         for c in ("Hx", "Hy"):
             arrays[c] = REF.gap_edge_screen(arrays[c], float(rate))

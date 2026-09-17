@@ -15,6 +15,12 @@ The pool. A member is drawn from the clean pool (transients.clean_row) restricte
 group in <work_root>/survey/deployment_groups.csv and to the sites that have a cache. The remote for a site
 is decisions.csv `remote_site` where that cell names a site, and otherwise the five-branch rule.
 
+The lender rule (Store.membership_refusal, applied in members_for and reported by stack_members). A site
+that decisions.csv gives an h_lender is never a member of any reference: the H it would contribute is the
+lender's and not its own. The target's own lender is never a member of a reference that feeds the target: a
+reference sharing a channel with the local H compares a channel with itself (site/replace.py:29-34,
+vic_w3_lender.py:1-22). Both refusals are named in the reference's sidecar beside every other refusal.
+
 The five-branch remote-site rule (ported from wamt_remotes.partner :941-1029, itself the Queensland campaign's
 rule), with the branch and the reason recorded in every product:
 
@@ -513,6 +519,7 @@ class Store:
         self._max = int(rot_cache if rot_cache is not None else (24 if self.rate == 1 else 2))
         self._events: dict = {}
         self._scores: dict = {}
+        self._lender_refusals: dict = {}
         self._pool = None
         self._fleet = None
         self._groups = None
@@ -525,8 +532,15 @@ class Store:
     def rotated(self, site: str):
         """(t0, {'Hx','Hy'} in the site's own mean-field frame, angle, n) at this store's rate.
 
-        Signs from decisions.csv are applied first, then the rotation; rot_drop days come back NaN and are
-        excluded from the mean. Above 1 Hz the gap-edge screen runs before the rotation.
+        decisions.csv is applied first through frame.apply_decisions -- h_exchange and h_gain reach the pair
+        here, and e_exchange and e_shift_s have no electric channel to act on -- then the rotation; rot_drop
+        days come back NaN and are excluded from the mean. Above 1 Hz the gap-edge screen runs before the
+        rotation.
+
+        h_lender is NOT applied here. This is the site's OWN record, which is what a member, a remote or a
+        candidate is: a site whose H is borrowed is refused membership outright (members_for), so a borrowed
+        pair would never be stacked, and the target's own lags and coherences are measured against the
+        record the site itself wrote.
         """
         if site in self._rot:
             self._order.remove(site)
@@ -540,7 +554,11 @@ class Store:
         if self.rate > 1:
             arr = {c: gap_edge_screen(arr[c], self.fs) for c in H}
         dec = self._decision(site)
-        arr, _applied, _und = FR.apply_signs(arr, dec)
+        try:
+            srow = self.sv.site(site)
+        except (KeyError, AttributeError):
+            srow = None
+        arr, _applied, _rec = FR.apply_decisions(arr, dec, srow, None, self.fs)
         regimes = FR.parse_regimes(dec.get("rot_regimes") if dec is not None else "")
         drop = FR.parse_regimes(dec.get("rot_drop") if dec is not None else "")
         arr, ang = FR.rotate_to_mean_field(arr, regimes=regimes, drop=drop, fs=self.fs)
@@ -613,22 +631,69 @@ class Store:
         self._pool = (pool, table)
         return self._pool
 
+    def lender_of(self, site: str) -> str:
+        """The site decisions.csv h_lender names for this site, or '' where it names none."""
+        return FR.read_lender(self._decision(site))
+
+    def membership_refusal(self, target: str, candidate: str) -> str:
+        """Why the lender rule refuses a candidate membership of a reference that feeds `target`, or ''.
+
+        Two refusals, both from decisions.csv h_lender:
+
+            a site with h_lender is never a member of any reference -- the H it would contribute is not its
+            own, it is the lender's, so the stack would carry one record twice and the target would be
+            compared with a channel it may itself be using;
+
+            the target's own lender is never a member of a reference that feeds the target -- a reference
+            sharing a channel with the local H is comparing a channel with itself (site/replace.py:29-34,
+            vic_w3_lender.py:1-22), which is the same rule workbook 05 enforces on a form.
+        """
+        borrowed = self.lender_of(candidate)
+        if borrowed:
+            return ("decisions.csv gives %s the H of %s (h_lender), so its H is not its own and it is "
+                    "never a member" % (candidate, borrowed))
+        if candidate == self.lender_of(target):
+            return ("%s lends %s its H (decisions.csv h_lender), and a lender is never a member of a "
+                    "reference that feeds the site it lends to" % (candidate, target))
+        return ""
+
     def members_for(self, target: str) -> tuple:
         """(the candidate members of a target, one line saying where the set came from).
 
         decisions.csv `stack_members` where the cell names sites, otherwise the clean pool restricted to the
-        target's own overlap group.
+        target's own overlap group. The lender rule of membership_refusal applies to both, and every refusal
+        it makes is kept for the sidecar (member_refusals).
         """
         dec = self._decision(target)
         cell = str(dec.get("stack_members", "") if dec is not None else "").strip()
         if cell and cell.lower() not in ("decide", "nan", "none"):
             named = [s for s in cell.replace(",", " ").split() if s != target]
-            return named, "decisions.csv stack_members"
+            kept = self._apply_lender_rule(target, named)
+            return kept, "decisions.csv stack_members"
         pool, _t = self.clean_pool()
         grp = self.groups()
         mine = grp.get(target)
         out = [s for s in pool if s != target and grp.get(s) == mine and self.has_cache(s)]
+        out = self._apply_lender_rule(target, out)
         return out, "the clean pool inside overlap group %s" % (mine or "-")
+
+    def _apply_lender_rule(self, target: str, names: list) -> list:
+        """`names` with every site the lender rule refuses dropped, the reasons kept for the sidecar."""
+        kept, refused = [], {}
+        for s in names:
+            why = self.membership_refusal(target, s)
+            if why:
+                refused[s] = why
+            else:
+                kept.append(s)
+        self._lender_refusals[target] = refused
+        return kept
+
+    def member_refusals(self, target: str) -> dict:
+        """{site: reason} the lender rule refused for this target, measured by the last members_for call."""
+        if target not in self._lender_refusals:
+            self.members_for(target)
+        return dict(self._lender_refusals.get(target) or {})
 
     # ------------------------------------------------------------- the scoring
 
@@ -856,8 +921,9 @@ class Store:
                       verbose=False) -> tuple:
         """({member: weight}, {member: lag_s}, {member: refusal}, {member: alignment note}).
 
-        The weight is the member's fleet coherence at 100-1000 s. A member is refused where it has no fleet
-        coherence, where that coherence is below the cutoff, or where it falls outside the best n_max.
+        The weight is the member's fleet coherence at 100-1000 s. A member is refused where the lender rule
+        of membership_refusal refuses it, where it has no fleet coherence, where that coherence is below the
+        cutoff, or where it falls outside the best n_max. Every refusal reaches the reference's sidecar.
         """
         cutoff = self.cutoff if cutoff is None else float(cutoff)
         n_max = self.n_max if n_max is None else int(n_max)
@@ -866,7 +932,7 @@ class Store:
         # the default pool, so the candidate table kept for the remote-site rule answers here as well
         scores = self.score_candidates(target)
         ok = set(scores.name[scores.ok]) if len(scores) else set()
-        scored, refused, lags, notes = [], {}, {}, {}
+        scored, refused, lags, notes = [], dict(self.member_refusals(target)), {}, {}
         for d in cand:
             if d not in ok:
                 row = scores[scores.name == d]

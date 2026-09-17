@@ -45,6 +45,16 @@ every `assume:` and `decide` cell a file already holds.
 | sign_hx, sign_hy, sign_hz | +1 / -1 / `decide`; Hx and Hz from the DC against IGRF (0.3 floor), Hy from the observatory east and two neighbours (undecided below abs(r) 0.3) | the look workbook; applied once and stored |
 | sign_ex, sign_ey | +1 / -1 / `decide`; from the phase quadrant of a single-station Z with a sound H (>= 4 of 6 periods over 30-1000 s, monotone across days). An E line's sign is never read by comparing E fields between sites | the look workbook; the analyst approves the application |
 | sign_source | where each sign came from, with its date | whoever decided it |
+| e_exchange | `yes` / `no` / `decide`; the two recorded E lines were wired to each other's channel | the analyst, from the phase quadrant and the diagonal |
+| e_exchange_source | the file:line or the measurement, with its date | whoever decided it |
+| e_shift_s | seconds, or `decide`; E is advanced relative to H by this many seconds | the analyst, from the lag test |
+| e_shift_source | the file:line or the measurement, with its date | whoever decided it |
+| h_exchange | `yes` / `no` / `decide`; Hx and Hy were wired to each other's channel | the analyst, from the DC against IGRF |
+| h_gain | a number, or `decide`; every magnetic channel is divided by it | the analyst, from the record's mean field against IGRF |
+| h_gain_source | where `h_gain` and `h_exchange` came from, with the date and how each was measured | whoever decided them |
+| h_lender | a site name, `none` or `decide`; that site's H stands in for this site's own | the analyst, from the magnetic health tests |
+| h_lender_channels | which of Hx, Hy, Hz are borrowed; empty or `all` is all three. Electrics are never borrowed | the analyst |
+| h_lender_source | where the lender came from, with its date | whoever decided it |
 | rot_regimes | JSON list of `[start_day, end_day, angle_deg]` sensor-frame regimes; a magnetometer move makes two | the sensor-move scan |
 | rot_drop | JSON list of `[start_day, end_day]` transit or fault days dropped from the H record | the look workbook |
 | windows | JSON per component: `[start, end]` windows or `"whole"`; every window carries its reason | the processing workbook; the analyst decides |
@@ -53,6 +63,51 @@ every `assume:` and `decide` cell a file already holds.
 | remote_source | where the remote site came from, with its date; a table is named in full | whoever chose it |
 | stack_members | JSON list of fleet stack members, or `decide`; a lender is never a member of the reference it feeds | the reference workbook |
 | flags | free text carried into every product's provenance | the analyst |
+
+## The six hand decisions, and the one place they are applied
+
+`e_exchange`, `e_shift_s`, `h_exchange`, `h_gain`, `h_lender` and `h_lender_channels` describe what the
+field crew's wiring, the instrument's calibration and the site's own magnetics did to the record. They are
+applied at processing time, never written into a cache, by one function --
+`auslamp_proc.process.frame.apply_decisions` -- in one fixed order, and nothing applies a decision anywhere
+else:
+
+    e_exchange  ->  h_exchange  ->  h_gain  ->  e_shift_s  ->  the signs  ->  h_lender
+
+The wiring exchanges come first because they say which line a channel carried; the gain is a calibration of
+the channel as wired; the shift is a delay of the E line as wired; the signs are of the LINE and not of the
+channel it was recorded on, so they come after the exchanges; the lender's channels come last because they
+arrive carrying the LENDER's own decisions and must not take the borrowing site's.
+
+**`e_exchange`.** The cache holds mV/km computed with the wrong arm length for a swapped channel:
+`Ex_cache = V_east / (L_N g)`. So the swap puts each line back on its own channel and rescales it by the
+ratio of the length the cache used to the length of the line the channel actually carried:
+
+    Ex_out = Ey_cache x (L_E / L_N)        Ey_out = Ex_cache x (L_N / L_E)
+
+with `L_N = dipole_n_m` and `L_E = dipole_e_m`. A site whose arm lengths are not both known is swapped and
+not rescaled, and the product says so. Signs apply after the swap, so `sign_ex` is the sign of the north
+line wherever `e_exchange` is `yes`.
+
+**`e_shift_s`.** Positive means E is ADVANCED: the E sample at `t` takes the recorded value at `t + s`,
+which is the correction for an E line that LAGS H by `s`. It is applied to both electric channels at the
+site's own rate by `process.align.shift`, the Lanczos-windowed sinc, which is local and does not spread an
+impulsive sample. The same convention as `process.align.shift` and as the campaign's `qld_align.py:14-16`
+("shift(x, lag_s) ADVANCES x: out[i] = x[i + lag_s*fs]"); the campaign's Q87 correction is named "E advanced
+0.95 s" (`scripts/qc/qld_merge_edis.py:343-344`) and was applied to the tensor as `Z exp(i 2 pi dt / T)`,
+which adds phase -- the sign that fills a phase deficit falling as 1/T.
+
+**`h_gain`.** The site's magnetometer over-reads by this factor, so `Z = E/H` is low by it and the apparent
+resistivity low by its square until every magnetic channel is divided. A tipper is unchanged by it, because
+all three channels are divided alike.
+
+**`h_lender`.** The named site's H, on this site's grid, with the LENDER's own decisions and its own
+mean-field frame applied, its lag against this site measured by the 5-20 s rule of `process.align.shift_for`
+and taken out with the Lanczos delay. A lender of a lender is not followed. Two consequences are enforced in
+`process.references`: a site with `h_lender` is never a member of any reference, and its lender is never a
+member of a reference that feeds it; both refusals are named in the reference's sidecar. Borrowing BOTH
+horizontal channels makes the tensor an inter-site impedance -- this site's E on the field the lender
+measured -- and every product says so.
 
 ## The vocabulary, fixed
 

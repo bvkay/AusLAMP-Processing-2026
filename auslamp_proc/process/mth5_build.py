@@ -12,6 +12,11 @@ window at the deep decimation levels and is dropped and counted (transients.floo
 The reference is a second station carrying hx and hy only, on the target's own grid and with the same run
 ids, named by its kind: REMOTE_<site>, STACK, OBS_<code> or STACK_OBS.
 
+No decision is applied here. The local channels arrive already decided and rotated: process.run.load_local
+reads them through raw.cache.load_decided, which calls process.frame.apply_decisions, the one place that
+applies a decisions.csv decision. This module writes what it is handed, and read_back compares the file
+with those same arrays.
+
 Units are `nanoTesla` for the magnetic channels and `milliVolt per kilometer` for the electric ones. The
 spelling matters: mt_metadata resolves `millivolts per kilometer` to `unknown per kilometer` with a warning
 and writes the channel with no unit, where `milliVolt per kilometer` resolves. No filter is attached to any
