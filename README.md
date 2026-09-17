@@ -51,7 +51,9 @@ Each workbook is generated from its own module -- `workbooks/wb01_survey.py` to 
 each holding that workbook as one Python list of markdown and code cells -- which
 `workbooks/make_workbooks.py` imports and writes. A workbook is executed in place by
 `workbooks/run_workbooks.py`, which fails on a non-zero nbconvert exit, on any cell carrying an error output
-and on any code cell that was not run: edit the generator and re-run it, never the notebook itself.
+and on any code cell that was not run. A student changes the parameter cell of a notebook (the site, the survey,
+a threshold) and runs it; a change to what a workbook does is made in its module and the notebook regenerated,
+because the modules are the source the shipped notebooks are checked against.
 
 ## Frame and units
 
