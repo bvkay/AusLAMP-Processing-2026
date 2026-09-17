@@ -491,111 +491,6 @@ def diagonal_day(sv, site, out, elines=None, rate=1, figsize=(13, 6)):
                      " The arms are not on file here, so the figure is drawn at equal lengths."), out)
 
 
-# ---------------------------------------------------------------- section 7
-
-def notch_spectra(sv, site, decision, out, freqs=(1.0, 2.0), rate=10, nperseg=1 << 16, figsize=(13, 7)):
-    """The spectrum of each channel around each tone, before and after the notch, on the worst day."""
-    from scipy import signal
-    from ..site.variants import cache_path, day_bounds, runs_of
-    chans = sorted(set(decision.channel)) if decision is not None and len(decision) else []
-    fig, ax = _fig(max(1, len(chans)), len(freqs), figsize=figsize, squeeze=False)
-    src, var = cache_path(sv.cfg["work_root"], site, rate), cache_path(sv.cfg["work_root"], site, rate,
-                                                                      "notched")
-    if not chans or not src.exists() or not var.exists():
-        ax[0][0].text(0.5, 0.5, "no notched variant", ha="center")
-        return finish(fig, "%s: the tone before and after the notch" % site,
-                      "No notched variant was written for this site.", out)
-    z0 = np.load(src, allow_pickle=False)
-    z1 = np.load(var, allow_pickle=False)
-    t0 = float(np.asarray(z0["t0"]).ravel()[0])
-    fired = []
-    for r, ch in enumerate(chans):
-        rows = decision[decision.channel == ch]
-        worst = str(rows.sort_values("worst_ratio").iloc[-1].worst_day)
-        if bool(rows.fire.any()):
-            fired.append(ch)
-        x0 = np.asarray(z0[ch], np.float64)
-        x1 = np.asarray(z1[ch], np.float64)
-        i0 = i1 = None
-        for a0, a1, lab in day_bounds(t0, len(x0), float(rate)):
-            if lab == worst:
-                rr = runs_of(np.isfinite(x0[a0:a1]))
-                if rr:
-                    s0, s1 = max(rr, key=lambda t: t[1] - t[0])
-                    i0, i1 = a0 + s0, a0 + s1
-                break
-        if i0 is None:
-            continue
-        for y, lab, col in ((x0[i0:i1], "before", "C3"), (x1[i0:i1], "after", "C0")):
-            g = y[np.isfinite(y)]
-            if g.size < 2 * nperseg:
-                continue
-            f, P = signal.welch(g - g.mean(), fs=float(rate), nperseg=nperseg, noverlap=nperseg // 2,
-                                detrend="linear")
-            for k, f0 in enumerate(freqs):
-                m = (f > f0 * 0.8) & (f < f0 * 1.2)
-                ax[r][k].semilogy(f[m], P[m], color=col, lw=0.9, label=lab)
-        for k, f0 in enumerate(freqs):
-            did = bool(rows[rows.f0 == f0].fire.any())
-            ax[r][k].axvline(f0, color="0.4", ls=":", lw=1)
-            ax[r][k].set(xlabel="frequency (Hz)" if r == len(chans) - 1 else "",
-                         ylabel="%s power" % ch if k == 0 else "",
-                         title="%s at %.3f Hz, %s%s" % (ch, f0, worst, "" if did else " (did not fire)"))
-            ax[r][k].grid(alpha=GRID_ALPHA, which="both")
-            if r == 0 and k == 0:
-                ax[r][k].legend(fontsize=8)
-    z0.close()
-    z1.close()
-    return finish(fig, "%s: the tone before and after the notch" % site,
-                  "One panel per channel and per tone, each on that channel's own worst day, before the "
-                  "notch in red and after it in blue. The filter is scipy's iirnotch at Q = 100 applied with "
-                  "filtfilt and cut at every gap of 60 s or more, so it is zero phase and cannot move the "
-                  "record outside the two notch bands. %s fired at a worst-day ratio above the threshold; a "
-                  "channel that did not fire is copied into the variant byte for byte, which the sha256 "
-                  "check of the table beside this figure proves."
-                  % (", ".join(fired) or "No channel"), out)
-
-
-def ratio_panel(ratio, site, out, tone_bands=(), refused=(), figsize=(13, 5)):
-    """The per-period ratio of each variant's product to the original's, by band.
-
-    `refused` is [(form, sentence)] for a variant the run floor refused before any pass was run: it has no
-    row in the table, and the sentence stands in the caption where its points would have been.
-    """
-    gone = " ".join("%s has no points: %s." % (n, w) for n, w in (refused or ()))
-    fig, ax = _fig(1, 1, figsize=figsize)
-    if ratio is None or not len(ratio):
-        ax.text(0.5, 0.5, "no 10 Hz pair to compare", ha="center")
-        return finish(fig, "%s: what each 10 Hz variant did to the product" % site,
-                      ("No 10 Hz pair of products was made, so nothing can be compared. " + gone).strip(),
-                      out)
-    bands = list(dict.fromkeys(ratio.band))
-    x = np.arange(len(bands))
-    for k, (form, grp) in enumerate(ratio.groupby("form", sort=True)):
-        for j, comp in enumerate(("xy", "yx")):
-            g = grp[grp.component == comp].set_index("band").reindex(bands)
-            ax.plot(x + 0.06 * (2 * k + j - 1.5), g.rho_ratio.to_numpy(float), "o",
-                    color="C%d" % k, mfc=("none" if comp == "yx" else None), ms=6,
-                    label="%s %s" % (form, comp))
-    ax.axhline(1.0, color="0.4", lw=0.8)
-    ax.axhspan(0.975, 1.025, color="C2", alpha=0.15, lw=0)
-    for k, b in enumerate(bands):
-        if b in tone_bands:
-            ax.axvspan(k - 0.5, k + 0.5, color="C3", alpha=0.10, lw=0)
-    ax.set(xticks=x, yscale="log", ylabel="variant rho / original rho")
-    ax.set_xticklabels(bands, rotation=0, fontsize=8)
-    ax.grid(alpha=GRID_ALPHA, which="both")
-    ax.legend(fontsize=8, ncol=2, loc="best")
-    return finish(fig, "%s: what each 10 Hz variant did to the product" % site,
-                  "The median apparent-resistivity ratio of each variant's product to the pass on the "
-                  "original cache, band by band, both passes using the same reference and the same "
-                  "parameters so the variant is the only difference. The shaded columns (%s) hold the "
-                  "1.000 Hz tone and its 2.000 Hz harmonic, which the notch is there to move; the green "
-                  "band is the 2.5 per cent every other band must stay inside for the variant to be a "
-                  "surgical change rather than a new answer. %s"
-                  % (", ".join(tone_bands) or "none", gone), out)
-
-
 # ---------------------------------------------------------------- section 8
 
 def candidate_bars(cands, site, out, threshold=0.5, donor_gate=0.8, figsize=(13, 5)):
@@ -632,7 +527,7 @@ def candidate_bars(cands, site, out, threshold=0.5, donor_gate=0.8, figsize=(13,
                   % (threshold, donor_gate, ", ".join(fires) or "no candidate"), out)
 
 
-# ---------------------------------------------------------------- section 10
+# ---------------------------------------------------------------- section 11
 
 def forms_bars(table, site, out, band=(10, 1000), margin=0.2, figsize=(13, 8)):
     """One horizontal bar per form on the 10-1000 s bar, its controls beside it, candidates marked."""

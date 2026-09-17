@@ -630,7 +630,11 @@ def test_the_choice_record_round_trips_and_reproduces_the_merge(tmp_path):
 
 
 def test_an_analyst_row_is_never_overwritten_by_the_rule(tmp_path):
-    """Fails if a rule row replaces an analyst row, which is what SITE = "all" must not do."""
+    """Fails if a rule row replaces an analyst row, or if a site this run did not deliver loses its row.
+
+    The workbook delivers one site per run and writes back to the survey's one choice file, so a re-run must
+    leave every other site's row as it stands and must never undo a choice an analyst made.
+    """
     path = tmp_path / "final_choices.csv"
     FN.write_choices(path, [FN.choice_row("A", "xy", "remote_1hz", chosen_by="analyst", note="mine"),
                             FN.choice_row("B", "xy", "stack_1hz", chosen_by="rule")])

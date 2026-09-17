@@ -1,4 +1,4 @@
-"""One site's products, the rule's proposal, the delivered file, the comparison, and the survey's gallery.
+"""One site's products, the rule's proposal, and the delivered file: the three pages of workbook 06.
 
 The panel conventions are the ones figures/products.py sets: period on a log x axis, apparent resistivity on
 a log axis in Ohm.m, the phase 0-90 deg with the yx panel labelled `+ 180 deg`, the tipper -0.8..0.8 with the
@@ -8,12 +8,13 @@ A figure is drawn where it shows a curve, a record or a distribution over many i
 criterion that yields one or two numbers per site is a line in a table and in a verdict, not a figure, so
 the split-half departures and the per-row step at the join are printed and scored and never plotted.
 
-`curves_page` draws every four- or six-panel page of workbook 06 and the sections differ only in what they
-hand it: the products of a site coloured by reference kind, the rule's proposal against the products it
-rejected, and the delivered file with its error bars and any comparison behind it. A curve a response test
-refused is drawn grey and carries the test's name at its long end, and it does not set the y limits: a
-refused row is often the one that leaves the panel, and letting it set the axes squeezes the curve the page
-is about into a line.
+Workbook 06 delivers one site per run, so nothing here draws a survey.
+
+`curves_page` draws every four- or six-panel page and the three callers differ only in what they hand it:
+the products of a site coloured by reference kind, the rule's proposal against the products it rejected, and
+the delivered file with its error bars and the join marked. A curve a response test refused is drawn grey
+and carries the test's name at its long end, and it does not set the y limits: a refused row is often the
+one that leaves the panel, and letting it set the axes squeezes the curve the page is about into a line.
 
 Every figure is finished by figures.common.finish, which sets a short title, wraps the caption under the
 axes and saves at dpi 110.
@@ -28,10 +29,10 @@ import numpy as np
 import pandas as pd
 
 from ..process import KIND_WORD
-from ..products import OFF_DIAGONAL, rho_phase
+from ..products import rho_phase
 from ..readings import KINDS
 from .common import finish
-from .products import COMPARISON_COLOUR, GRID_ALPHA, PHASE_LIM, _dress, rho_limits, tf_panels
+from .products import _dress, tf_panels
 
 FINAL_COLOUR = "C3"                # the delivered curve, drawn on top
 REJECTED_COLOUR = "0.65"           # a product the rule did not choose, and a quantity scored by nothing
@@ -145,94 +146,14 @@ def over_rejected(site, chosen, rejected, out, title="", caption="", period_rang
                        caption=caption, period_range=period_range, tipper=tipper, figsize=figsize)
 
 
-def delivered_page(site, final, out, title="", caption="", comparisons=(), period_range=None,
-                   tipper=True, figsize=FIGSIZE, join_s=None):
-    """The delivered curve with its error bars, the join marked, and any comparison in black behind it."""
-    curves = [dict(tf=tf, label="%s (a comparison, not truth)" % label, colour=COMPARISON_COLOUR, ls="-",
-                   marker=".", lw=1.0, ms=3, alpha=0.9, zorder=1, bars=True, limits=False)
-              for label, tf in comparisons]
-    curves.append(dict(tf=final, label="the delivered file", colour=FINAL_COLOUR, ls="-", marker="o",
-                       lw=1.6, ms=4, alpha=1.0, zorder=5, bars=True, limits=True))
+def delivered_page(site, final, out, title="", caption="", period_range=None, tipper=True,
+                   figsize=FIGSIZE, join_s=None):
+    """The delivered curve alone with its error bars and the join marked."""
+    curves = [dict(tf=final, label="the delivered file", colour=FINAL_COLOUR, ls="-", marker="o",
+                   lw=1.6, ms=4, alpha=1.0, zorder=5, bars=True, limits=True)]
     return curves_page(site, curves, out, title=(title or "%s: the delivered transfer function" % site),
                        caption=caption, period_range=period_range, tipper=tipper, figsize=figsize,
                        join_s=join_s)
-
-
-# ------------------------------------------------------------------ the gallery
-
-def final_gallery(sites, finals: dict, out_dir, stem="gallery_final", per_page=6, period_range=None,
-                  title="", caption="", comparisons=None, reasons=None, figsize=(12.0, 2.1)):
-    """rho xy/yx and phase xy/yx of every delivered file, `per_page` sites a page, one legend on page one.
-
-    `finals` is {site: TFData}, `comparisons` an optional {site: [(label, TFData)]} drawn in black behind,
-    and `reasons` an optional {site: why} printed in the panel of a site with no delivery. Writes
-    <out_dir>/<stem>_p<k>.png and <out_dir>/<stem>_index.csv.
-    """
-    import matplotlib.pyplot as plt
-
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    comparisons = comparisons or {}
-    reasons = reasons or {}
-    pages, index = [], []
-    chunks = [list(sites)[i:i + int(per_page)] for i in range(0, len(sites), int(per_page))]
-    for page, chunk in enumerate(chunks, start=1):
-        fig, axes = plt.subplots(len(chunk), 4, figsize=(figsize[0], figsize[1] * len(chunk)),
-                                 squeeze=False)
-        for row, site in enumerate(chunk):
-            rho_curves = []
-            drawn = [(lab, tf, COMPARISON_COLOUR, 1) for lab, tf in comparisons.get(site, [])]
-            if finals.get(site) is not None:
-                drawn.append(("the delivered file", finals[site], FINAL_COLOUR, 3))
-            for label, tf, colour, z in drawn:
-                p = np.asarray(tf.period, float)
-                keep = (np.ones(len(p), bool) if period_range is None
-                        else ((p >= period_range[0]) & (p <= period_range[1])))
-                for col, comp in enumerate(OFF_DIAGONAL):
-                    rho, _re, ph, _pe = rho_phase(tf.period, tf.z, tf.z_err, comp)
-                    m = keep & np.isfinite(rho) & (rho > 0)
-                    if not m.any():
-                        continue
-                    axes[row][col].plot(p[m], rho[m], "o", ls="-", ms=2, lw=0.7, color=colour,
-                                        alpha=0.9, zorder=z,
-                                        label=(label if (row == 0 and col == 0) else None))
-                    axes[row][2 + col].plot(p[m], ph[m], "o", ls="-", ms=2, lw=0.7, color=colour,
-                                            alpha=0.9, zorder=z)
-                    # the limits come from the delivered curve, which is what the page is about; a
-                    # comparison three decades away would otherwise squeeze every curve on the page into a
-                    # line, and it stays drawn, running off the panel where it disagrees that far
-                    if colour == FINAL_COLOUR:
-                        rho_curves.append(rho[m])
-                    index.append(dict(page=page, row=row, site=site, curve=label, component=comp,
-                                      n_periods=int(m.sum()), path=str(tf.meta.get("path", ""))))
-            if finals.get(site) is None:
-                axes[row][0].text(0.5, 0.5, str(reasons.get(site, "no delivered file"))[:150],
-                                  transform=axes[row][0].transAxes, ha="center", va="center",
-                                  fontsize=7, color="0.3", wrap=True)
-            lo, hi = rho_limits(rho_curves)
-            for col, _comp in enumerate(OFF_DIAGONAL):
-                axes[row][col].set(xscale="log", yscale="log", ylim=(lo, hi))
-                axes[row][2 + col].set(xscale="log", ylim=PHASE_LIM)
-            axes[row][0].set_ylabel("%s\nrho (Ohm.m)" % site, fontsize=8)
-            axes[row][2].set_ylabel("phase (deg)", fontsize=8)
-            for col, name in enumerate(("rho xy", "rho yx", "phase xy", "phase yx + 180 deg")):
-                axes[row][col].grid(alpha=GRID_ALPHA, which="both")
-                axes[row][col].tick_params(labelsize=7)
-                if row == 0:
-                    axes[row][col].set_title(name, fontsize=9)
-                if row == len(chunk) - 1:
-                    axes[row][col].set_xlabel("period (s)", fontsize=8)
-                if period_range:
-                    axes[row][col].set_xlim(period_range)
-        if page == 1:
-            axes[0][0].legend(fontsize=6, loc="best")
-        pages.append(finish(fig, "%s -- page %d of %d" % (title or "the delivered files", page,
-                                                          len(chunks)),
-                            caption, out_dir / ("%s_p%d.png" % (stem, page))))
-    idx = pd.DataFrame(index)
-    idx_path = out_dir / ("%s_index.csv" % stem)
-    idx.to_csv(idx_path, index=False)
-    return pages, idx, idx_path
 
 
 def kind_key(kinds=KINDS) -> pd.DataFrame:

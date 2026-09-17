@@ -47,7 +47,7 @@ DECISIONS_COLUMNS = [
     "site",
     "sign_hx", "sign_hy", "sign_hz", "sign_ex", "sign_ey", "sign_source",
     "rot_regimes", "rot_drop", "windows", "keep_mask",
-    "remote_site", "remote_source", "stack_members", "notch", "flags",
+    "remote_site", "remote_source", "stack_members", "flags",
 ]
 
 DECIDE = "decide"

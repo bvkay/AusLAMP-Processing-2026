@@ -140,8 +140,8 @@ def forms_table(rows, out_path=None, baseline_path=None, bar_band=BAR_BAND_S,
         elif r.get("inter_site"):
             verdict = "shown, never delivered: an inter-site impedance"
         elif r.get("judged_on") and r["judged_on"] != "bar":
-            # a cache variant is read against its original period by period, not on the bar: the notch is
-            # there to move one bin and leave the rest alone, which a bar cannot say
+            # a form whose criterion is a per-period statement is read against its control period by period
+            # and never on the bar, which cannot say whether one band moved and the rest held
             verdict = ("read against %s on the %s, not on the bar"
                        % (";".join(controls) or "its original", r["judged_on"]))
         elif not controls:

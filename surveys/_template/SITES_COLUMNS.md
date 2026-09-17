@@ -52,7 +52,6 @@ every `assume:` and `decide` cell a file already holds.
 | remote_site | the chosen remote site, or `decide` | the reference workbook |
 | remote_source | where the remote site came from, with its date; a table is named in full | whoever chose it |
 | stack_members | JSON list of fleet stack members, or `decide`; a lender is never a member of the reference it feeds | the reference workbook |
-| notch | JSON list of tones notched on the 10 Hz cache (e.g. `[1.0, 2.0]`) or `decide` | the tone census in the look workbook |
 | flags | free text carried into every product's provenance | the analyst |
 
 ## The vocabulary, fixed

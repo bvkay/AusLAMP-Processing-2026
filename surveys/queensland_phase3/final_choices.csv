@@ -1,6 +1,6 @@
 site,component,product,periods_lo,periods_hi,join,chosen_by,note,date
 Q28,tipper,xy,,,,rule,neither fault fires,2026-09-17
-Q28,xy,remote_1hz@first,2.3034803053585637,5786.970058216919,,rule,,2026-09-17
+Q28,xy,remote_1hz@first,2.303480305358564,5786.970058216919,,rule,,2026-09-17
 Q28,yx,obs_1hz@first,3.503810043040803,5786.970058216919,,rule,,2026-09-17
 Q32,tipper,xy,,,,rule,neither fault fires,2026-09-17
 Q32,xy,remote_1hz@first,11.958831483441624,12117.610620455594,,rule,,2026-09-17

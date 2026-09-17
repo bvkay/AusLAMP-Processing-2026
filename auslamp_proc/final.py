@@ -29,8 +29,8 @@ when one product of record is a form merged out of the other.
 THE INFO BLOCK carries, as processing_parameters lines: which product each row came from (the kind, the run
 and the form), the flags and the notes per component, the frame block (the frame, the declination recorded
 and not applied, and the angle to turn the tensor by for geographic north with the transformation), the
-splice line where a 10 Hz row is in the file, the notch line the cache recorded, the 10 Hz caveat, and the
-package version and date. Every string comes from survey.yaml, sites.csv and the source products' own
+splice line where a 10 Hz row is in the file, the cache the product was built from, the 10 Hz caveat, and
+the package version and date. Every string comes from survey.yaml, sites.csv and the source products' own
 headers; nothing about a survey is written into this module.
 
 THE DELIVERY RECORD. PRODUCTS_OF_RECORD.csv and READINGS.csv are the tables the choice was made on, written
@@ -173,11 +173,18 @@ def frame_block(site_row, base_meta: dict) -> list:
 
 
 def carried_lines(base_meta: dict) -> list:
-    """The cache's notch record and the 10 Hz caveat, carried from the source product's own header."""
+    """The cache the product was built from and the 10 Hz caveat, from the source product's own header.
+
+    The cache line the processing wrote carries a `notch:` clause, which this package no longer has a notch
+    to fill: it is dropped here rather than delivered as a statement about a method the package does not
+    carry.
+    """
     kv = base_meta.get("parameters", {}) or {}
     out = []
     if kv.get("cache"):
-        out.append("cache=%s" % kv["cache"])
+        cache = "; ".join(part for part in str(kv["cache"]).split("; ")
+                          if not part.strip().lower().startswith("notch:"))
+        out.append("cache=%s" % cache)
     if kv.get("caveat_10hz"):
         out.append("caveat_10hz=%s" % kv["caveat_10hz"])
     return out

@@ -64,7 +64,7 @@ def cache_dir(work_root, rate=1, variant="") -> Path:
 def load_local(sv, site, rate=1, variant="", apply_e_signs=True):
     """(t0, the five channels signed and rotated, the angle, the signs applied, the undecided channels).
 
-    `variant` names a cache beside the original -- ne, notched -- which is read in its place.
+    `variant` names a cache beside the original -- ne, the arm diagonal -- which is read in its place.
     `apply_e_signs` is False for a variant whose electric channels are already signed (the NE cache), because
     signing them twice would undo the difference the variant exists for.
     """

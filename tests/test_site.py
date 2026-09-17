@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from auslamp_proc.process import frame as FR
-from auslamp_proc.site import centre, deliver, forms, masks, replace, variants
+from auslamp_proc.site import centre, deliver, forms, masks, replace
 
 RNG = np.random.default_rng(20260916)
 
@@ -353,40 +353,6 @@ def test_lender_in_reference_is_refused():
     assert not replace.lender_in_reference("Q99", info)
 
 
-# ---------------------------------------------------------------- the cache variants
-
-def test_notch_moves_only_the_tone_bin():
-    """Fails if the tone is not removed, or if any frequency outside the notch's own skirt -- taken as 10 per
-    cent of f0 either side, the width tone_ratio reads its sidebands over -- moves by more than 2.5 per cent
-    of its power."""
-    from scipy import signal
-    fs, n = 10.0, 1 << 19
-    t = np.arange(n) / fs
-    x = RNG.normal(size=n) + 5.0 * np.sin(2 * np.pi * 1.0 * t)
-    before = variants.tone_ratio(x, 1.0, fs)
-    y, st = variants.notch_gap_aware(x, (1.0, 2.0), fs)
-    after = variants.tone_ratio(y, 1.0, fs)
-    assert before > variants.RATIO_FIRE and after < before / 10.0, (before, after)
-    f, Pb = signal.welch(x, fs=fs, nperseg=1 << 14)
-    _f, Pa = signal.welch(y, fs=fs, nperseg=1 << 14)
-    tone = np.zeros(len(f), bool)
-    for f0 in (1.0, 2.0):
-        tone |= np.abs(f - f0) <= 0.10 * f0
-    off = ~tone & (f > 0)
-    worst = float(np.max(np.abs(Pa[off] / Pb[off] - 1.0)))
-    assert worst <= 0.025, worst
-    assert st["samples_passed_through"] == 0
-
-
-def test_sha256_of_an_unchanged_channel_is_its_source():
-    """Fails if the byte identity a variant claims can be true of a changed array."""
-    x = RNG.normal(size=1000).astype(np.float32)
-    assert variants.sha256_array(x) == variants.sha256_array(x.copy())
-    y = x.copy()
-    y[10] = np.float32(y[10] + 1.0)
-    assert variants.sha256_array(x) != variants.sha256_array(y)
-
-
 # ---------------------------------------------------------------- the merge and the delivery
 
 def test_merge_component_names_only_its_own_two_rows():
@@ -471,23 +437,23 @@ def test_forms_table_refuses_to_promote_a_form_without_a_control():
 def test_a_refused_form_and_a_crashed_one_do_not_read_the_same():
     """Fails if a form the floor refused before the pass reads the same on the table as one that crashed --
     the distinction is that the first is a reading with numbers and the second is a failure."""
-    why = ("refused: the notched screen leaves 0 run(s) of 3600 s against the remote (the whole record "
+    why = ("refused: the window mask leaves 0 run(s) of 3600 s against the remote (the whole record "
            "keeps 55.59 d over 87 run(s))")
-    rows = [dict(site="X", form="notched", kind="remote", rate_hz=10.0, params="k", status="refused",
+    rows = [dict(site="X", form="windowed", kind="remote", rate_hz=10.0, params="k", status="refused",
                  product="", controls="whole10", criterion="", seed=None, reason=why, error=""),
             dict(site="X", form="other", kind="remote", rate_hz=10.0, params="k", status="FAILED",
                  product="", controls="whole10", criterion="", seed=None,
                  error="ValueError: aurora returned no transfer function")]
     t = deliver.forms_table(rows).set_index("form")
-    assert t.loc["notched", "verdict"] == why and "0 run(s)" in t.loc["notched", "verdict"]
+    assert t.loc["windowed", "verdict"] == why and "0 run(s)" in t.loc["windowed", "verdict"]
     assert t.loc["other", "verdict"] == "NOT MADE"
-    assert not bool(t.loc["notched", "candidate"]) and not bool(t.loc["other", "candidate"])
+    assert not bool(t.loc["windowed", "candidate"]) and not bool(t.loc["other", "candidate"])
 
 
 def test_refusal_sentence_carries_the_numbers_that_refused_the_form():
     """Fails if the sentence a refused form carries does not name the runs it left, the floor they had to
     clear, the reference and what the whole record kept: a refusal without numbers is an opinion."""
     s = forms.refusal_sentence(dict(n_runs=0, min_segment_s=3600.0, kind="remote", days=0.0, empty=True),
-                               dict(n_runs=87, days=55.592), what="the notched screen")
-    for piece in ("the notched screen", "0 run(s)", "3600 s", "remote", "55.59 d", "87 run(s)"):
+                               dict(n_runs=87, days=55.592), what="the window mask")
+    for piece in ("the window mask", "0 run(s)", "3600 s", "remote", "55.59 d", "87 run(s)"):
         assert piece in s, (piece, s)

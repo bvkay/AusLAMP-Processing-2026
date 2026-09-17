@@ -3093,7 +3093,7 @@ SITE = "Q53N"                 # one site; Q53N carries a shared centre and sound
 RUN = "site"                  # the forms' run name; the folder is <work_root>/<SITE>/<RUN>_<stamp>
 STAMP = None                  # None = the newest <RUN>_* folder if there is one, else a new stamp
 BASELINE_KIND = "remote"      # the reference every form is built on: remote | stack | obs | stack_obs
-RATES = [1, 10]               # [1] is the 1 Hz lane alone; 10 adds the notch, the spike screen and the short end
+RATES = [1, 10]               # [1] is the 1 Hz lane alone; 10 adds the short end of section 7
 COMPONENTS = ["xy", "yx"]     # the components the masks, the windows and the hours are selected for
 REDO = False                  # True remakes a form whose EDI is already in the run folder
 WRITE_DECISIONS = False       # decisions are Ben's: True writes the proposed cells into decisions.csv
@@ -3114,7 +3114,6 @@ HOURS_FRACTION = 0.25         # the share of the candidate hours the selection k
 CONTIG_HOURS = [2, 4, 6, 24]  # the contiguous controls, tiled from the first whole hour, in hours a window
 SEED = 20260916               # the named seed every random control is drawn under
 CENTRE_DAYS = 3               # the days of highest Ex-Ey coherence the residual test is read over
-NOTCH_RATIO = 10              # the worst-day tone-to-sideband ratio at which a channel is notched
 REPLACE_CHANNEL = None        # None = from the DC flags and the candidates table | "Hx" | "Hy"
 LENDER = None                 # None = the nearest candidate that is not in the reference | a site name
 BAR_MARGIN = 0.20             # a delivered selection must beat its control on the bar by this fraction
@@ -3152,7 +3151,7 @@ from auslamp_proc.process import aurora_run as AR
 from auslamp_proc.process.edi import TEN_HZ_CAVEAT
 from auslamp_proc.process.transients import MIN_SEGMENT_S as TR_MIN_SEGMENT_S
 from auslamp_proc.site import centre as CE, deliver as DL, forms as FM, masks as MK
-from auslamp_proc.site import recipe as RC, replace as RP, variants as VA
+from auslamp_proc.site import recipe as RC, replace as RP
 from auslamp_proc.figures import site_forms as FF
 from auslamp_proc.raw import cache as CACHE
 
@@ -3264,7 +3263,7 @@ WB05 = [
 ("md", r"""# 05 -- One site, in depth
 
 One site is taken apart: which days its magnetics are usable, where in time each electric line is worth
-using, whether its two lines share a centre electrode, whether a tone or a spike sits in the record, and
+using, whether its two lines share a centre electrode, what its 10 Hz record adds at the short end, and
 whether a magnetic channel is worth borrowing from a neighbour. Each answer is built as a form -- one pass
 over the same site with one thing changed -- and every form lands in the same run folder as a product
 carrying the header a workbook 03 product carries. Section 10 then composes the answers: one frame and, per
@@ -3354,8 +3353,8 @@ plan = [
     dict(section="5 best hours", applies=True, why="a line alive but noisy"),
     dict(section="6 the shared centre", applies=bool(np.isfinite(common) and common >= 0.5),
          why="median Ex-Ey coherence %.2f" % common),
-    dict(section="7 the notch and the spike screen", applies=10 in RATES,
-         why="the census reads the 10 Hz cache"),
+    dict(section="7 the 10 Hz forms", applies=10 in RATES,
+         why="the short end the 1 Hz cache cannot reach"),
     dict(section="8 replacement magnetics", applies=True, why="DC flags: %s" % (flags or "none")),
 ]
 print(pd.DataFrame(plan).to_string(index=False))
@@ -4303,241 +4302,133 @@ else:
              read_text, turn_text, found_text))
 '''),
 
-("md", r"""## 7. The notch and the 10 Hz forms
+("md", r"""## 7. The 10 Hz forms
 
-The notched cache is written beside the original, never in place, so a pass on it differs from a pass on the
-original only in the channels that fired. A channel that does not fire is copied through and its sha256 is
-compared with the source's, which is what makes the control meaningful.
+A site recorded at 10 Hz carries a short end the 1 Hz cache cannot reach. This section passes the whole 10 Hz
+record against the same reference kind the 1 Hz baseline used and draws the two rates on one page.
 
-The tone at 1.000 Hz and its 2.000 Hz harmonic is decided per worst day and per channel. Per worst day
-because the tone is intermittent: a whole-record statistic misses a fault that destroys the band containing
-1.000 s exactly. Per channel because the tone sits in one horizontal channel at most sites and in both at
-some. The filter is a Q = 100 notch applied with filtfilt, so it is zero phase and linear time invariant and
-cannot change the record outside the two notch bands, and it is applied gap-aware -- the record cut at every
-hole of 60 s or more, each piece filtered with 600 s of padding -- because one filter pass over an
-interpolated hole rings the narrow filter and moves the record.
+The reference is BASELINE_KIND at 10 Hz, which is the remote's own 10 Hz record on this site's grid, and
+where no store has been built at that rate the form is refused with that reason and no pass is run. The
+single station is not a kind of this package, so a missing store is not fallen back from: a product estimated
+on the site's own H is biased by its own noise and its error bars do not show the bias.
 
-A sample-blanking screen (k = 30 times the robust scale of the first difference, the samples i-2 to i+3 around
-each step blanked) was tried here and is not a form: at Q53N it blanked 0.56 per cent of the 10 Hz samples,
-which fragmented the record from 87 runs over 55.34 d into 140 runs over 14.06 d against the remote -- 66.5
-per cent of what the mask kept went to the 3,600 s run floor -- and the pass then returned no transfer
-function at all.
+A form the method's own floor refuses is a reading; a form that crashes is a failure. Before the form reaches
+Aurora the workbook measures what its cache leaves against the reference it will be passed with -- the mask,
+the reference's own coverage, and the record cut into runs at the 3,600 s floor -- and prints the kept days
+and the run count beside the whole record's. A form whose kept duration is zero is not passed: its row reads
+`refused` with those numbers and the figure carries that sentence where its curve would have been, rather
+than a traceback out of the estimator.
 
-A form the method's own floor refuses is a reading; a form that crashes is a failure. Before either 10 Hz form
-reaches Aurora the workbook measures what its cache leaves against the reference it will be passed with --
-the mask, the reference's own coverage, and the record cut into runs at the 3,600 s floor -- and prints the
-kept days and run count of each beside the whole record's. A form whose kept duration is zero is not passed:
-its row reads `refused` with those numbers, and the ratio table and the rates figure carry that sentence
-where its curve would have been, rather than a traceback out of the estimator.
+**This check fails if any form of this section ended in an exception rather than a stated refusal.**"""),
 
-**This check fails if an untouched channel is not byte-identical to its source, if the notch moves any period
-other than the tone bin and its harmonic by more than 2.5 per cent, or if any form of this section ended in
-an exception rather than a stated refusal.** With no channel firing the check is UNJUDGED and the section
-says so."""),
-
-("code", '''CENSUS, DECISION, NOTCH = pd.DataFrame(), pd.DataFrame(), {}
+("code", '''REFUSED, COVER = [], {}
 if 10 not in RATES:
-    print("RATES does not include 10: the census reads the 10 Hz cache and is not run")
-elif not VA.cache_path(WORK, SITE, 10).exists():
-    print("no 10 Hz cache at %s: this instrument records at 1 Hz" % VA.cache_path(WORK, SITE, 10))
+    print("RATES does not include 10: this section reads the 10 Hz cache and is not run")
+elif not (FM.cache_dir(WORK, 10) / ("%s.npz" % SITE)).exists():
+    print("no 10 Hz cache at %s: this instrument records at 1 Hz"
+          % (FM.cache_dir(WORK, 10) / ("%s.npz" % SITE)))
 else:
-    t = time.time()
-    CENSUS, DECISION = VA.notch_census(sv, SITE, 10, ratio_fire=NOTCH_RATIO)
-    print("the census in %.0f s: %d day-row(s) over %d channel(s)"
-          % (time.time() - t, len(CENSUS), CENSUS.channel.nunique() if len(CENSUS) else 0))
-    print(DECISION.round(2).to_string(index=False) if len(DECISION) else "no day was long enough to vote")
-'''),
-
-("code", '''if len(DECISION):
-    t = time.time()
-    NOTCH = VA.notch_variant(sv, SITE, DECISION, 10, force=REDO)
-    print("the notched variant in %.0f s: %s" % (time.time() - t, NOTCH.get("path")))
-    print("   fired: %s; every untouched channel byte-identical to its source: %s"
-          % (", ".join(NOTCH.get("fired", [])) or "nothing", NOTCH.get("untouched_identical")))
-    if NOTCH.get("controls"):
-        print(pd.DataFrame(NOTCH["controls"]).round(4).to_string(index=False))
-'''),
-
-("md", r"""The spectrum of each channel around 1.000 Hz and 2.000 Hz, on that channel's own worst day,
-before and after the notch. What to look for is a spike standing above its own sidebands before and gone
-after, with the sidebands themselves unmoved: a filter that pulled the shoulders down with the tone would
-show here and nowhere else."""),
-
-("code", '''if len(DECISION):
-    fig = FF.notch_spectra(sv, SITE, DECISION, OUT / "19_notch_spectra.png", freqs=VA.FREQS)
-    WRITTEN.append(OUT / "19_notch_spectra.png")
-    display(Image(filename=str(OUT / "19_notch_spectra.png")))
-'''),
-
-("code", '''RATIO = pd.DataFrame()
-if NOTCH.get("path"):
     kind10 = BASELINE_KIND
     NO_STORE_10 = not (WORK / "references" / "10hz" / ("%s_%s.npz" % (kind10, SITE))).exists()
     if NO_STORE_10:
         # the single station is not a kind of this package, so a missing store refuses the form rather
         # than falling back to one: a product estimated on the site's own H is biased by its own noise
-        print("no 10 Hz %s reference store for %s: both 10 Hz forms are refused with that reason"
-              % (kind10, SITE))
-    # what each cache leaves against the reference it will be passed with, measured BEFORE any pass: the
-    # mask, the reference's own coverage and the run floor, cut into the runs Aurora would be handed. A
-    # cache that leaves nothing is refused here with its numbers, rather than crashing the estimator later
-    COVER = ({} if NO_STORE_10 else
-             {n: FM.coverage(sv, SITE, kind=kind10, rate=10, variant=v)
-              for n, v in (("whole10", ""), ("notched", "notched"))})
-    if COVER:
-        print("what each 10 Hz cache leaves against the %s reference, before any pass: the mask, the "
+        why = ("refused: there is no 10 Hz %s reference store for %s, and the single station is not a kind "
+               "of this package" % (kind10, SITE))
+        FORM_ROWS.append(FM.refused_row(sv, SITE, "whole10", OUT, kind10, 10, PARAMS, why,
+                                        criterion="not passed: the reference this form needs is not on "
+                                                  "disk"))
+        REFUSED.append(("whole10", why))
+        print("   whole10 is NOT passed -- %s" % why)
+    else:
+        # what the cache leaves against the reference it will be passed with, measured BEFORE the pass: the
+        # mask, the reference's own coverage and the run floor, cut into the runs Aurora would be handed. A
+        # cache that leaves nothing is refused here with its numbers, rather than crashing the estimator
+        COVER["whole10"] = FM.coverage(sv, SITE, kind=kind10, rate=10)
+        c = COVER["whole10"]
+        print("what the 10 Hz cache leaves against the %s reference, before the pass: the mask, the "
               "reference's own coverage, and the record cut into runs at the %g s floor"
               % (KIND_WORD.get(kind10, kind10), TR_MIN_SEGMENT_S))
-        for name in ("whole10", "notched"):
-            c = COVER[name]
-            print("   %-9s %6.2f d over %3d run(s) of the record's %.2f d; %.1f %% of the samples kept, "
-                  "%.1f %% of the record lost to the floor"
-                  % (name, c["days"], c["n_runs"], c["record_days"], 100 * c["kept_frac"],
-                     100 * c["floor_dropped_frac"]))
+        print("   %-9s %6.2f d over %3d run(s) of the record's %.2f d; %.1f %% of the samples kept, "
+              "%.1f %% of the record lost to the floor"
+              % ("whole10", c["days"], c["n_runs"], c["record_days"], 100 * c["kept_frac"],
+                 100 * c["floor_dropped_frac"]))
+        if c["empty"]:
+            why = FM.refusal_sentence(c, c, what="the mask")
+            FORM_ROWS.append(FM.refused_row(sv, SITE, "whole10", OUT, kind10, 10, PARAMS, why, cov=c,
+                                            criterion="not passed: the floor leaves no run to hand "
+                                                      "Aurora"))
+            REFUSED.append(("whole10", why))
+            print("   whole10 is NOT passed -- %s" % why)
+        else:
+            form("whole10", kind=kind10, rate=10,
+                 criterion="the 10 Hz record against the same reference kind as the 1 Hz baseline")
     print()
-    REFUSED = []
-    for name, variant in (("whole10", ""), ("notched", "notched")):
-        if NO_STORE_10:
-            why = ("refused: there is no 10 Hz %s reference store for %s, and the single station is not a "
-                   "kind of this package" % (kind10, SITE))
-            FORM_ROWS.append(FM.refused_row(sv, SITE, name, OUT, kind10, 10, PARAMS, why,
-                                            controls=(["whole10"] if variant else []),
-                                            criterion="not passed: the reference this form needs is not "
-                                                      "on disk"))
-            REFUSED.append((name, why))
-            print("   %s is NOT passed -- %s" % (name, why))
-            continue
-        if COVER[name]["empty"]:
-            why = FM.refusal_sentence(COVER[name], COVER["whole10"],
-                                      what=("the %s screen" % variant) if variant else "the mask")
-            FORM_ROWS.append(FM.refused_row(sv, SITE, name, OUT, kind10, 10, PARAMS, why,
-                                            cov=COVER[name], controls=(["whole10"] if variant else []),
-                                            criterion="not passed: the floor leaves no run to hand Aurora"))
-            REFUSED.append((name, why))
-            print("   %s is NOT passed -- %s" % (name, why))
-            continue
-        r = form(name, kind=kind10, rate=10, variant=variant,
-                 criterion=("only the tone bin and its harmonic move, every other period within 2.5 %"
-                            if variant else "the original, the control the variant is read against"),
-                 controls=(["whole10"] if variant else []))
-        if variant:
-            # a variant is read against its original period by period and never on the bar
-            r["judged_on"] = "per-period ratio over %s" % ", ".join(AG.band_label(*b) for b in SHORT_BANDS)
-    base10 = made_product("whole10")
-    if base10:
-        a = read(base10["product"])
-        for name in ("notched",):
-            r = made_product(name)
-            if r is None:
-                continue
-            per = AG.per_decade(a, read(r["product"]), bands=[tuple(b) for b in SHORT_BANDS])
-            per.insert(0, "form", name)
-            RATIO = pd.concat([RATIO, per], ignore_index=True)
-    print(RATIO.round(4).to_string(index=False) if len(RATIO) else "no 10 Hz pair to compare")
-    for name, why in REFUSED:
-        # the refusal stands in the table's place for that variant: the row is missing for a stated reason
-        print("   %-9s no row: %s" % (name, why))
-    print()
-    print("what each form cost the pass")
-    for name in ("whole10", "notched"):
-        r = rows_by_form().get(name, {})
-        print("   %-9s %s d kept over %s run(s)%s"
-              % (name, r.get("days"), r.get("n_runs"),
-                 ("  [%s]" % r["reason"]) if r.get("reason") else ""))
-    fig = FF.ratio_panel(RATIO, SITE, OUT / "20_variant_ratio.png",
-                         tone_bands=[AG.band_label(*SHORT_BANDS[0]), AG.band_label(*SHORT_BANDS[1])],
-                         refused=REFUSED)
-    WRITTEN.append(OUT / "20_variant_ratio.png")
-    display(Image(filename=str(OUT / "20_variant_ratio.png")))
+    print("what the form cost the pass")
+    r = rows_by_form().get("whole10", {})
+    print("   %-9s %s d kept over %s run(s)%s"
+          % ("whole10", r.get("days"), r.get("n_runs"),
+             ("  [%s]" % r["reason"]) if r.get("reason") else ""))
 '''),
 
-("md", r"""The 10 Hz forms themselves, against the 1 Hz whole-record baseline. The variant ratio above says
-what the notch moved; this says what the 10 Hz pass produced in the first place, which nothing else in the
-workbook shows. What to look for is the dashed curves lying on the solid one where the two rates overlap, the
-size of the error bars at the short end, and the step across the join line: the two shaded bands are the ones
-a splice would score that step on, and the octave between them is the guard that holds the logger's own
-instrument line and is scored by nothing."""),
+("md", r"""The 10 Hz form against the 1 Hz whole-record baseline, which is the only place in the workbook
+that says what the 10 Hz pass produced. What to look for is the dashed curve lying on the solid one where the
+two rates overlap, the size of the error bars at the short end, and the step across the join line: the two
+shaded bands are the ones a splice would score that step on, and the octave between them is the guard that
+holds the logger's own instrument line and is scored by nothing."""),
 
 ("code", '''rows = rows_by_form()
 curves = [("whole, 1 Hz", read(BASE), "k", "-")] if BASE else []
-for j, name in enumerate(("whole10", "notched")):
-    r = made_product(name)
-    if r:
-        # two dashed styles, not one: a variant that moved nothing lies exactly under its original
-        curves.append(("%s, 10 Hz" % name, read(r["product"]), "C%d" % j, ("--", ":")[j]))
+r = made_product("whole10")
+if r:
+    curves.append(("whole10, 10 Hz", read(r["product"]), "C0", "--"))
 if len(curves) > 1:
     _bs = AR.bands_for(10)
     _k10 = rows.get("whole10", {}).get("kind", BASELINE_KIND)
-    _cost = "; ".join("%s %s s over %s run(s)" % (n, rows.get(n, {}).get("seconds"),
-                                                  rows.get(n, {}).get("n_runs"))
-                      for n in ("whole10", "notched")
-                      if rows.get(n, {}).get("status") in ("made", "exists"))
+    _cost = "%s s over %s run(s)" % (rows.get("whole10", {}).get("seconds"),
+                                     rows.get("whole10", {}).get("n_runs"))
     # a form the floor refused carries its sentence where its curve would have been
     _gone = " ".join("%s is not drawn -- %s." % (n, w) for n, w in REFUSED)
-    fig = FF.rate_panels(curves, SITE, OUT / "20b_rates.png", join_s=SP.SPLICE_JOIN_S,
+    fig = FF.rate_panels(curves, SITE, OUT / "19_rates.png", join_s=SP.SPLICE_JOIN_S,
                          bands=(SP.STEP_BELOW, SP.STEP_ABOVE), period_range=(SP.SHORT_FLOOR_S, 2000),
-                         title="%s: the 10 Hz forms against the 1 Hz baseline" % SITE,
-                         caption="The 10 Hz forms dashed -- the original cache and the notched variant, on "
-                                 "the same %s reference and the same %s "
-                                 "parameters -- against the 1 Hz whole-record baseline solid, from %g s to "
-                                 "2,000 s. The 10 Hz passes read the band file %s (%d levels, window %d "
+                         title="%s: the 10 Hz form against the 1 Hz baseline" % SITE,
+                         caption="The whole 10 Hz record dashed, on the same %s reference and the same %s "
+                                 "parameters, against the 1 Hz whole-record baseline solid, from %g s to "
+                                 "2,000 s. The 10 Hz pass reads the band file %s (%d levels, window %d "
                                  "samples) and the 1 Hz baseline reads %s (%d levels), so the two rates "
                                  "carry different band edges and land on different periods. The dash-dotted "
                                  "line at %g s is where a short end would join the 1 Hz row; the shaded "
                                  "columns %g-%g s and %g-%g s are the two bands the step at that join is "
                                  "scored on, and the octave between them is the guard band, scored by "
-                                 "nothing. The passes ran one at a time, %s, because one 10 Hz pass holds "
-                                 "the whole record in memory. %s Caveat: %s."
+                                 "nothing. The pass took %s, and it ran on its own because one 10 Hz pass "
+                                 "holds the whole record in memory. %s Caveat: %s."
                                  % (KIND_WORD.get(_k10, _k10), PARAMS, SP.SHORT_FLOOR_S,
                                     _bs.file.name, _bs.levels, _bs.window,
                                     AR.bands_for(1).file.name, AR.bands_for(1).levels,
                                     SP.SPLICE_JOIN_S, SP.STEP_BELOW[0], SP.STEP_BELOW[1],
                                     SP.STEP_ABOVE[0], SP.STEP_ABOVE[1], _cost, _gone, TEN_HZ_CAVEAT))
-    WRITTEN.append(OUT / "20b_rates.png")
-    display(Image(filename=str(OUT / "20b_rates.png")))
+    WRITTEN.append(OUT / "19_rates.png")
+    display(Image(filename=str(OUT / "19_rates.png")))
 else:
     print("no 10 Hz form was made, so there is nothing to draw against the 1 Hz baseline")
 '''),
 
-("code", '''TONE_BANDS = [AG.band_label(*SHORT_BANDS[0]), AG.band_label(*SHORT_BANDS[1])]
-fail, note = [], ""
-off = RATIO[(RATIO.form == "notched") & (~RATIO.band.isin(TONE_BANDS))] if len(RATIO) else pd.DataFrame()
-worst = float(np.nanmax(np.abs(off.rho_ratio - 1.0))) if len(off) and off.rho_ratio.notna().any() else np.nan
-if not len(DECISION):
-    note = "no 10 Hz cache was censused"
-elif not NOTCH.get("fired"):
-    note = ("no channel fires at a worst-day ratio above %g (the worst is %s at %.1f), so nothing was "
-            "filtered" % (NOTCH_RATIO, DECISION.sort_values("worst_ratio").iloc[-1].channel,
-                          float(DECISION.worst_ratio.max())))
-else:
-    if not NOTCH.get("untouched_identical"):
-        fail.append("a channel that did not fire is not byte-identical to its source: %s"
-                    % ", ".join(c for c, ok in NOTCH["identical"].items()
-                                if not ok and c not in NOTCH["fired"]))
-    if not np.isfinite(worst):
-        fail.append("UNJUDGED on the periods: no 10 Hz pair could be compared")
-    elif worst > 0.025:
-        fail.append("the notch moves a period outside the tone bin and its harmonic by %.1f %%"
-                    % (100 * worst))
-# a form that ended in an exception is a FAIL with the form named; a form the floor refused, with its runs
-# and its days measured before the pass, is a reading and is not one
-crashed = [r for r in FORM_ROWS if r.get("rate_hz") == 10.0 and r.get("status") == "FAILED"]
-for r in crashed:
-    fail.append("the form %s ended in an exception rather than a stated refusal: %s"
-                % (r["form"], str(r.get("error"))[:160]))
-refused_text = "; ".join("%s %s" % (n, w) for n, w in (globals().get("REFUSED") or []))
+("code", '''# a form that ended in an exception is a FAIL with the form named; a form the floor refused, with its
+# runs and its days measured before the pass, is a reading and is not one
+fail = ["the form %s ended in an exception rather than a stated refusal: %s"
+        % (r["form"], str(r.get("error"))[:160])
+        for r in FORM_ROWS if r.get("rate_hz") == 10.0 and r.get("status") == "FAILED"]
+refused_text = "; ".join("%s %s" % (n, w) for n, w in REFUSED)
+made10 = [r["form"] for r in FORM_ROWS if r.get("rate_hz") == 10.0 and r.get("status") in ("made", "exists")]
 if fail:
     print("VERDICT: FAIL -- %s%s" % ("; ".join(fail), ("; " + refused_text) if refused_text else ""))
-elif note:
-    print("VERDICT: UNJUDGED -- %s, so neither limb of the criterion was scored" % note)
+elif not made10 and not REFUSED:
+    print("VERDICT: UNJUDGED -- no form of this section was reached, so nothing was scored")
 else:
-    print("VERDICT: PASS -- %s fired and %s did not, and every channel that did not fire is byte-identical "
-          "to its source by sha256; outside the tone bin and its harmonic (%s) the worst period moves by "
-          "%.2f %%, under 2.5 %%; no form of this section ended in an exception%s"
-          % (", ".join(NOTCH["fired"]),
-             ", ".join(c for c in sorted(NOTCH["identical"]) if c not in NOTCH["fired"]) or "no channel",
-             " and ".join(TONE_BANDS), 100 * worst,
-             (", and " + refused_text) if refused_text else ""))
+    print("VERDICT: PASS -- no form of this section ended in an exception: %s"
+          % ("; ".join("%s was made" % n for n in made10) if made10 else "none was made",))
+    if refused_text:
+        print("   as a reading, %s" % refused_text)
 '''),
 
 ("md", r"""## 8. Replacement magnetics and the lender
@@ -4856,7 +4747,7 @@ print("rows         x': %s at %g Hz; y': %s at %g Hz; the tipper from the %s row
          RECIPE["tipper"]))
 NE_CACHE = {}
 for _r in RATES_USED:
-    if FRAME["variant"] == "ne" and VA.cache_path(WORK, SITE, _r).exists():
+    if FRAME["variant"] == "ne" and (FM.cache_dir(WORK, _r) / ("%s.npz" % SITE)).exists():
         _t = time.time()
         NE_CACHE[_r] = CE.ne_variant(sv, SITE, _r, force=REDO)
         print("   the %d Hz arm-diagonal cache in %.0f s: %s (%s; exact on %s finite sample(s): %s)"
@@ -5309,8 +5200,6 @@ if me.get("model_holds"):
                     "applies" if me["remedy_applicable"] else
                     "does NOT apply (the clean diagonal by H is the %s and the observed one is the %s)"
                     % (me["clean_by_H"], me["clean_obs"])))
-if NOTCH.get("fired"):
-    flags.append("notch: %s" % ", ".join(NOTCH["fired"]))
 if NEEDED:
     flags.append("magnetic replacement: %s from %s" % (CHAN, LEND))
 proposed.loc[proposed.site == SITE, "flags"] = "; ".join(flags) or "decide"
@@ -5350,8 +5239,7 @@ print(cost.to_string(index=False))
 
 WB06_PARAMS = '''# ---- parameters: change these and re-run the workbook ----
 SURVEY = "queensland_phase1"  # any folder under surveys/: queensland_phase2 | queensland_phase3 | victoria
-SITE = "Q53N"                 # one site, or "all": the rule's proposal is applied to every site with a
-                              # delivery and each choice is marked `rule`
+SITE = "Q53N"                 # one site; a survey is delivered site by site by changing this and re-running
 RUNS = "all"                  # "all" = every run folder of the site | "latest" | ["first", "short10"]
 RECORD_RATES = [1]            # the delivery rate the product of record is chosen among; [1, 10] admits a
                               # 10 Hz product as a whole row, which stops near 1,200 s at this survey
@@ -5361,9 +5249,7 @@ HALVES = True                 # True runs the two half passes over each chosen p
                               # ones on disk and leaves the reading UNJUDGED where there are none
 LANES = 2                     # concurrent single-site subprocesses for the half passes
 TIPPER_FROM = "xy"            # "xy" | "yx" | a reference kind: which product the tipper is taken from
-COMPARE = ["campaign_merged"]  # the survey.yaml source drawn behind the delivered curve; [] draws none
 RESAMPLE = False              # True writes final/<site>_resampled.edi on the ten-per-decade grid as well
-PER_PAGE = 6                  # sites a gallery page
 WORK_ROOT = None              # None = survey.yaml work_root; every file this workbook writes lands under it
 '''
 
@@ -5394,7 +5280,6 @@ CONTROL_MARGIN = 0.20         # ... and the fraction of the control bar a select
 
 PERIOD_RANGE = (0.3, 50000)   # the periods drawn and scored, in s
 BANDS = [(5, 10), (10, 100), (100, 1000), (1000, 10000)]   # the decades every table reports, in s
-COMPARE_BAND = (100, 1000)    # the band the comparison reports, in s
 '''
 
 WB06_SETUP = '''import os
@@ -5420,7 +5305,7 @@ from loguru import logger as _loguru
 _loguru.remove()
 
 import auslamp_proc
-from auslamp_proc import agreement as AG, final as FN, halves as HV, products as PR
+from auslamp_proc import final as FN, halves as HV, products as PR
 from auslamp_proc import readings as RD, splice as SP, survey as SV
 from auslamp_proc.process import KIND_WORD
 from auslamp_proc.site import deliver as DL
@@ -5441,24 +5326,14 @@ OUT.mkdir(parents=True, exist_ok=True)
 WRITTEN = []
 
 EVERY, WHY = SV.select_sites(sv, "all", 0)
-ONE = str(SITE).strip()
-ASKED = list(EVERY) if ONE.lower() == "all" else [ONE]
-if ONE.lower() != "all" and ONE not in set(EVERY):
-    raise ValueError("%s is not a site of %s (%s)" % (ONE, SURVEY, " ".join(EVERY)))
+FOCUS = str(SITE).strip()
+if FOCUS not in set(EVERY):
+    raise ValueError("%s is not a site of %s (%s)" % (FOCUS, SURVEY, " ".join(EVERY)))
+ASKED = [FOCUS]
 PROD, IGNORED = RD.deliverable(RD.all_products(sv, ASKED, runs=RUNS))
 CHOSEN = [s for s in ASKED if s in set(PROD.site)]
 NO_PRODUCT = [s for s in ASKED if s not in set(PROD.site)]
-FOCUS = CHOSEN[0] if CHOSEN else ""
 CHOICES = FN.read_choices(FN.choices_path(sv))
-
-def _dec(cell):
-    try:
-        return float(str(cell).strip())
-    except ValueError:
-        return None
-
-DECLINATION = {r.site: _dec(r.declination_deg) for r in sv.sites.itertuples()}
-DECLINATION = {k: v for k, v in DECLINATION.items() if v is not None and np.isfinite(v)}
 
 _tfs = {}
 def read(path):
@@ -5483,10 +5358,9 @@ def picks_for(site, record):
 
 print("survey       %s" % sv.cfg["name"])
 print("work root    %s" % WORK)
-print("site         %s" % (", ".join(CHOSEN) if len(CHOSEN) < 6 else
-                           "%d sites: %s" % (len(CHOSEN), " ".join(CHOSEN))))
+print("site         %s -- %s" % (FOCUS, sv.site(FOCUS).notes or "no note in sites.csv"))
 if NO_PRODUCT:
-    print("no product   %s -- run workbook 03 over them" % " ".join(NO_PRODUCT))
+    print("no product   %s -- run workbook 03 over it" % " ".join(NO_PRODUCT))
 print("products     %d rows, %d on disk, over %d run folder(s)"
       % (len(PROD), int(PROD.on_disk.sum()), PROD.groupby(["run", "stamp"]).ngroups))
 for (run, stamp), g in PROD.groupby(["run", "stamp"]):
@@ -5530,11 +5404,15 @@ The three tests a product is put to are the ones students learn first -- the pha
 apparent resistivity changing no faster than the period, and the error bar -- and a product passes them or
 fails one by name.
 
-A delivered file carries the measurement and nothing else: it holds the periods inside the chosen product's
-held band, and the periods dropped are named in the manifest with the reason.
+A delivered file carries the measurement: it holds the periods inside the chosen product's held band, and the
+periods dropped are named in the manifest with the reason.
 
-Five checks state their failure criterion in bold above the cell and print a verdict below it. A check that
-scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported FAILED and is
+One site is delivered per run. A survey is delivered site by site, by changing `SITE` and running the
+workbook again; each run appends that site's rows to the survey's four tables and leaves every other site's
+untouched.
+
+Four checks state their failure criterion in bold above the cell and print a verdict below it. A check that
+scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported as FAIL and is
 not revised afterwards."""),
 
 ("code", WB06_PARAMS),
@@ -5554,8 +5432,7 @@ is the random 25 per cent that controls them. A whole-record 10 Hz product, wher
 a control and is read as `whole`. The name each product answers to in the choice cell is `<kind>_<rate>hz`,
 with the selection appended where a 10 Hz pass ran on one, and a form's own name where workbook 05 made it.
 
-`SITE` names one site. `SITE = "all"` runs the same cells over every site of the survey and marks every
-choice `rule`."""),
+`SITE` names the one site this run delivers."""),
 
 ("code", WB06_SETUP),
 
@@ -5688,7 +5565,7 @@ else:
 ("md", r"""## 2. The rule's proposal
 
 Per component, the product of record as the rule chooses it: among the products at the delivery rate that
-pass the three tests and agree with at least one product of ANOTHER reference kind over AGREE_BAND, the one
+pass the three tests and agree with at least one product of another reference kind over AGREE_BAND, the one
 with the smallest bar over QUALITY_BAND, ties broken by the longest period held.
 
 Corroboration comes from another kind because two references that share no magnetics cannot carry the same
@@ -5703,7 +5580,8 @@ enters the file through the join below, at 16 s, and not as the whole row.
 
 Which products may be delivered is workbook 05's call. A workbook 03 product may always be delivered; a form
 may only where its forms.csv row marks it a candidate, which it does where the form beats every control it
-carries on the 10-1000 s bar by 20 per cent and is not an inter-site impedance. A form that is not a
+carries on the 10-1000 s bar by 20 per cent and is not an inter-site impedance, and for the assembled recipe
+where every row it was built from that carries a control beat it and its frame holds. A form that is not a
 candidate is read, scored and reported in section 1, is never the product of record, and does not corroborate
 another row.
 
@@ -5903,9 +5781,9 @@ holds. Three measurements decide it, in this order.
 4-32 s. The median of that ratio over the kinds is the rate effect -- what the two processing paths say
 about the same band -- and the spread across kinds at one rate is the kind effect. A survey whose rate
 effect exceeds 4 per cent cannot be joined at all, because the join would deliver the difference between
-two processing paths as a bend in the earth. Aurora at 10 Hz reads about 8 per cent low at 4-32 s against
-its own 1 Hz product (AusLAMP Victoria, 2026-09-11), and every 10 Hz product carries that sentence in its
-own file; this is the measurement that says whether this survey has a short end to deliver.
+two processing paths as a bend in the earth. Workbook 03 measures that departure on the survey's own
+whole-record 10 Hz products and writes it into every 10 Hz file; this is the measurement that says whether
+the survey has a short end to deliver.
 
 The gate is read over the whole-record 10 Hz pass and over the random 25 per cent that controls the
 selections, and over no other row. A selection of the most coherent hours is not comparable to a 1 Hz
@@ -6024,8 +5902,8 @@ s. The tipper takes `"rule"`, which is TIPPER_FROM, or a component.
 The delivery is rebuilt from the choice and not from the proposal; the two agree wherever the cell says
 `"rule"`. Every departure is written into the delivered file's header as a `choice=` line and into
 `surveys/<SURVEY>/final_choices.csv`, which this workbook reads before it proposes anything. A row there
-marked `analyst` binds and is never overwritten by the rule; a row marked `rule` is refreshed.
-`SITE = "all"` writes `rule` rows only where no analyst row stands.
+marked `analyst` binds and is never overwritten by the rule; a row marked `rule` is refreshed. This run
+writes the rows of this site and leaves every other site's as they stand.
 
 The tipper is refused where the vertical channel is not measuring the vertical field: Hz a copy of a
 horizontal channel, which reads a coherence of 1.00 with Hx, or Hz carrying the site's own horizontal field
@@ -6063,9 +5941,7 @@ def spec_for(site, comp):
         return (dict(product=str(r["product"]),
                      periods=((lo, hi) if np.isfinite(lo) and np.isfinite(hi) else "held"),
                      join=(j if np.isfinite(j) else None)), "analyst", str(r.note or ""))
-    if ONE.lower() != "all" and site == ONE:
-        return dict(CHOICE.get(comp, RULE_SPEC)), "rule", ""
-    return dict(RULE_SPEC), "rule", ""
+    return dict(CHOICE.get(comp, RULE_SPEC)), "rule", ""
 
 def row_named(site, comp, name):
     """The readings row a product name picks out at one site and component, or None."""
@@ -6138,8 +6014,7 @@ for site in CHOSEN:
         REFUSAL[site] = dict(site=site, judged=False, refused=False,
                              reason="the refusal test could not run: %s" % str(exc)[:120])
     refused = bool(REFUSAL[site].get("refused"))
-    tspec = (str((CHOICE.get("tipper") or {}).get("product", "rule"))
-             if (ONE.lower() != "all" and site == ONE) else "rule")
+    tspec = str((CHOICE.get("tipper") or {}).get("product", "rule"))
     tip = None if refused else (TIPPER_FROM if tspec in ("", "rule") else tspec)
     lines.append("tipper_refusal=%s (Hz with its own Hx %.2f, with its own H %.2f, with %s's Hz %.2f)"
                  % (REFUSAL[site].get("reason", ""), _f(REFUSAL[site].get("coh_hz_hx")),
@@ -6270,7 +6145,7 @@ survives two dead electric lines. Its impedance rows are written as the EDI empt
 lines name what the file is.
 
 The INFO block carries which product each row came from, the flags and the notes per component, the frame
-block, the trim line, the join line where a 10 Hz row is in the file, the notch record the cache carried,
+block, the trim line, the join line where a 10 Hz row is in the file, the cache the product was built from,
 the 10 Hz caveat, any `choice=` line and the package version and date. The frame is stated in three lines:
 the tensor is served in the frame it was processed in, the IGRF declination is recorded and not applied, and
 the angle to turn the tensor by for true geographic north is given with the transformation.
@@ -6430,188 +6305,31 @@ else:
              len(IDENT), len(STEP_BACK), SPLICE_MAX_STEP_PCT, len(DELIVERED)))
 '''),
 
-("md", r"""## 5. The comparison, last
+("md", r"""## 5. What was written
 
-This site's delivered curve against `campaign_merged` alone, in black, one legend entry. The earlier
-per-kind processing is not drawn here; workbook 04 has it.
-
-The comparison comes last and is labelled a comparison, never the truth, for one reason: two independent
-processings of the same field are two measurements and neither is an oracle. A difference in level is a
-gain, a dipole length or a frame before it is the earth, and a difference the declination turn removes was
-never a difference in the earth at all. Every source declares the frame its tensors are in, in
-`surveys/<SURVEY>/survey.yaml`, and a source that declares none is refused: a tensor drawn on our axes in an
-undeclared frame is a different object on the same picture.
-
-The ratio of apparent resistivity and the difference in phase over COMPARE_BAND are printed per site and
-component. No verdict is drawn from them."""),
-
-("code", '''SOURCES = PR.comparison_sources(sv, list(COMPARE) if COMPARE else "none")
-for src in SOURCES:
-    print("source       %s" % src["name"])
-    print("  folder     %s" % src["folder"])
-    print("  frame      %s" % (src["frame"] or "NOT DECLARED"))
-    print("  note       %s" % (src["note"] or "NOT DECLARED")[:180])
-    if src["error"]:
-        print("  REFUSED    %s" % src["error"])
-if not SOURCES:
-    print("this survey declares no comparison source under COMPARE, so nothing is drawn behind the curve")
-print()
-
-def comparisons_of(site):
-    """[(the source's name, the tensor in our frame)] for one site, over the declared sources."""
-    got = []
-    for src in SOURCES:
-        if src["error"]:
-            continue
-        try:
-            loaded = PR.load_comparison(src, site, DECLINATION.get(site))
-        except Exception:
-            loaded = {}
-        for _kind, tf in sorted(loaded.items()):
-            got.append((src["name"], tf))
-    return got
-
-COMPS = {s: comparisons_of(s) for s in sorted(DELIVERED)}
-rows = []
-for site, pairs in COMPS.items():
-    for label, other in pairs:
-        for comp in RD.COMPONENTS:
-            s = AG.band_stats(read(DELIVERED[site]), other, comp, COMPARE_BAND[0], COMPARE_BAND[1])
-            rows.append(dict(site=site, source=label, component=comp, rho_ratio=s["rho_ratio"],
-                             phase_diff_deg=s["phase_diff_deg"], n=s["n"]))
-VS = pd.DataFrame(rows)
-if len(VS):
-    print("the delivered curve over %s at %g-%g s: the median ratio of apparent resistivity and the median "
-          "phase difference in deg" % (", ".join(sorted(set(VS.source))), COMPARE_BAND[0], COMPARE_BAND[1]))
-    print(VS.round(3).to_string(index=False))
-    path = OUT / "final_vs_comparison.csv"
-    VS.round(4).to_csv(path, index=False)
-    WRITTEN.append(path)
-    print("-> %s (%d rows)" % (path, len(VS)))
-else:
-    print("no delivered file has a curve in a declared source to be set beside")
-
-if FOCUS in DELIVERED and COMPS.get(FOCUS):
-    fig_vs = FIG.delivered_page(
-        FOCUS, read(DELIVERED[FOCUS]), final_dir(FOCUS) / ("%s_comparison.png" % FOCUS),
-        comparisons=COMPS[FOCUS], period_range=tuple(PERIOD_RANGE),
-        title="%s: the delivered curve and the comparison in black" % FOCUS,
-        caption="%s with its error bars over %s in black, from %g to %g s. The comparison is a second "
-                "measurement of the same field and not the truth; at %g-%g s the two sit at %s in "
-                "apparent resistivity and %s deg in phase."
-                % (Path(DELIVERED[FOCUS]).name, ", ".join(sorted({a for a, _b in COMPS[FOCUS]})),
-                   PERIOD_RANGE[0], PERIOD_RANGE[1], COMPARE_BAND[0], COMPARE_BAND[1],
-                   ", ".join("%s %.2f" % (r.component, r.rho_ratio)
-                             for r in VS[VS.site == FOCUS].itertuples()) or "no common band",
-                   ", ".join("%s %+.1f" % (r.component, r.phase_diff_deg)
-                             for r in VS[VS.site == FOCUS].itertuples()) or "none"))
-    WRITTEN.append(fig_vs)
-    display(Image(filename=str(fig_vs)))
-'''),
-
-("md", r"""## 6. The survey so far
-
-The manifest and the readings of every site delivered to date under this survey, whichever run delivered
-them: the four tables under `<work_root>/survey/` carry every site and a run over one site replaces only
-that site's rows. PRODUCTS_OF_RECORD.csv is the proposal per site and component with its reason,
-READINGS.csv every product and every statistic it was read on, SPLICE.csv what was done to each row at the
-join, and FINAL_MANIFEST.csv the sha256 of every delivered file and of every product it came from, so the
-delivery can be re-read without the files.
-
-Then the gallery: one curve per site with its error bars, PER_PAGE sites a page. A site with no delivered
-file shows the reason in its panel and no curve. A second page set follows it with the comparison in black
-behind each curve.
-
-**This check fails if any delivered file in the manifest is missing, unreadable or does not match its
-sha256.** The three are read from the files themselves and not from the table that names them."""),
+The delivery of this site is appended to the survey's four tables under `<work_root>/survey/`, which is
+where the record of a survey accumulates one row per delivered site as the workbook is run site by site:
+PRODUCTS_OF_RECORD.csv the proposal per component with its reason, READINGS.csv every product and every
+statistic it was read on, SPLICE.csv what was done to each row at the join, and FINAL_MANIFEST.csv the
+sha256 of the delivered file and of every product it came from. A re-run of this site replaces that site's
+rows and leaves every other site's untouched."""),
 
 ("code", '''REC_OUT = FN.write_record(OUT, RECORD, READINGS, MERGES + TIPPER_ONLY, splice=SPLICE, sites=CHOSEN)
 WRITTEN += list(REC_OUT["written"].values())
 MAN = REC_OUT["manifest"]
-for name, p in sorted(REC_OUT["written"].items()):
-    print("   %-24s %s" % (name, p))
-print()
-SURVEY_RECORD = pd.read_csv(OUT / "PRODUCTS_OF_RECORD.csv")
-SURVEY_READINGS = pd.read_csv(OUT / "READINGS.csv")
-FINALS = MAN[MAN.role == "final"].drop_duplicates("site", keep="last")
-print("%d site(s) delivered to date under %s, from %d readings row(s) over %d product(s)"
-      % (len(FINALS), sv.cfg["name"], len(SURVEY_READINGS), SURVEY_READINGS.path.nunique()))
-print(FINALS[["site", "file", "n_periods", "n_dropped", "bytes", "sha256"]].to_string(index=False))
-
-TFS, REASON = {}, {}
-for r in FINALS.itertuples():
-    try:
-        TFS[r.site] = PR.read_tf(r.file)
-    except Exception:
-        TFS[r.site] = None
-for s in EVERY:
-    if s in TFS:
-        continue
-    g = SURVEY_RECORD[SURVEY_RECORD.site == s]
-    REASON[s] = (str(g.why.iloc[0]) if len(g) else
-                 "no delivery yet: this workbook has not been run on %s" % s)
-GALLERY = sorted(set(list(TFS) + list(REASON)))
-ALL_COMPS = {s: (COMPS.get(s) or comparisons_of(s)) for s in TFS}
-
 if RESAMPLE:
     for site, p in sorted(DELIVERED.items()):
         r = FN.resample(p, final_dir(site) / ("%s_resampled.edi" % site))
         WRITTEN.append(r["path"])
     print("%d file(s) also written on the ten-per-decade grid, beside the delivered file and never in "
           "place of it" % len(DELIVERED))
-
-pages, index, index_path = FIG.final_gallery(
-    GALLERY, TFS, OUT, stem="gallery_final", per_page=int(PER_PAGE),
-    period_range=tuple(PERIOD_RANGE), reasons=REASON,
-    title="%s: the delivered transfer functions" % sv.cfg["name"],
-    caption="One row per site of %s: apparent resistivity and phase of the delivered file with its error "
-            "bars, over %g-%g s, the y limits taken from the curve itself. A panel carrying a sentence and "
-            "no curve is a site with no delivery, and the sentence is the reason."
-            % (sv.cfg["name"], PERIOD_RANGE[0], PERIOD_RANGE[1]))
-WRITTEN += list(pages) + [index_path]
+for name, p in sorted(REC_OUT["written"].items()):
+    print("   %-24s %s" % (name, p))
+print("   the manifest holds %d delivered file(s) of %s, %d of them written by this run"
+      % (MAN[MAN.role == "final"].site.nunique(), sv.cfg["name"], len(DELIVERED)))
 print()
-print("%d gallery page(s), %d curve(s) drawn" % (len(pages), len(index)))
-if len(pages):
-    display(Image(filename=str(pages[0])))
 
-pages2, index2, index2_path = FIG.final_gallery(
-    GALLERY, TFS, OUT, stem="gallery_comparison", per_page=int(PER_PAGE),
-    period_range=tuple(PERIOD_RANGE), comparisons=ALL_COMPS, reasons=REASON,
-    title="%s: the delivered transfer functions, the comparison in black" % sv.cfg["name"],
-    caption="The same gallery with each declared comparison drawn in black behind the delivered curve. The "
-            "y limits are the delivered curve's own, so a comparison that disagrees by decades runs off its "
-            "panel rather than squeezing every curve on the page into a line. A comparison is a second "
-            "measurement of the same field and not the truth.")
-WRITTEN += list(pages2) + [index2_path]
-print("%d comparison page(s), %d curve(s) drawn" % (len(pages2), len(index2)))
-if len(pages2):
-    display(Image(filename=str(pages2[0])))
-
-CHECKED = FN.manifest_check(MAN)
-print()
-print("every delivered file in the manifest, read back")
-print(CHECKED[["site", "exists", "readable", "sha256_matches"]].to_string(index=False)
-      if len(CHECKED) else "the manifest names no delivered file")
-gone = [r.site for r in CHECKED.itertuples() if not r.exists]
-unread = [r.site for r in CHECKED.itertuples() if r.exists and not r.readable]
-moved = [r.site for r in CHECKED.itertuples() if r.exists and not r.sha256_matches]
-if not len(CHECKED):
-    print("VERDICT: UNJUDGED -- the manifest names no delivered file, so none was read back")
-elif gone or unread or moved:
-    print("VERDICT: FAIL -- of the %d delivered file(s) in the manifest, %d are missing (%s), %d do not "
-          "read as a transfer function (%s) and %d do not match the sha256 recorded for them (%s)"
-          % (len(CHECKED), len(gone), " ".join(gone) or "none", len(unread), " ".join(unread) or "none",
-             len(moved), " ".join(moved) or "none"))
-else:
-    print("VERDICT: PASS -- all %d delivered file(s) in the manifest are on disk, read as a transfer "
-          "function and match the sha256 recorded for them; %d row(s) in the manifest, %d of them the "
-          "products the files came from"
-          % (len(CHECKED), len(MAN), int((MAN.role == "source").sum())))
-'''),
-
-("md", r"""## 7. What was written"""),
-
-("code", '''rows = []
+rows = []
 for p in list(WRITTEN) + [q for s in sorted(DELIVERED) for q in
                           (Path(DELIVERED[s]), Path(DELIVERED[s]).with_suffix(".xml"))]:
     p = Path(p)
