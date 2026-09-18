@@ -9,8 +9,10 @@ the estimator.
 
 The worked example is AusLAMP Queensland Phase 1 (23 EDL sites, September-November 2025), the survey the
 workbooks open on. The raw time series are not in this repository: point `raw_root` and `work_root` in
-`surveys/<survey>/survey.yaml` at where they live on your machine. To run your own survey, copy
-`surveys/_template/` and point it at your own raw folder.
+`surveys/<survey>/survey.yaml` at where they live on your machine. The survey folders of Phases 2 (18 sites,
+March-May 2026) and 3 (15 sites, June-July 2026) are included as filled-in examples of survey.yaml, sites.csv
+and decisions.csv; their raw is not shipped either. To run your own survey, copy `surveys/_template/` and
+point it at your own raw folder.
 
 Author: Ben Kay (bvkay). Started 2026-09-13; re-cut for the workbook layout 2026-09-16.
 

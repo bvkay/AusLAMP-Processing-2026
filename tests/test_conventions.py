@@ -37,8 +37,7 @@ SHIPPED = ("01_survey.ipynb", "02_records.ipynb", "03_site.ipynb", "04_site.ipyn
 SELF = "test_conventions.py"   # this file names every forbidden phrase, so it is not scanned for them
 
 
-IGNORED = ("docs", "notes", "workbooks/examples", "surveys/victoria", "surveys/queensland_phase2",
-           "surveys/queensland_phase3", ".git", "__pycache__", ".ipynb_checkpoints", ".pytest_cache",
+IGNORED = ("docs", "notes", "workbooks/examples", "surveys/victoria", "surveys/fresh_phase3", ".git", "__pycache__", ".ipynb_checkpoints", ".pytest_cache",
            "auslamp_proc.egg-info")
 
 
