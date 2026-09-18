@@ -10,6 +10,10 @@ discover reads names. This module reads the files names cannot answer for:
     the .INF block in force (LEMI)               the serial, the firmware and the dipole lengths
     the release's own MTH5 station attributes    compared, never used as a value
 
+An EDL folder records no arm length at all. survey.yaml `dipoles` carries what a survey uses instead -- a
+CSV of the deployment sheet's lengths, or one default with the reason -- and the default is written here as
+`assume:<metres>` while the table is applied by workbook 01, which is where the survey folder is in hand.
+
 Two file headers per site plus up to 40 small sidecars; no time-series body is opened. AusLAMP Victoria (100
 sites, 243,157 data files) scans in about 13 s on a warm file cache.
 
@@ -145,10 +149,13 @@ def scan_site(row, cfg, years, release_mth5=None, gps_max_files: int = 40, verbo
                    min_sat=pos["min_sat"], max_sat=pos["max_sat"],
                    n_fixes_below_floor=pos["n_below_floor"],
                    position_source="EDL .gps median over %d daily files, >= 3 satellites" % pos["n_files"])
-        dflt = ((cfg.get("dipole_default") or {}).get(inst) or {})
-        if dflt:
-            out.update(dipole_n_m="assume:%g" % dflt["value"], dipole_e_m="assume:%g" % dflt["value"],
-                       dipole_source=dflt["reason"])
+        # an EDL folder records no arm length. survey.yaml `dipoles` says what to use where nothing does,
+        # and workbook 01 writes a measured length from `dipoles.table` over this afterwards
+        from ..survey import dipole_default
+        value, reason = dipole_default(cfg, inst)
+        if value is not None:
+            out.update(dipole_n_m="assume:%g" % value, dipole_e_m="assume:%g" % value,
+                       dipole_source=reason)
     elif layout == "lemi_data_nnnn":
         out.update(_lemi_span(row))
         datadirs = [p for p in d.iterdir() if p.is_dir() and p.name.upper().startswith("DATA")]

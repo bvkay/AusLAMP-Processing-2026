@@ -17,6 +17,11 @@ WIN_MIN, STEP_MIN = 60, 30    # the base window and step of figures 02, 03 and 0
 PMAX = 20000                  # the longest period the level ladder reaches, in s
 DEAD_FRACTION = 0.2           # a day of a line is dead below this fraction of the line's own median daily std
 DEAD_ABS_MV_PER_KM = 0.0      # or below this absolute floor in mV/km; 0 = off (a line dead all record reads weak)
+SIGN_FLOOR = 0.3              # a DC ratio against IGRF this far from zero is a sign; inside it, none is read
+WRITE_DECISIONS = True        # True writes sign_hx and sign_hz into decisions.csv at every chosen site, into
+                              # the cells that read `decide` and into no others. False leaves them `decide`,
+                              # and a site whose magnetic signs stay `decide` is processed with them at +1:
+                              # a reversed axis then reverses every transfer function row it enters
 REBUILD = False               # True rebuilds every cache from the raw files, which is the slow path
 '''
 
@@ -38,6 +43,7 @@ import matplotlib.pyplot as plt
 from IPython.display import Image, display
 
 from auslamp_proc import survey as SV, look
+from auslamp_proc.process import frame as FR
 from auslamp_proc.raw import cache
 from auslamp_proc.figures import record as FREC, site as FSITE
 
@@ -104,9 +110,14 @@ NaN; the counts are converted to nT and mV/km by the instrument constants and th
 No sign, no rotation and no notch is applied: the frame and the signs come from `decisions.csv` at processing
 time, and a cache carrying them could not be re-read under a different decision.
 
-Four checks state their failure criterion in bold above the cell and print a verdict below it. A check that
+Five checks state their failure criterion in bold above the cell and print a verdict below it. A check that
 scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported as FAIL and is
 not revised afterwards.
+
+This workbook writes two cells of `decisions.csv`. The DC test against IGRF decides `sign_hx` and `sign_hz`,
+and with `WRITE_DECISIONS` True each is written into the site's row wherever that cell reads `decide`. A
+cell holding a value or an `assume:` is never overwritten, and a sign the test could not read is left
+`decide` and printed as open.
 
 The words for the reference kinds are fixed in workbook 01 and used here as words: remote site, fleet stack,
 observatory, stack + observatory, member."""),
@@ -300,6 +311,124 @@ else:
           % (len(dc), len(f_off), ", ".join(f_off.site) or "none", len(bx_neg),
              ", ".join(bx_neg.site) or "none", 100 * (dc.F_over_Figrf - 1).abs().max(),
              dc.site[(dc.F_over_Figrf - 1).abs().idxmax()]))
+'''),
+
+("md", r"""### The two magnetic signs this test decides
+
+`sign_hx` and `sign_hz` are read off the same numbers. An axis laid the right way up reads the IGRF
+component it points at, so the sign of the record median over IGRF is the sign of the channel: `Bx/X` for
+the north axis, `Bz/Z` for the vertical. Inside the floor `SIGN_FLOOR` = 0.3 the ratio says nothing, because
+a dead coil sits near zero and so does a sensor laid at right angles to north, and the cell stays `decide`
+rather than taking a sign off noise (`auslamp_proc.look.signs_from_dc`).
+
+Two conditions stop the rule before the floor is reached, and each leaves the cell `decide` with its reason
+printed:
+
+- the DC test fired a flag other than `Bx negative` -- a gain, a broken axis, a tilt, a sensor laid far from
+  north. The ratio is then not the component the axis is supposed to carry, so a polarity read off it is a
+  polarity read off the wrong number;
+- `decisions.csv` gives the site an `h_lender` covering that channel. The pass reads the lender's H there,
+  so the site's own polarity never reaches a transfer function and recording it would record a decision
+  nothing uses.
+
+`sign_hy` is not decided here and no workbook decides it. The east component of the field is small, so `By/Y`
+is near zero at an Australian site whatever the coil did; Hy is decided against the observatory's east
+channel and two neighbours, which is a different measurement, and until somebody makes it the cell reads
+`decide` and Hy is used as +1.
+
+With `WRITE_DECISIONS` True each sign the rule decided is written into `surveys/<SURVEY>/decisions.csv` at
+every chosen site, into a cell that reads `decide` and into no other: a cell already holding a value or an
+`assume:` belongs to whoever put it there, and this test is a reading beside it and not a ruling over it
+(`auslamp_proc.survey.write_signs` and `write_table`). `sign_source` gains one clause per sign, naming the
+column, the value, the ratio it was read from and the date.
+
+**This check fails if a cell this cell wrote did not read `decide` before the write, if a sign the rule
+decided and `WRITE_DECISIONS` asked for is still `decide` afterwards, or if a cell now holds a value other
+than the one the rule measured.** All three limbs are scored by reading `decisions.csv` back off the disk
+and comparing it with the table as it stood before the write, which is an observable independent of the
+call that wrote it. With `WRITE_DECISIONS` False nothing is asked for and nothing is scored, and the cell
+reports UNJUDGED rather than passing on nothing."""),
+
+("code", '''BEFORE = SV.load_survey(SURVEY).decisions.set_index("site")
+SIGN_COLS = [FR.SIGN_COLUMN["Hx"], FR.SIGN_COLUMN["Hz"]]
+MEASURED, sign_rows = {}, []
+for r in dc.to_dict("records"):
+    got = look.signs_from_dc(r, floor=SIGN_FLOOR)       # <- SIGN_FLOOR
+    # a channel decisions.csv replaces with a lender's never reaches a transfer function under its own
+    # sign, so its polarity is not a measurement worth recording and the cell is left as it stands
+    d_row = sv.decision(r["site"]) if r["site"] in list(sv.decisions.site) else None
+    lender = FR.read_lender(d_row) if d_row is not None else ""
+    borrowed = FR.read_lender_channels(d_row) if d_row is not None else []
+    for ch in list(got):
+        if lender and ch in borrowed:
+            got[ch] = (None, "decisions.csv gives %s the H of %s, so this site's own %s never reaches a "
+                             "transfer function" % (r["site"], lender, ch))
+    MEASURED[r["site"]] = {FR.SIGN_COLUMN[ch]: (v, "the DC test of workbook 02: %s" % why)
+                           for ch, (v, why) in got.items()}
+    held = {c: (str(BEFORE.loc[r["site"], c]) if r["site"] in BEFORE.index else "") for c in SIGN_COLS}
+    sign_rows.append(dict(site=r["site"], Bx_over_X=r["Bx_over_X"], Bz_over_Z=r["Bz_over_Z"],
+                          rule_hx=got["Hx"][0], rule_hz=got["Hz"][0],
+                          held_hx=held[SIGN_COLS[0]], held_hz=held[SIGN_COLS[1]],
+                          why=("; ".join(w for v, w in got.values() if v is None))[:90]))
+signs = pd.DataFrame(sign_rows)
+print("the two ratios, the sign the %.1f floor reads from each, and what decisions.csv held before this run"
+      % SIGN_FLOOR)
+print(signs.to_string(index=False))
+
+if not WRITE_DECISIONS:
+    line, written = "WRITE_DECISIONS is False, so decisions.csv was not opened", []
+    print()
+    print(line)
+else:
+    line, written = SV.write_signs(sv.folder, MEASURED)
+    print()
+    print(line)
+    for w in written:
+        print("   wrote %s" % w)
+    if not written:
+        print("   no cell to write: every sign the rule decided is already decided in the file")
+
+AFTER = SV.load_survey(SURVEY).decisions.set_index("site")
+open_now, over_written, wrong_value, not_written = [], [], [], []
+for s in CHOSEN:
+    if s not in AFTER.index:
+        continue
+    for ch, col in (("Hx", SIGN_COLS[0]), ("Hz", SIGN_COLS[1])):
+        was = str(BEFORE.loc[s, col]).strip() if s in BEFORE.index else ""
+        now = str(AFTER.loc[s, col]).strip()
+        rule = MEASURED[s][col][0] if s in MEASURED else None
+        if now.lower() == "decide":
+            open_now.append("%s %s: %s" % (s, col, MEASURED[s][col][1] if s in MEASURED else "not measured"))
+            if WRITE_DECISIONS and rule is not None:
+                not_written.append("%s %s" % (s, col))
+        elif was != now:
+            if was.lower() != "decide":
+                over_written.append("%s %s: %s -> %s" % (s, col, was, now))
+            elif rule is None or now != "%+d" % int(rule):
+                wrong_value.append("%s %s: holds %s, the rule read %s" % (s, col, now, rule))
+print()
+print("still open after this cell, with the reason each was not decided:")
+for lnn in open_now[:20]:
+    print("   %s" % lnn)
+if not open_now:
+    print("   none: every chosen site carries a decided sign_hx and sign_hz")
+
+print()
+if not WRITE_DECISIONS:
+    print("VERDICT: UNJUDGED -- WRITE_DECISIONS is False, so no cell was asked for and none was written; "
+          "the %d sign(s) the rule decided are the reading above and decisions.csv is untouched"
+          % sum(1 for s in MEASURED for v, _w in MEASURED[s].values() if v is not None))
+elif over_written or wrong_value or not_written:
+    print("VERDICT: FAIL -- %d cell(s) that did not read decide were overwritten (%s); %d hold a value the "
+          "rule did not measure (%s); %d the rule decided are still decide (%s)"
+          % (len(over_written), "; ".join(over_written[:6]) or "none",
+             len(wrong_value), "; ".join(wrong_value[:6]) or "none",
+             len(not_written), ", ".join(not_written[:8]) or "none"))
+else:
+    print("VERDICT: PASS -- %d sign cell(s) were written over %d chosen site(s), every one of them a cell "
+          "that read decide, every one now holding the value the rule measured, and the %d cell(s) the rule "
+          "could not decide are still decide and named above"
+          % (len(written), len(CHOSEN), len(open_now)))
 '''),
 
 ("md", r"""## Band coherence (figure 02) and the electric lines

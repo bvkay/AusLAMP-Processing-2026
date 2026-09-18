@@ -58,8 +58,12 @@ observatory:
 release_mth5: {}
 instrument_register: ""
 
-# Every dipole is on a deployment sheet, so no default is needed.
-dipole_default: {}
+# The arm lengths in metres. An EDL raw folder records none: they are on the deployment sheet, transcribed
+# into the CSV below with its date and its per-site confidence, which is what `source` carries into every
+# transfer function's dipole_source. Workbook 01 fills an empty or assumed cell of sites.csv from it.
+dipoles:
+  table: dipoles.csv
+dipole_default: {}          # no default is needed: the sheet has every site
 
 # The deployment sheet position, compared in workbook 01 and never used as a value. The sheets were
 # transcribed into phase1_master.csv on 2026-09-05.
@@ -98,7 +102,11 @@ pool:
                                # noise floor, which spans five decades across a fleet
   own_ratio: 100               # a chunk is a candidate event above this multiple of the site's own median
   fleet_excess: 10             # ... and only where it also exceeds this multiple of the fleet's median
-  min_fleet: 3                 # below this many other sites recording, the site's own threshold decides alone
+  min_fleet: 3                 # the event test is fleet-normalised, so it needs this many other sites
+                               # with a scan to ask: a chunk recorded while fewer than this many
+                               # others were running carries no corroboration and is flagged, and a
+                               # run scoped to fewer than this many sites in all turns the event
+                               # limb OFF and judges the pool on its baseline alone
   event_frac_max: 0.02         # clean: at most this fraction of chunks flagged
   baseline_max: 10             # clean: at most this multiple of the survey median baseline
   e_burst_ratio: 100           # an E burst: this multiple of the line's own median band power

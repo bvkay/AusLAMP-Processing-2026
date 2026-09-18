@@ -17,6 +17,12 @@ holding a value write it: a workbook that computed nothing leaves the cell empty
 survives, and an analyst's own write fills the cell. diff_tables reports the cells that differ between two
 versions of a table.
 
+A table with a header and no rows is created, not preserved. surveys/_template ships sites.csv and
+decisions.csv as header-only stubs so that the column lists are visible in the template, so copying the
+template makes both files exist holding nothing; a stub that was preserved would leave a new survey with
+empty tables for ever. write_table and is_stub both read a header with no row as a file waiting to be
+written.
+
 @author: ben kay (ben@auscope.org.au)
 """
 from __future__ import annotations
@@ -146,14 +152,31 @@ def validate(survey: Survey) -> list[str]:
     return out
 
 
+def is_stub(path: Path, columns: list[str] | None = None) -> bool:
+    """True where `path` is absent or holds a header and no row.
+
+    The template ships sites.csv and decisions.csv as header-only stubs, so a copied template makes both
+    files exist. A stub is a file waiting to be written and not a table to be preserved, which is what lets
+    workbook 01's "created once if it does not exist" fire on a fresh survey.
+    """
+    path = Path(path)
+    if not path.exists():
+        return True
+    return not len(_read(path, list(columns or [])))
+
+
 def write_table(path: Path, new: pd.DataFrame, columns: list[str], key: str = "site") -> str:
     """Write `new` to `path`, keeping a stored assume: or decide cell only where the incoming cell is empty.
 
     A cell set to assume:<value> or left at decide is an input and not a computed value, so a workbook
     that computed nothing must not blank it, which is the case where the incoming cell is empty. A caller
     holding an actual value has measured something and writes it, which is how an analyst's own write fills
-    a `decide` cell. Returns one line describing what was written.
+    a `decide` cell.
+
+    A file holding a header and no row is a stub and is created rather than preserved: there is no stored
+    cell in it to keep. Returns one line describing what was written.
     """
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # object dtype: a column holds 50.0 at one site and 'assume:50' at the next, which no typed column accepts
     out = new.reindex(columns=columns).astype(object)
@@ -161,7 +184,11 @@ def write_table(path: Path, new: pd.DataFrame, columns: list[str], key: str = "s
     if not path.exists():
         out.to_csv(path, index=False)
         return "created %s (%d rows)" % (path.name, len(out))
-    old = _read(path, columns).set_index(key)
+    old = _read(path, columns)
+    if not len(old):
+        out.to_csv(path, index=False)
+        return "created %s (%d rows; the file held a header and no row)" % (path.name, len(out))
+    old = old.set_index(key)
     kept = 0
     for i, r in out.iterrows():
         k = r[key]
@@ -291,6 +318,50 @@ def read_reference(spec: dict, path_key: str = "table", columns_key: str = "colu
     return pd.DataFrame({k: raw[v].values for k, v in cm.items() if v in raw.columns})
 
 
+def dipole_default(cfg: dict, instrument: str = "") -> tuple:
+    """(metres, reason) for the arm length a survey uses where nothing records one, or (None, "").
+
+    Two spellings are read, newest first. `dipoles.default_m` with `dipoles.reason` is one default for the
+    survey; `dipole_default: {<instrument>: {value: <metres>, reason: <text>}}` is the per-instrument form.
+    Both are written into sites.csv as `assume:<metres>` with the reason in dipole_source, because an arm
+    length nothing recorded is an assumption and apparent resistivity goes as its square.
+    """
+    dip = (cfg or {}).get("dipoles") or {}
+    if dip.get("default_m") not in (None, ""):
+        return float(dip["default_m"]), str(dip.get("reason") or "")
+    blk = ((cfg or {}).get("dipole_default") or {}).get(instrument) or {}
+    if blk.get("value") not in (None, ""):
+        return float(blk["value"]), str(blk.get("reason") or "")
+    return None, ""
+
+
+DIPOLE_TABLE_COLUMNS = ["site", "dipole_n_m", "dipole_e_m", "source"]
+
+
+def dipole_table(cfg: dict, folder=None) -> pd.DataFrame:
+    """The arm lengths survey.yaml `dipoles.table` names, as site, dipole_n_m, dipole_e_m, source.
+
+    An EDL raw folder records no arm length: the lengths are on the deployment sheet, so a survey names the
+    CSV they were transcribed into. A relative path is read against the survey folder, which is where a
+    small sheet CSV belongs. A missing path or a missing file returns an empty frame and the caller falls
+    back on the default.
+    """
+    dip = (cfg or {}).get("dipoles") or {}
+    name = str(dip.get("table") or "").strip()
+    if not name:
+        return pd.DataFrame(columns=DIPOLE_TABLE_COLUMNS)
+    path = Path(name)
+    if not path.is_absolute() and folder is not None:
+        path = Path(folder) / name
+    if not path.exists():
+        return pd.DataFrame(columns=DIPOLE_TABLE_COLUMNS)
+    raw = pd.read_csv(path, dtype=str, keep_default_na=False)
+    cols = dip.get("columns") or {}
+    out = pd.DataFrame({c: raw[cols.get(c, c)].values for c in DIPOLE_TABLE_COLUMNS
+                        if cols.get(c, c) in raw.columns})
+    return out.reindex(columns=DIPOLE_TABLE_COLUMNS).fillna("")
+
+
 def select_sites(survey: Survey, spec, max_sites: int = 0, groups_csv=None) -> tuple[list[str], str]:
     """The sites a workbook was asked for, and one line saying where the set came from.
 
@@ -327,3 +398,54 @@ def blank_decisions(sites: list[str]) -> pd.DataFrame:
     """A decisions table with 'decide' in every cell except the site name."""
     rows = [{c: (s if c == "site" else DECIDE) for c in DECISIONS_COLUMNS} for s in sites]
     return pd.DataFrame(rows, columns=DECISIONS_COLUMNS)
+
+
+def write_signs(folder, decided: dict, dated: str = "") -> tuple:
+    """Write measured signs into decisions.csv, into cells that read `decide` and into no others.
+
+    `decided` is {site: {sign column: (+1 or -1 or None, the reason)}}, as a workbook's own test measured
+    it. A value of None was not judged and is not written, so the cell stays `decide` and is reported open.
+    A cell already holding a value or an `assume:` is the analyst's and is never overwritten, whoever
+    measured what: the test is a reading beside it, not a ruling over it.
+
+    `sign_source` gets one clause per sign written, each naming the column, the value, what measured it and
+    the date; where the cell already carries a source, the new clause is appended after a pipe rather than
+    replacing what somebody else recorded.
+
+    Returns (the line write_table wrote, ['<site> <column> <value>', ...]).
+    """
+    from datetime import datetime, timezone
+    folder = Path(folder)
+    path = folder / "decisions.csv"
+    stored = _read(path, DECISIONS_COLUMNS)
+    if not len(stored) or "site" not in stored.columns:
+        return "%s holds no row, so no sign was written" % path.name, []
+    dated = dated or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # the stored table, with only the cells this call writes changed: write_table restores a `decide` or an
+    # `assume:` over a blank incoming cell, but a plain value over a blank one is lost, so a caller meaning
+    # to change three cells hands back every other cell as it found it
+    out = stored.copy().astype(object)
+    written = []
+    for i in range(len(stored)):
+        site = str(stored.at[i, "site"])
+        clauses = []
+        for col, got in sorted((decided.get(site) or {}).items()):
+            value, reason = got
+            if value is None or col not in DECISIONS_COLUMNS:
+                continue
+            if str(stored.at[i, col]).strip().lower() != DECIDE:
+                continue
+            out.at[i, col] = "%+d" % int(value)
+            clauses.append("%s %+d from %s" % (col, int(value), reason))
+            written.append("%s %s %+d" % (site, col, int(value)))
+        if not clauses:
+            continue
+        line = "%s, %s" % ("; ".join(clauses), dated)
+        old = str(stored.at[i, "sign_source"]).strip()
+        out.at[i, "sign_source"] = line if old.lower() in ("", "nan", "none", DECIDE) else "%s | %s" % (old,
+                                                                                                       line)
+    if not written:
+        # a run that decided nothing new leaves the file shut: rewriting a tracked table byte for byte on
+        # every run is churn, and a line saying it was rewritten when nothing was is noise
+        return "no sign to write: %s was not opened" % path.name, []
+    return write_table(path, out, DECISIONS_COLUMNS), written

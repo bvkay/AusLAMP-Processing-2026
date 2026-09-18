@@ -12,7 +12,8 @@ workbooks open on. The raw time series are not in this repository: point `raw_ro
 `surveys/<survey>/survey.yaml` at where they live on your machine. The survey folders of Phases 2 (18 sites,
 March-May 2026) and 3 (15 sites, June-July 2026) are included as filled-in examples of survey.yaml, sites.csv
 and decisions.csv; their raw is not shipped either. To run your own survey, copy `surveys/_template/` and
-point it at your own raw folder.
+point it at your own raw folder; `surveys/_template/SITES_COLUMNS.md` says what every cell of every table
+means and which workbook writes it.
 
 Author: Ben Kay (bvkay). Started 2026-09-13; re-cut for the workbook layout 2026-09-16.
 
@@ -52,10 +53,17 @@ leaves every other site alone.
 Each workbook is generated from its own module -- `generator/wb01_survey.py` to `generator/wb05_final.py`,
 each holding that workbook as one Python list of markdown and code cells -- which
 `generator/make_workbooks.py` imports and writes into `workbooks/`. A workbook is executed in place by
-`generator/run_workbooks.py`, which fails on a non-zero nbconvert exit, on any cell carrying an error output
-and on any code cell that was not run. A student changes the parameter cell of a notebook (the site, the survey,
-a threshold) and runs it; a change to what a workbook does is made in its module and the notebook regenerated,
-because the modules are the source the shipped notebooks are checked against.
+`generator/run_workbooks.py`, which reports whether the notebook EXECUTED -- it fails on a non-zero nbconvert
+exit, on any cell carrying an error output and on any code cell that was not run -- and counts the verdicts
+the workbook itself printed beside it, N PASS, M FAIL, K UNJUDGED. A green runner line and a FAIL verdict
+are different statements and both are printed.
+
+A student changes the parameter cell of a notebook (the site, the survey, a threshold) and runs it in place;
+the notebook is the student's working copy and its parameter cell is the record of what was run. A
+maintainer keeping the shipped notebooks as the repository executed them runs a copy instead, with
+`--survey <name>` and `--set NAME=VALUE`, which leaves `workbooks/` untouched. A change to what a workbook
+DOES is made in its module and the notebook regenerated, because the modules are the source the shipped
+notebooks are checked against.
 
 ## Frame and units
 
@@ -81,7 +89,7 @@ electric line.
     workbooks/        the five workbooks a student opens, one site at a time after the survey
     generator/        one module per workbook (the cells as Python lists), the generator that writes workbooks/ and the runner
     surveys/          one folder per survey: survey.yaml, sites.csv, decisions.csv, SITES_COLUMNS.md in _template/
-    tools/            one-off builders: the coastline the map draws, the sheet cells merged into a survey's tables
+    tools/            one-off builders: the coastline the map draws, and the decisions table a survey worked on before arrives with
     tests/            pytest over the raw readers, the register, the selection rule and the regression the delivery must reproduce
 
 ## Status
@@ -89,6 +97,20 @@ electric line.
 A verdict a run reports honestly over a condition the survey itself carries is named in that survey's
 `survey.yaml` under `checks.retained_failures`, with the workbook, the site and the reason. The conventions
 test reads them and excuses no other FAIL.
+
+2026-09-18: a new survey is served by the template alone. The template's two tables ship as header-only
+stubs and a header with no row is now created rather than preserved, so workbook 01 writes them on a copied
+template. Workbook 02 measures `sign_hx` and `sign_hz` from the DC test against IGRF and workbook 03
+measures `sign_ex` and `sign_ey` from the phase quadrant of the site's own remote-reference transfer
+function; each writes only into cells that read `decide`, and workbook 03 remakes that site's transfer
+functions under what it wrote. `survey.yaml` gains `dipoles`, the deployment sheet's arm lengths or one
+default with its reason, which is the path an EDL survey has from the field to `sites.csv`;
+`tools/build_queensland_sites.py` is gone, because its dipole duty is that block and its other columns --
+serials, azimuths, notes, the campaign's signs and remotes -- were a one-off already applied to the three
+shipped tables, each cell carrying its own `*_source`, and it could not be pointed at a new survey.
+Workbook 01 refuses to use `decide` as an IAGA code and names the observatory to write. A run over fewer
+than `pool.min_fleet` other sites turns the fleet-normalised event test off rather than flagging everything,
+and workbook 03 reads a pool of two without a traceback.
 
 2026-09-17: the five workbooks are cut from the six that preceded them -- the survey, the records, one site's
 references and transfer functions, one site in depth, and one site's final transfer function -- and the

@@ -18,6 +18,14 @@ than `fleet_excess` = 10 times the median of the others. A substorm lifts every 
 same ten minutes and is signal; a power-cycle or a vehicle lifts one. The site's own median cannot tell them
 apart and the fleet can.
 
+The test needs a fleet to normalise against, so where the set it is given holds fewer than `min_fleet` = 3
+other sites with a scan, it is OFF and no chunk is flagged as an event: the site's own threshold alone
+cannot tell a substorm from a power-cycle, and applying it alone flags every large chunk of every site and
+empties the pool. `fleet_normalised` answers whether it ran, `clean_row` reports it in `note`, and the
+baseline limb is scored as usual, being a comparison between sites and not within one. The per-chunk
+`min_fleet` term is separate and still applies: inside a survey that has a fleet, an hour when fewer than
+three others were recording carries no corroboration either.
+
 The clean test is two limbs and neither implies the other: event fraction <= 0.02 of
 the 600 s chunks, and baseline <= 10 times the survey median, on both H channels, judged on the rotated
 record. The first catches a site that is fine except for a power-cycle; the second catches a site that never
@@ -184,21 +192,40 @@ def fleet_series(sites, work_root, channels=H):
     return t_lo, chunk_s, med, n_rec.astype(int)
 
 
+def fleet_normalised(site: str, fleet_sites, work_root, cfg=None) -> tuple:
+    """(True where the event test can be normalised against a fleet, the others with a scan).
+
+    The test asks whether the rest of the array saw what this site saw, so it needs `min_fleet` others with
+    a scan to ask. A run scoped to a handful of sites has none, and the test is off rather than falling back
+    on the site's own threshold, which flags every large chunk of every site.
+    """
+    p = params(cfg or {})
+    others = [s for s in fleet_sites if s != site and load_series(s, work_root) is not None]
+    return len(others) >= int(p["min_fleet"]), others
+
+
 def flag_chunks(site: str, fleet_sites, work_root, cfg=None, keep_chunks=None):
     """(t0, chunk_s, bad) -- the per-chunk event flags of one site, before any merging.
 
     `keep_chunks` is an optional boolean over the site's own chunks; chunks it excludes are never flagged and
     are not counted, which is how a rotation drop is kept out of the site's own score.
+
+    Where the set holds fewer than `min_fleet` other sites with a scan, the test is off and nothing is
+    flagged (`fleet_normalised`).
     """
     p = params(cfg or {})
     r = load_series(site, work_root)
     if r is None:
         return None
     t0, chunk_s, pw = r
-    others = [s for s in fleet_sites if s != site]
-    fl = fleet_series(others, work_root) if others else None
+    on, others = fleet_normalised(site, fleet_sites, work_root, cfg)
     n = len(pw["Hx"])
     bad = np.zeros(n, bool)
+    if not on:
+        return t0, chunk_s, bad
+    fl = fleet_series(others, work_root)
+    if fl is None:                               # every other site's scan went missing between the two reads
+        return t0, chunk_s, bad
     for c in H:
         x = np.asarray(pw[c], float)
         med = np.nanmedian(x)
@@ -206,9 +233,6 @@ def flag_chunks(site: str, fleet_sites, work_root, cfg=None, keep_chunks=None):
             continue
         own = np.isfinite(x) & (x > p["own_ratio"] * med)
         if not own.any():
-            continue
-        if fl is None:
-            bad |= own
             continue
         gt0, gcs, gmed, gn = fl
         if abs(chunk_s - gcs) <= 1e-9:
@@ -338,21 +362,34 @@ def baseline_ratio(site: str, sites, work_root, keep_chunks=None):
 
 
 def clean_row(site: str, sites, work_root, cfg=None, keep_chunks=None) -> dict:
-    """The clean test of one site with both its numbers and the reason it failed, if it did."""
+    """The clean test of one site with both its numbers and the reason it failed, if it did.
+
+    Where fewer than `min_fleet` other sites carry a scan the event limb is off and `note` says so; the
+    site is then judged on its baseline alone, and `judged` asks whether it has a scan at all.
+    """
     p = params(cfg or {})
-    f = event_fraction(site, sites, work_root, cfg, keep_chunks)
+    on, others = fleet_normalised(site, sites, work_root, cfg)
+    f = event_fraction(site, sites, work_root, cfg, keep_chunks) if on else None
     b = baseline_ratio(site, sites, work_root, keep_chunks)
-    why = []
-    if f is None:
-        why.append("no chunk scored")
-    elif f > p["event_frac_max"]:
-        why.append("event fraction %.4f > %.2f" % (f, p["event_frac_max"]))
+    scanned = load_series(site, work_root) is not None
+    why, note = [], ""
+    if on:
+        if f is None:
+            why.append("no chunk scored")
+        elif f > p["event_frac_max"]:
+            why.append("event fraction %.4f > %.2f" % (f, p["event_frac_max"]))
+    else:
+        note = ("the fleet-normalised event test is off: %d other site(s) carry a scan, below "
+                "pool.min_fleet = %d, so this site is judged on its baseline alone"
+                % (len(others), int(p["min_fleet"])))
+        if not scanned:
+            why.append("no scan")
     if b is None:
         why.append("no baseline")
     elif b > p["baseline_max"]:
         why.append("baseline %.1fx > %.0fx the survey median" % (b, p["baseline_max"]))
     return dict(site=site, event_frac=f, baseline=b, clean=not why, reason="; ".join(why),
-                judged=f is not None)
+                judged=(f is not None) if on else scanned, fleet_normalised=on, note=note)
 
 
 # ----------------------------------------------------------------- the mask

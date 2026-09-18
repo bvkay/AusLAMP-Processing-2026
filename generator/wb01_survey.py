@@ -325,12 +325,22 @@ else:
 ("md", r"""## Instruments, dipoles and gains
 
 The serial comes from the LEMI `.INF` `%LEMI424 #NNNN` block where the site has one, and from the release
-MTH5 `data_logger.id` where it does not; `serial_source` says which. The dipole lengths come from the `.INF`
-`%L1` and `%L2` where they exist and from the release MTH5 `dipole_length` otherwise. Where a survey records
-no dipole at all the cell reads `assume:<value>` with its reason, and that assumption is carried into the
-provenance of every transfer function the site delivers until a sheet replaces it. An EDL survey holds
-neither: its dipoles and serials are on the deployment sheet, they were merged into
-`surveys/<SURVEY>/sites.csv` with their source, and the cell above carried them over.
+MTH5 `data_logger.id` where it does not; `serial_source` says which.
+
+The dipole lengths come from four places, in this order, and `dipole_source` always says which:
+
+| order | where from | when |
+|---|---|---|
+| 1 | the cell `surveys/<SURVEY>/sites.csv` already holds | a re-run: an arm length is a field fact and is never recomputed |
+| 2 | the LEMI `.INF` `%L1` and `%L2`, or the release MTH5 `dipole_length` | where the instrument or the release wrote one |
+| 3 | `survey.yaml` `dipoles.table` | a CSV of `site, dipole_n_m, dipole_e_m, source`; the expected source is the deployment sheet, transcribed with its date |
+| 4 | `survey.yaml` `dipoles.default_m` with `dipoles.reason` | nothing above records one: the cell reads `assume:<metres>` and the reason travels with it |
+
+An EDL raw folder records no arm length at all, so an EDL survey is on rows 3 and 4 and there is no other
+path from the field to the table. Apparent resistivity goes as the square of the length -- a 100 m guess
+against a true 50 m is a factor of four -- so an assumed length is named as an assumption in the cell below,
+in `dipole_source`, and in the provenance of every transfer function the site delivers, until a sheet
+replaces it.
 
 Azimuths are the arm bearings as the sheet records them where a sheet exists, and otherwise nominal, 0 deg for
 the north arm and 90 deg for the east arm in the instrument frame, which is what the logger wrote and not a
@@ -352,6 +362,46 @@ for col, val in nominal.items():
     if col not in sites_scan.columns:
         sites_scan[col] = ""
     sites_scan[col] = [val if SV.is_empty(v) else v for v in sites_scan[col]]
+
+# survey.yaml `dipoles`: the deployment sheet's lengths where it names a CSV, and assume:<default> where it
+# does not. A cell the instrument, the release or a previous run already filled is left alone, because an
+# arm length is a field fact and a re-run of the discovery cannot measure one
+DIP = SV.dipole_table(sv.cfg, sv.folder)
+dip_by_site = DIP.set_index("site") if len(DIP) else None
+from_table, assumed_sites, still_empty = [], [], []
+for i, r in sites_scan.iterrows():
+    site = r["site"]
+    held = not SV.is_empty(r["dipole_n_m"]) and not str(r["dipole_n_m"]).lower().startswith(SV.ASSUME)
+    if held:
+        continue                                    # rows 1 and 2: already measured, with its own source
+    if dip_by_site is not None and site in dip_by_site.index:
+        d = dip_by_site.loc[site]
+        if not SV.is_empty(d["dipole_n_m"]) and not SV.is_empty(d["dipole_e_m"]):
+            sites_scan.at[i, "dipole_n_m"] = "%g" % float(d["dipole_n_m"])
+            sites_scan.at[i, "dipole_e_m"] = "%g" % float(d["dipole_e_m"])
+            sites_scan.at[i, "dipole_source"] = str(d["source"] or (sv.cfg.get("dipoles") or {}).get("table"))
+            from_table.append(site)
+            continue
+    value, reason = SV.dipole_default(sv.cfg, r["instrument"])   # <- survey.yaml dipoles.default_m
+    if value is None:
+        still_empty.append(site)
+        continue
+    sites_scan.at[i, "dipole_n_m"] = "assume:%g" % value
+    sites_scan.at[i, "dipole_e_m"] = "assume:%g" % value
+    sites_scan.at[i, "dipole_source"] = reason
+    assumed_sites.append(site)
+print()
+print("dipoles: %d site(s) from survey.yaml dipoles.table (%s), %d assumed from dipoles.default_m, %d "
+      "already carried a length, %d carry none"
+      % (len(from_table), (sv.cfg.get("dipoles") or {}).get("table") or "no table named", len(assumed_sites),
+         len(sites_scan) - len(from_table) - len(assumed_sites) - len(still_empty), len(still_empty)))
+if assumed_sites:
+    print("   ASSUMED, so every apparent resistivity of these sites is on a length nobody recorded:")
+    print("   %s" % " ".join(assumed_sites))
+    print("   %s" % str(sites_scan.dipole_source[sites_scan.site == assumed_sites[0]].iloc[0])[:150])
+if still_empty:
+    print("   no length and no default: %s" % " ".join(still_empty))
+
 print()
 print(sites_scan[["site", "instrument", "serial", "serial_source", "firmware", "sample_rate_hz",
                   "dipole_n_m", "dipole_e_m", "dipole_source", "azimuth_n_deg",
@@ -452,8 +502,14 @@ else:
 `sites_discovered.csv` is written to the work root on every run. `surveys/<SURVEY>/sites.csv` is created once
 and then left alone: on a later run the cells that differ are printed and the file is not touched, because a
 cell a person has set to `assume:<value>` or left at `decide` is a standing instruction and not a value to be
-recomputed (`auslamp_proc.survey.write_table`). `decisions.csv` is created with `decide` in every cell if it
-does not exist.
+recomputed (`auslamp_proc.survey.write_table`). `decisions.csv` is created with `decide` in every cell the
+same way.
+
+"Created once" means created where the file is absent OR holds a header and no row.
+`surveys/_template/` ships both tables as header-only stubs, so that the column lists are visible in the
+template, and a copy of the template is therefore a survey in which both files exist holding nothing. A stub
+that was preserved would leave a new survey with empty tables for ever, so a header with no row is read as a
+file waiting to be written (`auslamp_proc.survey.is_stub`).
 
 The comparison below is a regression against site tables built by other code, named in survey.yaml
 `regression`: `regression.sites` carries the positions and `regression.times` the spans, which in some
@@ -491,14 +547,16 @@ site_table.to_csv(disc_path, index=False)
 WRITTEN.append(disc_path)
 print("wrote %s (%d rows, %d columns)" % (disc_path, len(site_table), len(site_table.columns)))
 
-if not (sv.folder / "sites.csv").exists():
+# a header with no row is a stub and not a table: surveys/_template ships both files that way so that the
+# column lists are visible in it, so a copied template is a survey whose tables have yet to be written
+if SV.is_stub(sv.folder / "sites.csv", SV.SITES_COLUMNS):
     print(SV.write_table(sv.folder / "sites.csv", site_table, SV.SITES_COLUMNS))
 else:
     delta = SV.diff_tables(SV.load_survey(SURVEY).sites, site_table)
     print("surveys/%s/sites.csv exists and is left alone; %d cells differ from this run" % (SURVEY, len(delta)))
     if len(delta):
         print(delta.head(40).to_string())
-if not (sv.folder / "decisions.csv").exists():
+if SV.is_stub(sv.folder / "decisions.csv", SV.DECISIONS_COLUMNS):
     SV.blank_decisions(list(site_table.site)).to_csv(sv.folder / "decisions.csv", index=False)
     print("created decisions.csv with 'decide' in every cell")
 else:
@@ -822,47 +880,95 @@ Coverage is read from the parquet row-group statistics in the file footer and no
 (`auslamp_proc.observatory.coverage`): a year file is 380 MB, and the question is only whether a day is there.
 A day is counted present when it holds at least half of its 86,400 samples.
 
-With `FETCH` False the days the archive lacks are listed and nothing is downloaded.
+The coverage of every observatory over this survey's span is read, nearest first, so the choice is made on
+what the archive holds and not on distance alone. Where `survey.yaml` `observatory.code` still reads
+`decide` the cell names the nearest one with full coverage and stops there: `decide` is not an IAGA code,
+and asking the archive for an observatory called DECIDE finds nothing and reports it as 44 absent days,
+which reads as a data fault rather than as an unfilled field. Write the code the cell names into
+`surveys/<SURVEY>/survey.yaml` and run this workbook again.
 
-**This check fails if any day of the survey's span is absent from the archive for the chosen code.**"""),
+`observatory.archive` is a path on this machine, like `raw_root` and `work_root`. Where the archive holds
+none of the span at any observatory, set `FETCH` True and run this cell again: it downloads the days from
+the INTERMAGNET GIN, one request per day.
 
-("code", '''code = (sv.cfg.get("observatory") or {}).get("code", "")
+**This check fails if `survey.yaml` names no observatory code, or if any day of the survey's span is absent
+from the archive for the code it names.**"""),
+
+("code", '''code = str((sv.cfg.get("observatory") or {}).get("code", "")).strip()
 archive = (sv.cfg.get("observatory") or {}).get("archive", "")
 lat0, lon0 = sites_scan.lat.mean(), sites_scan.lon.mean()
-print("survey centroid %.3f, %.3f" % (lat0, lon0))
-for c, name, km in geo.observatory_distances(lat0, lon0):
-    print("   %-4s %-32s %8.1f km%s" % (c, name, km, "   <- survey.yaml observatory.code" if c == code else ""))
-
 start, end = sp.start.min().date(), sp.end.max().date()
-cov = observatory.coverage(code, start, end, archive)
-cov_path = OUT / "observatory_coverage.csv"
-cov.to_csv(cov_path, index=False)
-WRITTEN.append(cov_path)
-print()
-print("%s coverage %s .. %s: %d days, %d present, %d absent"
-      % (code, start, end, len(cov), int(cov.present.sum()), int((~cov.present).sum())))
-month = cov.assign(month=pd.to_datetime(cov.day).dt.to_period("M")).groupby("month").agg(
-    days=("present", "size"), present=("present", "sum"))
-month["absent"] = month.days - month.present
-print(month.to_string())
+print("survey centroid %.3f, %.3f; the span is %s .. %s" % (lat0, lon0, start, end))
+print("archive      %s  (a path on THIS machine)" % archive)
 
-missing = observatory.missing_days(code, start, end, archive)
-plan = observatory.fetch_missing(code, start, end, archive, dry_run=not FETCH)   # <- FETCH True downloads them
+# every observatory's coverage over the span, nearest first: a footer read per observatory-year, so the
+# choice is made on what the archive holds and not on distance alone
+OPEN_CODE = code.lower() in ("", "decide", "none", "nan")
+cov_rows, cov_of = [], {}
+for c, name, km in geo.observatory_distances(lat0, lon0):
+    cv = observatory.coverage(c, start, end, archive)
+    cov_of[c] = cv
+    cov_rows.append(dict(code=c, observatory=name, km=round(km, 1), days=len(cv),
+                         present=int(cv.present.sum()), absent=int((~cv.present).sum()),
+                         chosen=("survey.yaml observatory.code" if c == code.upper() else "")))
+cov_table = pd.DataFrame(cov_rows)
 print()
-print("days FETCH would download: %d%s" % (len(plan), (" (first %s)" % plan[0][0]) if plan else ""))
-for day, url in plan[:5]:
-    print("   %s  %s" % (day, url))
-print()
-if len(cov) == 0:
-    print("VERDICT: UNJUDGED -- the survey span produced no days to check")
-elif missing:
-    print("VERDICT: FAIL -- %d of %d days of %s .. %s are absent from the %s archive: %s%s"
-          % (len(missing), len(cov), start, end, code,
-             ", ".join(str(d) for d in missing[:10]), " ..." if len(missing) > 10 else ""))
+print("the one-second coverage of every observatory over this survey's span, nearest first")
+print(cov_table.to_string(index=False))
+full = cov_table[cov_table.absent == 0]
+nearest_full = str(full.code.iloc[0]) if len(full) else ""
+
+if OPEN_CODE:
+    # `decide` is not an IAGA code. The archive would be asked for an observatory called DECIDE and would
+    # report every day absent, which reads as a data fault; the field is unfilled and this says so
+    print()
+    print("survey.yaml observatory.code reads %r, which is not an IAGA code." % (code or "<empty>"))
+    if nearest_full:
+        print("Write   code: %s   into surveys/%s/survey.yaml and run this workbook again: %s is the "
+              "nearest observatory whose archive covers the whole span, %.1f km from the centroid."
+              % (nearest_full, SURVEY, nearest_full, float(full.km.iloc[0])))
+    else:
+        print("No observatory covers the whole span in this archive. Set FETCH = True and run this cell "
+              "again to download the days one of them lacks, or write   code: none   if this survey is to "
+              "be processed without an observatory reference.")
+    print()
+    print("VERDICT: FAIL -- survey.yaml names no observatory: observatory.code reads %r and no code was "
+          "read from the archive under it. The choice is %s; %d of the %d observatories cover the whole "
+          "span (%s)"
+          % (code or "<empty>", nearest_full or "none of them, so FETCH or code: none", len(full),
+             len(cov_table), ", ".join(full.code) or "none"))
 else:
-    print("VERDICT: PASS -- all %d days of %s .. %s are present in the %s archive, %.1f km from the survey "
-          "centroid; the thinnest day holds %d of 86400 samples"
-          % (len(cov), start, end, code, geo.distance_km((lat0, lon0), code), int(cov.n_samples.min())))
+    cov = cov_of.get(code.upper())
+    if cov is None:
+        cov = observatory.coverage(code, start, end, archive)
+    cov_path = OUT / "observatory_coverage.csv"
+    cov.to_csv(cov_path, index=False)
+    WRITTEN.append(cov_path)
+    print()
+    print("%s coverage %s .. %s: %d days, %d present, %d absent"
+          % (code, start, end, len(cov), int(cov.present.sum()), int((~cov.present).sum())))
+    month = cov.assign(month=pd.to_datetime(cov.day).dt.to_period("M")).groupby("month").agg(
+        days=("present", "size"), present=("present", "sum"))
+    month["absent"] = month.days - month.present
+    print(month.to_string())
+
+    missing = observatory.missing_days(code, start, end, archive)
+    plan = observatory.fetch_missing(code, start, end, archive, dry_run=not FETCH)  # <- FETCH downloads them
+    print()
+    print("days FETCH would download: %d%s" % (len(plan), (" (first %s)" % plan[0][0]) if plan else ""))
+    for day, url in plan[:5]:
+        print("   %s  %s" % (day, url))
+    print()
+    if len(cov) == 0:
+        print("VERDICT: UNJUDGED -- the survey span produced no days to check")
+    elif missing:
+        print("VERDICT: FAIL -- %d of %d days of %s .. %s are absent from the %s archive: %s%s"
+              % (len(missing), len(cov), start, end, code,
+                 ", ".join(str(d) for d in missing[:10]), " ..." if len(missing) > 10 else ""))
+    else:
+        print("VERDICT: PASS -- all %d days of %s .. %s are present in the %s archive, %.1f km from the "
+              "survey centroid; the thinnest day holds %d of 86400 samples"
+              % (len(cov), start, end, code, geo.distance_km((lat0, lon0), code), int(cov.n_samples.min())))
 '''),
 
 ("md", r"""## What was written"""),

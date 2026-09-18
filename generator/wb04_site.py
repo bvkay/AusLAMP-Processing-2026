@@ -15,7 +15,10 @@ BASELINE_KIND = "remote"      # the reference every form is built on: remote | s
 RATES = [1, 10]               # [1] is the 1 Hz lane alone; 10 adds the short end of section 5
 COMPONENTS = ["xy", "yx"]     # the components the windows and the forms are read for
 REDO = False                  # True remakes a form whose EDI is already in the run folder
-WRITE_DECISIONS = False       # decisions are Ben's: True writes the proposed cells into decisions.csv
+WRITE_DECISIONS = False       # False by default, unlike workbooks 02 and 03. Those two MEASURE a sign and
+                              # write it into a cell that reads `decide`; this one PROPOSES the `windows`
+                              # and `flags` cells, which are free text describing what a campaign did, so
+                              # they are the analyst's to write. True writes the proposal as it stands
 WORK_ROOT = None              # None = survey.yaml work_root; every transfer function and figure lands there
 '''
 

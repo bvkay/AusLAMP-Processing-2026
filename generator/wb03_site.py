@@ -14,6 +14,12 @@ WORK_ROOT = None              # None = survey.yaml work_root; every reference an
 KINDS = ["remote", "stack", "obs", "stack_obs"]              # the code keys of the four reference kinds
 RATES = [1, 10]               # 1 is the whole record; 10 runs on the stretch below, never the whole record
 PARAMS = "kaiser20_75"        # the Aurora parameter set: kaiser20_50 | dpss4_75 | kaiser20_w512
+WRITE_DECISIONS = True        # True writes sign_ex and sign_ey into decisions.csv from the quadrant rule
+                              # below, into cells that read `decide` and into no others, and remakes this
+                              # site's transfer functions in the same run wherever it wrote one. False
+                              # leaves them `decide`, and an undecided E sign is used as +1: a reversed
+                              # line then puts that row of the tensor in the third quadrant, where workbook
+                              # 05's phase test refuses it and the site delivers half a tensor
 REDO = False                  # True remakes a transfer function whose EDI is already on disk
 '''
 
@@ -49,7 +55,7 @@ matplotlib.use("Agg")
 from IPython.display import Image, display
 
 import auslamp_proc
-from auslamp_proc import agreement as AG, geo, readings as RD, survey as SV
+from auslamp_proc import agreement as AG, geo, look, readings as RD, survey as SV
 from auslamp_proc import transfer_functions as TFN
 from auslamp_proc.raw import cache
 from auslamp_proc.figures import process as FIGP, transfer_functions as FIG
@@ -123,7 +129,21 @@ def store(rate):
                      n_min=STACK_MIN)
 
 ST = store(RATES[0])
-OBS = (sv.cfg.get("observatory") or {}).get("code", "")
+
+# `decide` is not an IAGA code. Workbook 01 names the code to write and refuses to go on with `decide`; a
+# student who ran past that refusal would otherwise reach the archive here and be told there is no DECIDE
+# parquet, which reads as a missing file rather than as an unfilled field. The two kinds that need an
+# observatory are dropped instead, and the reason is printed where the kinds are
+OBS = str((sv.cfg.get("observatory") or {}).get("code", "")).strip()
+OBS_KINDS = ("obs", "stack_obs")
+HAS_OBS = OBS.upper() in geo.OBSERVATORIES
+NO_OBS_WHY = ""
+if not HAS_OBS:
+    NO_OBS_WHY = ("survey.yaml observatory.code reads %r, which is not one of the observatories "
+                  "auslamp_proc.geo.OBSERVATORIES holds (%s); run workbook 01, which names the code to "
+                  "write" % (OBS or "<empty>", " ".join(sorted(geo.OBSERVATORIES))))
+    KINDS = [k for k in KINDS if k not in OBS_KINDS]
+    KINDS10 = [k for k in KINDS10 if k not in OBS_KINDS]
 
 # The stamp is the launch time in UTC of the run. A run is resumed rather than restarted: where
 # <SITE>/<RUN>_<stamp>/ already exists the latest of those stamps is taken up again, so re-running this
@@ -145,7 +165,10 @@ print("10 Hz        the longest stretch with both lines above %.2f at %g-%g s, a
                                             STRETCH_MAX_H, SEED))
 print("run          %s_%s and %s_%s  ->  %s" % (RUN, STAMP, RUN10, STAMP10, SITE_DIR))
 print("engine       Aurora %s, mth5 %s" % (aurora.__version__, __import__("mth5").__version__))
-print("observatory  %s at %s" % (OBS, (sv.cfg.get("observatory") or {}).get("archive", "")))
+print("observatory  %s at %s" % (OBS or "<none>", (sv.cfg.get("observatory") or {}).get("archive", "")))
+if not HAS_OBS:
+    print("             NOT USABLE: %s" % NO_OBS_WHY)
+    print("             the kinds that need one are not built; this run makes %s" % ", ".join(KINDS))
 '''
 
 WB03 = [
@@ -182,9 +205,15 @@ The record is never cut. A mask that removes a transient is applied by giving Au
 of at least 3,600 s: cutting and concatenating puts a step at every join, and a step common to E, H and the
 reference is coherent between them, so a robust regression fits it rather than down-weighting it.
 
-Ten checks state their failure criterion in bold above the cell and print a verdict below it. A check that
-scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported as FAIL and is
-not revised afterwards.
+Eleven checks state their failure criterion in bold above the cell and print a verdict below it. A check
+that scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported as FAIL
+and is not revised afterwards.
+
+This workbook writes two cells of `decisions.csv`. The quadrant rule below decides `sign_ex` and `sign_ey`
+off this site's own remote-reference transfer function, and with `WRITE_DECISIONS` True each is written
+wherever that cell reads `decide` and this site's transfer functions are remade under it in the same run. A
+cell holding a value or an `assume:` is never overwritten, and a sign the rule could not read stays `decide`
+and is printed as open.
 
 Every step shows what it did as a figure beside the table that decided it, so a parameter can be changed for
 a re-run on what the figure shows rather than on the numbers alone; each figure's caption names the
@@ -334,6 +363,14 @@ The baseline test catches the other failure: a site that never spikes because it
 denominator is one median over every site with a scan, so the level is a property of the instrument and the
 band rather than of whoever was deployed alongside.
 
+The test needs a fleet to normalise against. Where fewer than `pool.min_fleet` = 3 OTHER sites carry a scan
+-- a run scoped to a handful of sites, or a survey of three -- the event limb is off and no chunk is flagged
+as an event, at the pool and at the mask alike: the site's own threshold cannot tell a substorm from a
+power-cycle, and applying it alone flags every large chunk of every site and empties the pool. The pool is
+then the sites with a scan, judged on the baseline limb, and the cell says so under this site's row. The
+per-chunk form of the same rule is separate and still applies inside a survey that has a fleet: an hour when
+fewer than three others were recording carries no corroboration either.
+
 The band is 20-200 s. On a 1 Hz cache the 2-20 s band sits on the anti-alias filter's roll-off and reads each
 unit's own noise floor.
 
@@ -383,8 +420,14 @@ print("%s against the two thresholds" % SITE)
 mine = scan_t[scan_t.site == SITE]
 print(mine[["site", "chunks", "days", "Hx_median", "Hy_median", "event_frac", "baseline", "clean",
             "reason"]].round(4).to_string(index=False))
-print("   event_frac %.4f against EVENT_FRAC_MAX %.4f; baseline %.2fx against BASELINE_MAX %gx"
-      % (float(mine.event_frac.iloc[0]), EVENT_FRAC_MAX, float(mine.baseline.iloc[0]), BASELINE_MAX))
+FLEET_ON = bool(pool_table.fleet_normalised.all()) if "fleet_normalised" in pool_table.columns else True
+ev = mine.event_frac.iloc[0]
+print("   event_frac %s against EVENT_FRAC_MAX %.4f; baseline %s against BASELINE_MAX %gx"
+      % ("%.4f" % float(ev) if ev is not None else "not scored", EVENT_FRAC_MAX,
+         "%.2fx" % float(mine.baseline.iloc[0]) if mine.baseline.iloc[0] is not None else "not scored",
+         BASELINE_MAX))
+if not FLEET_ON:
+    print("   %s" % str(pool_table.note.iloc[0]))
 
 unjudged = pool_table[~pool_table.judged]
 print()
@@ -549,7 +592,8 @@ if len(kept) < STACK_MIN:
     print("the stack is refused for want of members: %d < %d" % (len(kept), STACK_MIN))
 
 # limb A, recomputed: the weight of every member has to be the fleet value and not the target value
-cand = scores.set_index("name")
+# a pool of one or two others scores no candidate at all, and an empty table carries no columns to index
+cand = scores.set_index("name") if len(scores) and "name" in scores.columns else pd.DataFrame()
 recomputed = {d: weights.get(d) for d in kept}
 target_coh = {d: (float(cand.loc[d, "coh"]) if d in cand.index and cand.loc[d, "coh"] is not None else None)
               for d in kept}
@@ -721,45 +765,56 @@ and what it cannot: at the short end a distant observatory shares almost nothing
 every pool site's, so this site's number can be read against the survey's.
 
 On the right the two Hx records are drawn over each other through six hours of one quiet day: the large
-excursions are shared and the small ones are not, which is what the observatory kind rests on."""),
+excursions are shared and the small ones are not, which is what the observatory kind rests on.
 
-("code", '''w_obs, obs_pairs = ST.observatory_weight(OBS)
-print("observatory %s, %s" % (OBS, geo.OBSERVATORIES.get(OBS, ("", 0, 0))[0]))
-print("its fleet weight at 100-1000 s is %s, the median over %d pool member(s)"
-      % (w_obs, sum(1 for v in obs_pairs.values() if v is not None)))
-obs_rows = []
-for s in ALL_SITES:
-    c = obs_pairs.get(s)
-    chunks = None
-    if c is None and s == SITE:
-        # this site is reported whether or not it is in the pool, so the reading covers what is processed
-        r_obs = ST.site_observatory_coh(s, OBS)
-        c = None if not np.isfinite(r_obs["coh"]) else round(float(r_obs["coh"]), 4)
-        chunks = r_obs["chunks"]
-    obs_rows.append(dict(site=s, km=round(geo.distance_km(ST.position(s), OBS), 1), coh_100_1000s=c,
-                         in_pool=s in pool, chunks=chunks,
-                         built=ST.path("obs", s).with_suffix(".json").exists()))
-ob = pd.DataFrame(obs_rows)
-print()
-print("%s: %.1f km from %s, coherence at 100-1000 s %s"
-      % (SITE, float(ob.km[ob.site == SITE].iloc[0]), OBS, ob.coh_100_1000s[ob.site == SITE].iloc[0]))
-print("stack + observatory at %s: %s" % (SITE, " ".join(list(kept) + ([OBS] if w_obs else []))))
+A survey whose `observatory.code` is not an IAGA code -- `decide`, empty, or a name the package does not
+hold -- has no observatory, so this section reads nothing and the two kinds that need one are not built.
+Workbook 01 names the code to write."""),
 
-try:
-    _ot, oh, _om, _oi = REF.load_reference("obs", SITE, RATES1[0], WORK)
-except FileNotFoundError:
-    oh = None
-obs_series, j0 = [], None
-w = int(6 * 3600 * RATES1[0])
-if oh is not None:
-    pair = [np.asarray(h_show["Hx"], float), np.asarray(oh["Hx"], float)]
-    j0 = quiet_window(pair, fs=float(RATES1[0]), hours=6.0)
-    if j0 is not None:
-        obs_series = [("%s Hx" % SITE, pair[0][j0:j0 + w], "C3"), ("%s Hx" % OBS, pair[1][j0:j0 + w], "C0")]
-show(FIGP.observatory_bars(ob, OUT / "03_observatory.png", series=obs_series,
-                           t_start=(None if j0 is None else t0s + j0 / RATES1[0]),
-                           code=OBS, site=SITE, fs=float(RATES1[0])))
-del oh
+("code", '''if not HAS_OBS:
+    w_obs, obs_pairs, ob, obs_series, j0, oh = None, {}, pd.DataFrame(), [], None, None
+    print("no observatory: %s" % NO_OBS_WHY)
+    print("the %d kind(s) that need one are not built at %s, and nothing below reads the archive"
+          % (len(OBS_KINDS), SITE))
+else:
+    w_obs, obs_pairs = ST.observatory_weight(OBS)
+    print("observatory %s, %s" % (OBS, geo.OBSERVATORIES.get(OBS, ("", 0, 0))[0]))
+    print("its fleet weight at 100-1000 s is %s, the median over %d pool member(s)"
+          % (w_obs, sum(1 for v in obs_pairs.values() if v is not None)))
+    obs_rows = []
+    for s in ALL_SITES:
+        c = obs_pairs.get(s)
+        chunks = None
+        if c is None and s == SITE:
+            # this site is reported whether or not it is in the pool, so the reading covers what is run
+            r_obs = ST.site_observatory_coh(s, OBS)
+            c = None if not np.isfinite(r_obs["coh"]) else round(float(r_obs["coh"]), 4)
+            chunks = r_obs["chunks"]
+        obs_rows.append(dict(site=s, km=round(geo.distance_km(ST.position(s), OBS), 1), coh_100_1000s=c,
+                             in_pool=s in pool, chunks=chunks,
+                             built=ST.path("obs", s).with_suffix(".json").exists()))
+    ob = pd.DataFrame(obs_rows)
+    print()
+    print("%s: %.1f km from %s, coherence at 100-1000 s %s"
+          % (SITE, float(ob.km[ob.site == SITE].iloc[0]), OBS, ob.coh_100_1000s[ob.site == SITE].iloc[0]))
+    print("stack + observatory at %s: %s" % (SITE, " ".join(list(kept) + ([OBS] if w_obs else []))))
+
+    try:
+        _ot, oh, _om, _oi = REF.load_reference("obs", SITE, RATES1[0], WORK)
+    except FileNotFoundError:
+        oh = None
+    obs_series, j0 = [], None
+    w = int(6 * 3600 * RATES1[0])
+    if oh is not None:
+        pair = [np.asarray(h_show["Hx"], float), np.asarray(oh["Hx"], float)]
+        j0 = quiet_window(pair, fs=float(RATES1[0]), hours=6.0)
+        if j0 is not None:
+            obs_series = [("%s Hx" % SITE, pair[0][j0:j0 + w], "C3"),
+                          ("%s Hx" % OBS, pair[1][j0:j0 + w], "C0")]
+    show(FIGP.observatory_bars(ob, OUT / "03_observatory.png", series=obs_series,
+                               t_start=(None if j0 is None else t0s + j0 / RATES1[0]),
+                               code=OBS, site=SITE, fs=float(RATES1[0])))
+    del oh
 '''),
 
 ("md", r"""## The references written to the store
@@ -788,6 +843,28 @@ for rate in RATES:
                              error=str(info.get("error", ""))[:90])
                         for s, d in sorted(got.items())
                         for k, info in sorted(d.items())]).to_string(index=False))
+
+# a kind the store refused has no array, so asking for a pass over it would raise inside the lane and read
+# as a fault. The refusal is the survey speaking -- a stack with one member is a remote site renamed -- so
+# it is named here and the kind is taken out of the run rather than being asked for and failing
+def refusals(rate):
+    return {k: str(i.get("error"))[:200] for k, i in (built.get(rate) or {}).get(SITE, {}).items()
+            if i.get("error")}
+
+REFUSED_KINDS = refusals(RATES1[0])
+REFUSED_KINDS10 = refusals(RATES10[0]) if RATES10 else {}
+KINDS_RUN = [k for k in KINDS if k not in REFUSED_KINDS]
+KINDS10_RUN = [k for k in KINDS10 if k not in REFUSED_KINDS10]
+print()
+print("the store refused %d of the %d kind(s) at %g Hz and %d of the %d at 10 Hz; a refusal is this "
+      "survey speaking and the kind is not asked for below"
+      % (len(REFUSED_KINDS), len(KINDS), RATES1[0], len(REFUSED_KINDS10), len(KINDS10)))
+for k, why in sorted(REFUSED_KINDS.items()):
+    print("   %g Hz %-10s %s" % (RATES1[0], k, why))
+for k, why in sorted(REFUSED_KINDS10.items()):
+    print("   10 Hz %-10s %s" % (k, why))
+if not REFUSED_KINDS and not REFUSED_KINDS10:
+    print("   none")
 '''),
 
 ("md", r"""## The bands and the parameter set
@@ -866,10 +943,13 @@ with no unit.
 kept stretches.** Every sample of every channel of every run is compared with the array it was written from.
 The bound is 1e-3 nT and mV/km, which is the file's own float32 resolution at these levels."""),
 
-("code", '''probe_kind = "remote" if "remote" in KINDS else KINDS[0]
+("code", '''# the kind probed is one the store actually wrote: a refused kind has no array, and reading it here would
+# raise above the run cell rather than being reported by it
+probe_kind = ("remote" if "remote" in KINDS_RUN else (KINDS_RUN[0] if KINDS_RUN else ""))
 rate = RATES1[0]
 local = {c: np.asarray(arrm[c], float) for c in mth5_build.LOCAL_CHANNELS}
-rt0, rh, rmask, info = REF.load_reference(probe_kind, SITE, rate, WORK)
+rt0, rh, rmask, info = (REF.load_reference(probe_kind, SITE, rate, WORK) if probe_kind
+                        else (T0_SITE, None, None, {}))
 ev_rem = [(pd.Timestamp(a).timestamp(), pd.Timestamp(b).timestamp())
           for a, b in (info.get("remote_events") or [])] if probe_kind == "remote" else []
 keep, stats = TR.build_keep(T0_SITE, local, float(rate), ev_site, ev_rem, ev_e,
@@ -938,9 +1018,11 @@ because it comes out of the same pass as the impedance -- hz is in the local sta
 was run on a record missing its vertical channel."""),
 
 ("code", '''t_run = time.time()
-print("%s: %d kind(s) at %s Hz -> %s_%s"
-      % (SITE, len(KINDS), ", ".join(str(r) for r in RATES1), RUN, STAMP), flush=True)
-res = BATCH.lane(SITE, SURVEY, RUN, STAMP, KINDS, RATES1, PARAMS, redo=REDO,
+print("%s: %d kind(s) at %s Hz -> %s_%s%s"
+      % (SITE, len(KINDS_RUN), ", ".join(str(r) for r in RATES1), RUN, STAMP,
+         ("; %d kind(s) the store refused are not asked for: %s"
+          % (len(REFUSED_KINDS), ", ".join(sorted(REFUSED_KINDS)))) if REFUSED_KINDS else ""), flush=True)
+res = BATCH.lane(SITE, SURVEY, RUN, STAMP, KINDS_RUN, RATES1, PARAMS, redo=REDO,
                  work_root=(str(WORK_ROOT) if WORK_ROOT else ""), repo=REPO)
 wall = time.time() - t_run
 print("exit %d in %7.1f s  %s%s" % (res["returncode"], res["seconds"], res["stdout"],
@@ -950,7 +1032,7 @@ print("wall time %.1f min; a resumed run finds its files on disk and this is the
 
 ledger = pd.read_csv(WORK / "survey" / "runs.csv")
 led = ledger[(ledger["run"].astype(str) == RUN) & (ledger["stamp"].astype(str) == STAMP)
-             & (ledger.site == SITE) & (ledger.kind.isin(KINDS))].copy()
+             & (ledger.site == SITE) & (ledger.kind.isin(KINDS_RUN))].copy()
 # runs.csv is append-only in both directions: a kind this package no longer builds keeps its old rows, and
 # re-running this workbook adds an `exists` row beside the `made` row of the same pass. The row that says
 # what a pass cost is the one written when it was made, so that row wins and one row per pass is kept.
@@ -961,7 +1043,7 @@ print()
 print(led[["site", "kind", "rate_hz", "params", "remote", "n_runs", "mask_dropped_frac",
            "floor_dropped_frac", "seconds", "peak_rss_mb", "status", "error"]].to_string(index=False))
 
-want = [(SITE, k, float(r)) for k in KINDS for r in RATES1]
+want = [(SITE, k, float(r)) for k in KINDS_RUN for r in RATES1]
 have = {(r.site, r.kind, float(r.rate_hz)): r for r in led.itertuples()}
 missing = [w for w in want if w not in have]
 failed = led[led.status == "FAILED"]
@@ -978,23 +1060,211 @@ for w in want:
 prov = PROV.read(WORK / SITE / ("%s_%s" % (RUN, STAMP)) / "provenance.json")
 no_prov = not prov or not prov.get("decisions_row") or not prov["decisions_row"].get("site")
 print()
+stated_kinds = ["%s: %s" % (k, why) for k, why in sorted(REFUSED_KINDS.items())]
 if not want:
-    print("VERDICT: UNJUDGED -- no transfer function was requested")
+    print("VERDICT: UNJUDGED -- no transfer function was requested: the store refused every kind (%s)"
+          % ("; ".join(stated_kinds) or "none"))
 elif missing or len(failed) or no_tipper or no_prov:
     print("VERDICT: FAIL -- %d of %d requested transfer function(s) are missing (%s); %d are FAILED (%s); "
-          "%d carry no tipper (%s); provenance.json %s the decisions.csv row"
+          "%d carry no tipper (%s); provenance.json %s the decisions.csv row%s"
           % (len(missing), len(want), "; ".join("%s %s %g Hz" % m for m in missing[:8]) or "none",
              len(failed), "; ".join("%s: %s" % (r.kind, str(r.error)[:80])
                                     for r in failed.itertuples()) or "none",
              len(no_tipper), "; ".join(no_tipper[:8]) or "none",
-             "lacks" if no_prov else "names"))
+             "lacks" if no_prov else "names",
+             ("; %d kind(s) the store refused asked for none (%s)"
+              % (len(stated_kinds), "; ".join(stated_kinds))) if stated_kinds else ""))
 else:
     print("VERDICT: PASS -- all %d requested transfer function(s) exist and none is FAILED (%d made, %d "
           "already on disk), every one carries a tipper, and provenance.json names the decisions.csv row it "
           "used; this execution took %.1f min and the passes cost %.1f machine-minute(s) between them, the "
-          "largest peak being %.0f MB"
+          "largest peak being %.0f MB%s"
           % (len(want), int((led.status == "made").sum()), int((led.status == "exists").sum()),
-             wall / 60.0, led.seconds.sum() / 60.0, led.peak_rss_mb.max()))
+             wall / 60.0, led.seconds.sum() / 60.0, led.peak_rss_mb.max(),
+             ("; %d kind(s) the store refused asked for none (%s)"
+              % (len(stated_kinds), "; ".join(stated_kinds))) if stated_kinds else ""))
+'''),
+
+("md", r"""## The two electric signs, and the remake
+
+An electric line's sign is the polarity of its electrode pair, and nothing in the raw records it. Reversing
+a pair turns that row of the tensor by 180 degrees, which leaves the apparent resistivity untouched and puts
+the phase in the third quadrant, where workbook 05's phase test refuses it and the site delivers half a
+tensor. So it has to be decided, and it is decided here on the one observable that carries it: the phase of
+this site's own remote-reference transfer function at 1 Hz, estimated with a sound H.
+
+Ben's rule, and it is scored on exactly this (`auslamp_proc.look.quadrant_sign`):
+
+| what is read | +1 | -1 |
+|---|---|---|
+| the xy phase, which carries Ex | 0 to 90 deg | -180 to -90 deg |
+| the yx phase folded by +180 deg, which carries Ey | 0 to 90 deg | -180 to -90 deg |
+
+at 4 of 6 periods spread over 30-1000 s, which is where a long-period record has its best signal-to-noise
+and where the phase is least disturbed by the short-period noise a reference cannot cancel. Fewer than six
+finite periods in the band, or a phase in neither quadrant at four of them, leaves the sign at `decide`: an
+E line's sign is never read by comparing E fields between sites.
+
+A sound H is the precondition and is tested before the rule is applied. The DC test workbook 02 wrote to
+`<work_root>/<SITE>/dc.csv` must fire no gain-or-broken-axis flag, because a tensor divided by the wrong
+field carries the wrong phase, and the north axis as the pass ran it -- `sign_hx` from `decisions.csv`
+against the recorded Bx/X -- must point north. Where either fails, no E sign is read and the cell says which.
+
+Where a sign is written, this site's transfer functions are remade in the same run before anything else
+reads one. The pass is cheap next to a wrong sign, and every file this site has written so far carries the
+old polarity in its numbers and `signs_undecided=Ex, Ey` in its header. The references are not rebuilt: an
+electric sign touches no magnetic channel, so the arrays in the store are the same ones.
+
+**This check fails if a sign was written into a cell that did not read `decide`, if a sign the rule read is
+still `decide` afterwards, or if a sign was written and this site's remade 1 Hz files still name that
+channel as undecided.** The first two limbs are scored by reading `decisions.csv` back off the disk against
+the table as it stood before the write. The third is scored on the delivered files themselves: each remade
+EDI's own `signs_undecided=` line is read back, which is an observable independent of both the ledger and
+the table. With `WRITE_DECISIONS` False nothing is asked for and nothing is scored, and the cell reports
+UNJUDGED rather than passing on nothing."""),
+
+("code", '''E_CHANNELS = ("Ex", "Ey")
+QUADRANT_KIND = "remote"       # <- the kind the rule reads: the remote-reference row most sites deliver
+DEC_BEFORE = SV.load_survey(SURVEY).decisions.set_index("site")
+
+# the precondition: a sound H, read off the DC test of workbook 02 and the sign the pass actually applied
+dc_path = WORK / SITE / "dc.csv"
+h_sound, why_h = False, ""
+if not dc_path.exists():
+    why_h = "%s carries no dc.csv: run workbook 02 over this site first" % SITE
+else:
+    d_row = pd.read_csv(dc_path).iloc[0]
+    dc_flags = str(d_row.get("flags", "") or "")
+    bx_applied = float(signs["Hx"][0]) * float(d_row["Bx_over_X"])
+    if "F/Figrf" in dc_flags:
+        why_h = ("the DC test reads F/F_igrf %.3f, a gain or a broken axis (%s)"
+                 % (float(d_row["F_over_Figrf"]), dc_flags[:90]))
+    elif not np.isfinite(bx_applied) or bx_applied <= 0:
+        why_h = ("the north axis as the pass ran it points south: Bx/X %+.3f with sign_hx %+d applied"
+                 % (float(d_row["Bx_over_X"]), int(signs["Hx"][0])))
+    else:
+        h_sound = True
+        why_h = ("the DC test fires no gain flag (F/F_igrf %.3f) and the north axis as the pass ran it "
+                 "points north (Bx/X %+.3f with sign_hx %+d applied)"
+                 % (float(d_row["F_over_Figrf"]), float(d_row["Bx_over_X"]), int(signs["Hx"][0])))
+print("a sound H at %s: %s -- %s" % (SITE, "YES" if h_sound else "NO", why_h))
+
+q_rows = (led[(led.kind == QUADRANT_KIND) & (led.rate_hz == 1.0) & (led.status != "FAILED")]
+          if len(led) else led)
+q_path = Path(str(q_rows.edi.iloc[0])) if len(q_rows) else None
+RULE = {}
+if q_path is None or not q_path.exists():
+    print("no %s transfer function at 1 Hz to read, so the quadrant rule is not applied" % QUADRANT_KIND)
+elif not h_sound:
+    print("H is not sound at %s, so no electric sign is read" % SITE)
+else:
+    tf_q = TFN.read_tf(q_path)
+    ph_q = {c: TFN.rho_phase(tf_q.period, tf_q.z, tf_q.z_err, c)[2] for c in ("xy", "yx")}
+    RULE["Ex"] = look.quadrant_sign(tf_q.period, ph_q["xy"],
+                                    "the xy phase of %s" % q_path.name)
+    RULE["Ey"] = look.quadrant_sign(tf_q.period, ph_q["yx"],
+                                    "the yx phase + 180 deg of %s" % q_path.name)
+    print("the quadrant rule on %s" % q_path.name)
+    for c in E_CHANNELS:
+        print("   %s -> %s" % (c, RULE[c][1]))
+
+held_before = {FR.SIGN_COLUMN[c]: (str(DEC_BEFORE.loc[SITE, FR.SIGN_COLUMN[c]]).strip()
+                                   if SITE in DEC_BEFORE.index else "") for c in E_CHANNELS}
+print()
+print("decisions.csv before this cell: %s"
+      % ", ".join("%s %s" % (k, v or "<empty>") for k, v in sorted(held_before.items())))
+
+if not WRITE_DECISIONS:
+    line_e, written_e = "WRITE_DECISIONS is False, so decisions.csv was not opened", []
+    print(line_e)
+else:
+    line_e, written_e = SV.write_signs(sv.folder, {SITE: {FR.SIGN_COLUMN[c]: RULE[c] for c in RULE}})
+    print(line_e)
+    for w in written_e:
+        print("   wrote %s" % w)
+    if not written_e:
+        print("   no cell to write: the rule read no sign, or both cells are already decided")
+
+# the remake: every transfer function of this site is made again under the signs just written, before any
+# later cell reads one. An electric sign touches no magnetic channel, so no reference is rebuilt
+remade = []
+if written_e:
+    sv.decisions = SV.load_survey(SURVEY).decisions      # in place: ST holds this same Survey object
+    dec = sv.decision(SITE)
+    signs = {c: FR.read_sign(dec.get(FR.SIGN_COLUMN[c])) for c in FR.CHANNELS}
+    print()
+    print("%s: remaking %d kind(s) at %s Hz under the signs just written"
+          % (SITE, len(KINDS_RUN), ", ".join(str(r) for r in RATES1)), flush=True)
+    t_re = time.time()
+    res_e = BATCH.lane(SITE, SURVEY, RUN, STAMP, KINDS_RUN, RATES1, PARAMS, redo=True,
+                       work_root=(str(WORK_ROOT) if WORK_ROOT else ""), repo=REPO)
+    print("exit %d in %7.1f s  %s" % (res_e["returncode"], res_e["seconds"], res_e["stdout"]))
+    print("the remake took %.1f min" % ((time.time() - t_re) / 60.0))
+    ledger = pd.read_csv(WORK / "survey" / "runs.csv")
+    led = ledger[(ledger["run"].astype(str) == RUN) & (ledger["stamp"].astype(str) == STAMP)
+                 & (ledger.site == SITE) & (ledger.kind.isin(KINDS_RUN))].copy()
+    led["_made"] = (led.status == "made").astype(int)
+    led = (led.sort_values(["kind", "rate_hz", "_made"])
+           .drop_duplicates(["kind", "rate_hz"], keep="last").drop(columns="_made"))
+    remade = [Path(str(r.edi)) for r in led.itertuples() if str(r.status) == "made"]
+    print(led[["site", "kind", "rate_hz", "n_runs", "seconds", "status", "error"]].to_string(index=False))
+
+DEC_AFTER = SV.load_survey(SURVEY).decisions.set_index("site")
+over_written_e, wrong_value_e, not_written_e, open_e, still_undecided = [], [], [], [], []
+written_cols = set(w.split()[1] for w in written_e)
+for c in E_CHANNELS:
+    col = FR.SIGN_COLUMN[c]
+    was = held_before[col]
+    now = str(DEC_AFTER.loc[SITE, col]).strip() if SITE in DEC_AFTER.index else ""
+    rule_v, rule_why = RULE.get(c, (None, "the rule was not applied: %s" % why_h))
+    if now.lower() == "decide":
+        open_e.append("%s: %s" % (col, rule_why))
+        if WRITE_DECISIONS and rule_v is not None:
+            not_written_e.append(col)
+    elif was != now:
+        if was.lower() != "decide":
+            over_written_e.append("%s: %s -> %s" % (col, was, now))
+        elif rule_v is None or now != "%+d" % int(rule_v):
+            wrong_value_e.append("%s: holds %s, the rule read %s" % (col, now, rule_v))
+for path_e in remade:
+    if not path_e.exists():
+        continue
+    said = EDI.read_parameter(path_e, "signs_undecided")
+    named = [x.strip() for x in said.replace(":", " ").replace(",", " ").split()]
+    for c in E_CHANNELS:
+        if c in named and FR.SIGN_COLUMN[c] in written_cols:
+            still_undecided.append("%s still names %s undecided" % (path_e.name, c))
+print()
+if SITE in DEC_AFTER.index:
+    print("the decisions.csv row of %s after this cell: %s"
+          % (SITE, ", ".join("%s %s" % (FR.SIGN_COLUMN[c], str(DEC_AFTER.loc[SITE, FR.SIGN_COLUMN[c]]))
+                             for c in FR.CHANNELS)))
+    print("sign_source: %s" % str(DEC_AFTER.loc[SITE, "sign_source"])[:400])
+print("still open, with the reason:")
+if not open_e:
+    print("   none: both electric signs are decided")
+for line_open in open_e:
+    print("   %s" % line_open)
+
+print()
+if not WRITE_DECISIONS:
+    print("VERDICT: UNJUDGED -- WRITE_DECISIONS is False, so no cell was asked for and none was written; "
+          "the rule read %d of the 2 electric sign(s) and they are the reading above"
+          % sum(1 for c in RULE if RULE[c][0] is not None))
+elif over_written_e or wrong_value_e or not_written_e or still_undecided:
+    print("VERDICT: FAIL -- %d cell(s) that did not read decide were overwritten (%s); %d hold a value the "
+          "rule did not read (%s); %d the rule read are still decide (%s); %d remade file(s) still name a "
+          "written channel undecided (%s)"
+          % (len(over_written_e), "; ".join(over_written_e) or "none",
+             len(wrong_value_e), "; ".join(wrong_value_e) or "none",
+             len(not_written_e), ", ".join(not_written_e) or "none",
+             len(still_undecided), "; ".join(still_undecided[:4]) or "none"))
+else:
+    print("VERDICT: PASS -- %d electric sign cell(s) were written at %s, every one of them a cell that read "
+          "decide and now holding the value the rule read; %d transfer function(s) were remade under them "
+          "and none of those files names a written channel undecided; %d sign(s) the rule could not read "
+          "are still decide and named above"
+          % (len(written_e), SITE, len(remade), len(open_e)))
 '''),
 
 ("md", r"""## The 10 Hz stretch
@@ -1075,17 +1345,19 @@ if not RATES10 or not TAGS10 or not HAS10:
           "is asked for here" % (RATES, len(TAGS10), "present" if HAS10 else "absent"))
 else:
     t_10 = time.time()
-    print("%s: %d kind(s) over %s at 10 Hz -> %s_%s"
-          % (SITE, len(KINDS10), ", ".join(TAGS10), RUN10, STAMP10), flush=True)
-    r10 = BATCH.lane(SITE, SURVEY, RUN10, STAMP10, KINDS10, RATES10, PARAMS, selections=TAGS10, redo=REDO,
-                     work_root=(str(WORK_ROOT) if WORK_ROOT else ""), repo=REPO)
+    print("%s: %d kind(s) over %s at 10 Hz -> %s_%s%s"
+          % (SITE, len(KINDS10_RUN), ", ".join(TAGS10), RUN10, STAMP10,
+             ("; the store refused %s" % ", ".join(sorted(REFUSED_KINDS10))) if REFUSED_KINDS10 else ""),
+          flush=True)
+    r10 = BATCH.lane(SITE, SURVEY, RUN10, STAMP10, KINDS10_RUN, RATES10, PARAMS, selections=TAGS10,
+                     redo=REDO, work_root=(str(WORK_ROOT) if WORK_ROOT else ""), repo=REPO)
     wall10 = time.time() - t_10
     print("exit %d in %7.1f s  %s%s" % (r10["returncode"], r10["seconds"], r10["stdout"],
                                         ("  || " + r10["stderr"]) if r10["returncode"] else ""))
     print("wall time %.1f min" % (wall10 / 60.0))
     ledger10 = pd.read_csv(WORK / "survey" / "runs.csv")
     l10 = ledger10[(ledger10["run"].astype(str) == RUN10) & (ledger10["stamp"].astype(str) == STAMP10)
-                   & (ledger10.site == SITE) & (ledger10.kind.isin(KINDS10))].copy()
+                   & (ledger10.site == SITE) & (ledger10.kind.isin(KINDS10_RUN))].copy()
     l10["selection"] = l10.selection.astype(str)
     l10["_made"] = (l10.status == "made").astype(int)
     l10 = (l10.sort_values(["kind", "selection", "_made"])
@@ -1210,10 +1482,11 @@ if s_item.get("t_start") is not None and c_item.get("t_start") is not None:
 elif s_item.get("t_start") is not None:
     bad_control.append("the stretch carries no control")
 
-want10 = [(SITE, k, t) for k in KINDS10 for t in TAGS10] if (RATES10 and HAS10) else []
+want10 = [(SITE, k, t) for k in KINDS10_RUN for t in TAGS10] if (RATES10 and HAS10) else []
 # a stretch the rule refused on its mask asks for no transfer function: it is a stated refusal, named in
 # the verdict, and is not counted among those that are missing
-stated = ["%s: %s" % (t_, w) for t_, w in sorted(REFUSED10.items())]
+stated = (["%s: %s" % (t_, w) for t_, w in sorted(REFUSED10.items())]
+          + ["the %s kind: %s" % (k, w) for k, w in sorted(REFUSED_KINDS10.items())])
 have10 = {(r.site, r.kind, str(r.selection)): r for r in l10.itertuples()}
 missing10, no_line, wrong_row = [], [], []
 for w in want10:
@@ -1289,7 +1562,8 @@ and at whether the stretch sits closer to the 1 Hz curve than its control does. 
 departs from the 1 Hz row by the rate's own figure, printed in the section above, whatever the hours, so an
 offset common to both is the rate and not the choosing."""),
 
-("code", '''KIND10_SHOW = "remote" if "remote" in KINDS10 else KINDS10[0]   # <- the kind the stretch is drawn for
+("code", '''# the kind the stretch is drawn for, chosen from the ones the store wrote
+KIND10_SHOW = ("remote" if "remote" in KINDS10_RUN else (KINDS10_RUN[0] if KINDS10_RUN else "remote"))
 sel_curves = []
 base = led.edi[(led.kind == KIND10_SHOW) & (led.rate_hz == 1.0)]
 if len(base) and Path(str(base.iloc[0])).exists():

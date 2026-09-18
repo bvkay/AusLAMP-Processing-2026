@@ -909,16 +909,25 @@ class Store:
 
         The quantity the stack weights on. Computed once per store and kept as fleet_weights.json with the
         pairs in fleet_pairs.json, so the workbook can recompute one site's weights from the table it prints.
+
+        The file on disk is used only where its members are this store's pool. A weight is a median over a
+        member's pairs WITH THAT POOL, so a table written under a different pool is not a weaker answer to
+        this question, it is an answer to a different one: a table written while three sites were cached
+        gives each member two pairs, which falls under fleet_weight_table's min_chunks and comes back None,
+        and every member of every stack is then refused for "no fleet coherence at 100-1000 s" on a survey
+        where each of them has a dozen sound pairs. Re-scoring costs minutes; a stack refused over a stale
+        file costs two of the four kinds with nothing saying why.
         """
         if self._fleet is not None and not force:
             return self._fleet
         fw = self.dir / "fleet_weights.json"
         fp = self.dir / "fleet_pairs.json"
-        if fw.exists() and fp.exists() and not force:
-            self._fleet = (json.loads(fw.read_text(encoding="utf-8")),
-                           json.loads(fp.read_text(encoding="utf-8")))
-            return self._fleet
         pool, _t = self.clean_pool()
+        if fw.exists() and fp.exists() and not force:
+            held = json.loads(fw.read_text(encoding="utf-8"))
+            if set(held) == set(pool):
+                self._fleet = (held, json.loads(fp.read_text(encoding="utf-8")))
+                return self._fleet
         pairs = {}
         for i, a in enumerate(pool):
             for b in pool[i + 1:]:

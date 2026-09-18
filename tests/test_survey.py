@@ -116,3 +116,78 @@ def test_validate_reports_an_open_decision(tmp_path):
     sv = SV.Survey("tst", {}, pd.DataFrame(columns=SV.SITES_COLUMNS), _blank("Q65"))
     lines = [l for l in SV.validate(sv) if l.startswith("Q65 decisions")]
     assert lines and "h_gain" in lines[0] and "h_lender" in lines[0] and "e_exchange" in lines[0]
+
+
+def test_a_header_with_no_row_is_created_and_not_preserved(tmp_path):
+    """Fails if a table holding a header and no row is treated as a table to preserve.
+
+    surveys/_template ships sites.csv and decisions.csv as header-only stubs so that the column lists are
+    visible in the template, so a copied template makes both files exist holding nothing. A stub that was
+    preserved would leave a new survey with empty tables for ever, which is what workbook 01's "created
+    once if it does not exist" branch never firing looks like from the outside.
+    """
+    path = tmp_path / "decisions.csv"
+    path.write_text(",".join(SV.DECISIONS_COLUMNS) + "\n", encoding="utf-8")
+    assert SV.is_stub(path, SV.DECISIONS_COLUMNS)
+    assert SV.is_stub(tmp_path / "absent.csv", SV.DECISIONS_COLUMNS)
+    line = SV.write_table(path, SV.blank_decisions(["A", "B"]), SV.DECISIONS_COLUMNS)
+    assert line.startswith("created") and "header and no row" in line
+    back = pd.read_csv(path, dtype=str, keep_default_na=False)
+    assert list(back.site) == ["A", "B"] and back.at[0, "sign_hx"] == SV.DECIDE
+    assert not SV.is_stub(path, SV.DECISIONS_COLUMNS)
+
+
+def test_write_signs_writes_only_into_a_decide_cell(tmp_path):
+    """Fails if a measured sign overwrites an analyst's value or an `assume:` cell.
+
+    A workbook's test is a reading beside the analyst's cell and never a ruling over it, so write_signs
+    writes only where the cell reads `decide`. This is the guard the two sign-writing cells rest on.
+    """
+    path = tmp_path / "decisions.csv"
+    dec = SV.blank_decisions(["A", "B"])
+    dec.at[0, "sign_hx"] = "-1"                    # the analyst's own value
+    dec.at[0, "sign_hz"] = "assume:+1"             # an assumption somebody stated
+    dec.at[1, "h_gain"] = "1.17"                   # a plain value in a column nothing here touches
+    dec.at[1, "sign_source"] = "an earlier ruling"
+    SV.write_table(path, dec, SV.DECISIONS_COLUMNS)
+
+    measured = {"A": {"sign_hx": (1, "the DC test"), "sign_hz": (1, "the DC test"),
+                      "sign_ex": (-1, "the quadrant rule")},
+                "B": {"sign_hx": (-1, "the DC test"), "sign_hy": (None, "inside the floor")}}
+    line, written = SV.write_signs(tmp_path, measured, dated="2026-09-18")
+    back = pd.read_csv(path, dtype=str, keep_default_na=False).set_index("site")
+
+    assert back.at["A", "sign_hx"] == "-1", "an analyst's value was overwritten"
+    assert back.at["A", "sign_hz"] == "assume:+1", "an assume: cell was overwritten"
+    assert back.at["A", "sign_ex"] == "-1", "a decide cell was not written"
+    assert back.at["B", "sign_hx"] == "-1"
+    assert back.at["B", "sign_hy"] == SV.DECIDE, "a sign the test could not judge was written anyway"
+    assert back.at["B", "h_gain"] == "1.17", "a value in an untouched column was lost"
+    assert sorted(written) == ["A sign_ex -1", "B sign_hx -1"]
+    assert "the quadrant rule" in back.at["A", "sign_source"] and "2026-09-18" in back.at["A", "sign_source"]
+    assert back.at["B", "sign_source"].startswith("an earlier ruling |"), "an existing source was replaced"
+    assert line.startswith("rewrote")
+
+    # a second call decides nothing new, so it leaves the file shut rather than rewriting it byte for byte
+    before = path.read_bytes()
+    line2, written2 = SV.write_signs(tmp_path, measured, dated="2026-09-19")
+    assert written2 == [] and "was not opened" in line2
+    assert path.read_bytes() == before, "a run that wrote nothing still rewrote the table"
+
+
+def test_the_dipole_block_reads_a_table_and_a_default(tmp_path):
+    """Fails if survey.yaml `dipoles` does not serve both shapes. An EDL raw folder records no arm length,
+    so this block is the only path a new EDL survey has from the deployment sheet to sites.csv."""
+    (tmp_path / "dipoles.csv").write_text(
+        "site,dipole_n_m,dipole_e_m,source\nQ01,10.2,11.2,sheet 2026-09-05\n", encoding="utf-8")
+    cfg = {"dipoles": {"table": "dipoles.csv", "default_m": 100, "reason": "the AusLAMP nominal arm"}}
+    table = SV.dipole_table(cfg, tmp_path)
+    assert list(table.columns) == SV.DIPOLE_TABLE_COLUMNS
+    assert table.at[0, "site"] == "Q01" and table.at[0, "source"] == "sheet 2026-09-05"
+    assert SV.dipole_default(cfg, "PR6-24+Mag-03") == (100.0, "the AusLAMP nominal arm")
+    # the older per-instrument spelling still reads, and an absent block is no default at all
+    old = {"dipole_default": {"PR6-24+Mag-03": {"value": 50, "reason": "why"}}}
+    assert SV.dipole_default(old, "PR6-24+Mag-03") == (50.0, "why")
+    assert SV.dipole_default(old, "LEMI-424") == (None, "")
+    assert SV.dipole_default({}, "PR6-24+Mag-03") == (None, "")
+    assert not len(SV.dipole_table({}, tmp_path))

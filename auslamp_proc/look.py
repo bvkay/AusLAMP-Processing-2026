@@ -30,6 +30,12 @@ times the robust scale of the steps (1.4826 x the median absolute deviation) is 
 i+3 and interpolated, because one logger spike in one Welch segment puts the whole day's coherence at zero.
 A day in which any of the four channels is less than 80 per cent finite is scored `gap` and counts as no day.
 
+Two of the five signs are decided from these tests, and each writes what it measured into decisions.csv
+beside its value. `signs_from_dc` reads sign_hx and sign_hz off the DC ratios against IGRF with the 0.3
+floor. `quadrant_sign` reads sign_ex and sign_ey off the phase of a transfer function estimated with a
+sound H, which is workbook 03's cell because that is where the transfer function is. Neither guesses: a
+ratio inside the floor and a phase that is in neither quadrant leave the sign at `decide`.
+
 @author: ben kay (ben@auscope.org.au)
 """
 from __future__ import annotations
@@ -278,3 +284,104 @@ def _longest_run(states, want: str = "sound") -> int:
         cur = cur + 1 if s == want else 0
         best = max(best, cur)
     return int(best)
+
+
+# ---------------------------------------------------------------- the signs these tests decide
+
+SIGN_FLOOR = 0.3               # a ratio against IGRF this far from zero is a sign; below it the axis is dead
+QUADRANT_BAND_S = (30.0, 1000.0)
+QUADRANT_PERIODS = 6           # the periods scored inside that band
+QUADRANT_MIN_IN = 4            # of which this many have to sit in the quadrant
+
+
+def dc_flags(dc_row) -> list:
+    """The flags of one dc_test row, `Bx negative` left out, as a list. An empty list is a sound sensor.
+
+    `Bx negative` is the one flag the sign rule exists to answer, so it does not disqualify the row. Every
+    other flag does: a gain or a broken axis (F away from IGRF), a tilt, or a sensor laid far from north all
+    say the ratio being read is not the component the axis is supposed to carry.
+    """
+    raw = str(dc_row.get("flags", "") if hasattr(dc_row, "get") else "")
+    if raw.strip().lower() in ("", "nan", "none", "<na>"):
+        return []
+    return [f.strip() for f in raw.split(";") if f.strip() and not f.strip().lower().startswith("bx negative")]
+
+
+def signs_from_dc(dc_row, floor: float = SIGN_FLOOR) -> dict:
+    """{'Hx': (sign or None, reason), 'Hz': (...)} from one dc_test row, by the floor rule.
+
+    A magnetic axis laid the right way up reads the IGRF component it points at, so the sign of the ratio of
+    the record median to IGRF is the sign of the channel: Bx/X for the north axis, Bz/Z for the vertical.
+    Below `floor` = 0.3 the ratio says nothing -- a dead coil sits near zero and so does a sensor laid at
+    right angles to north -- and the sign stays undecided rather than being read off noise.
+
+    A row carrying any flag but `Bx negative` reads no sign at all (`dc_flags`). A magnetometer whose F is
+    16 per cent off IGRF, or whose axes are laid 40 deg from north, is not measuring the component the
+    ratio is being read as, and a polarity taken off it is a polarity taken off the wrong number. Queensland
+    Phase 1's Q65 is that site, and the campaign withheld its sign by hand for the same reason.
+
+    Hy is not decided here. The east component of the field is small and its ratio against IGRF is near zero
+    at an Australian site whatever the coil does, so By/Y is not a test; Hy is decided against the
+    observatory's east channel and two neighbours, which is a different measurement.
+    """
+    suspect = dc_flags(dc_row)
+    if suspect:
+        why = ("the DC test flags %s, so the ratio against IGRF is not this channel's polarity"
+               % "; ".join(suspect))
+        return {ch: (None, why) for ch in ("Hx", "Hz")}
+    out = {}
+    for ch, key, against in (("Hx", "Bx_over_X", "IGRF X"), ("Hz", "Bz_over_Z", "IGRF Z")):
+        try:
+            v = float(dc_row[key])
+        except (TypeError, ValueError, KeyError, IndexError):
+            v = float("nan")
+        if not np.isfinite(v):
+            out[ch] = (None, "%s carries no ratio against %s" % (ch, against))
+        elif abs(v) < floor:
+            out[ch] = (None, "%s/%s = %+.3f is inside the %.1f floor, so the axis says nothing about its "
+                             "sign" % (ch, against, v, floor))
+        else:
+            out[ch] = (1 if v > 0 else -1,
+                       "%s/%s = %+.3f, outside the %.1f floor" % (ch, against, v, floor))
+    return out
+
+
+def quadrant_sign(period, phase_deg, line: str = "", band_s=QUADRANT_BAND_S,
+                  n_periods: int = QUADRANT_PERIODS, min_in: int = QUADRANT_MIN_IN) -> tuple:
+    """(+1, -1 or None, one line saying what was counted) for one electric line, by Ben's quadrant rule.
+
+    `phase_deg` is the phase as `transfer_functions.rho_phase` serves it, which is the xy phase as it stands
+    and the yx phase already folded by +180 deg. Over a conductive half space with a sound H both sit in the
+    first quadrant; reversing a line's electrode pair turns its row of the tensor by 180 deg and puts the
+    phase in the third. So the rule reads:
+
+        0 to 90 deg          the line is the right way round     +1
+        -180 to -90 deg      the line is reversed                -1
+        anything else        neither quadrant, and no sign is read
+
+    The periods scored are `n_periods` = 6 spread over `band_s` = 30-1000 s, where a long-period record has
+    its best signal-to-noise and where the phase is least disturbed by the short-period noise a reference
+    cannot cancel; the sign is written only where `min_in` = 4 of the 6 agree. Fewer than 6 finite periods
+    in the band leaves the sign undecided, which is the one honest answer: an E line's sign is never read by
+    comparing E fields between sites (Ben's rule).
+    """
+    p = np.asarray(period, float)
+    ph = np.asarray(phase_deg, float)
+    inside = np.isfinite(p) & np.isfinite(ph) & (p >= band_s[0]) & (p <= band_s[1])
+    idx = np.flatnonzero(inside)
+    label = "%s over %g-%g s" % (line or "the line", band_s[0], band_s[1])
+    if len(idx) < n_periods:
+        return None, ("%s: %d finite period(s) in the band, fewer than the %d the rule scores"
+                      % (label, len(idx), n_periods))
+    pick = idx[np.round(np.linspace(0, len(idx) - 1, n_periods)).astype(int)]
+    vals = ph[pick]
+    first = int(np.sum((vals >= 0.0) & (vals <= 90.0)))
+    third = int(np.sum((vals >= -180.0) & (vals <= -90.0)))
+    detail = ("%s: %d of %d period(s) in 0-90 deg and %d in -180 to -90 deg (phase %s deg at %s s)"
+              % (label, first, n_periods, third,
+                 " ".join("%+.0f" % v for v in vals), " ".join("%.0f" % v for v in p[pick])))
+    if first >= min_in:
+        return 1, "%s -> +1" % detail
+    if third >= min_in:
+        return -1, "%s -> -1" % detail
+    return None, "%s: neither quadrant holds %d of %d, so no sign is read" % (detail, min_in, n_periods)

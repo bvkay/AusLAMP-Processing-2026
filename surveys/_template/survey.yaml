@@ -54,7 +54,9 @@ frame: geomagnetic
 declination_source: "IGRF via ppigrf, at the site, at the record midpoint"
 
 # The identity every transfer function's header carries. survey_id is the EDI SURVEY id, project its name,
-# geographic_name the region named beside each station, author the person who processed them.
+# geographic_name the region named beside each station, author the person who processed them. No workbook
+# measures any of these five: `decide` here means the student writes them, and whatever is left at `decide`
+# goes into every delivered EDI header as the word `decide`.
 survey_id: decide
 project: decide
 geographic_name: decide
@@ -62,8 +64,17 @@ author: decide
 organization: decide
 
 observatory:
+  # `archive` is a path on THIS machine, like raw_root and work_root, and the value below is the one this
+  # repository was written on. Point it at the INTERMAGNET one-second archive on yours: one parquet per
+  # observatory-year, <CODE>_1sec_<year>.parquet. A machine with no archive at all keeps the path and runs
+  # workbook 01 with FETCH = True, which downloads the days the span needs from the INTERMAGNET GIN into
+  # it, one request per day.
   archive: E:/MT_Timeseries_DATA/Geomagnetic_Observatory_Data/INTERMAGNET_1sec
-  code: decide              # the nearest INTERMAGNET observatory with 1 s data over the span, or none
+  # The IAGA code of the observatory this survey references, `decide` until it is chosen. Workbook 01 reads
+  # the archive's coverage over the survey's span for every observatory in auslamp_proc.geo.OBSERVATORIES,
+  # prints them nearest first and names the one to write here; it refuses to go on with `decide`, because
+  # `decide` is not an IAGA code and asking the archive for one finds nothing.
+  code: decide
 
 release_mth5: {}            # instrument: folder of the release's own MTH5 files (compared, never used)
 instrument_register: ""     # a CSV of logger serials against sites, if the release ships one
@@ -77,18 +88,46 @@ comparison_positions: {}
 #   select: {}              # rows of that table to keep, as column: value
 #   label: ""               # what the table is, printed above the comparison
 
-# Per-site facts a check in a workbook tests against. Each entry is an input, not a computed value.
+# Per-site facts a check in a workbook tests against. Each entry is an input, not a computed value. The
+# three keys the workbooks read are first_data_file, retained_failures and recipe_window, and each is
+# scored only at the sites it names: a survey that names none is not scored on it and the cell says so.
 checks: {}
 # checks:
-#   first_data_file: {}     # site: the name its first data file must start with, where the logger wrote that
-#                           # hour under a previous deployment's name; the discovery must read headers and not
-#                           # glob on the site name
-#   retained_failures:      # a verdict a run reports honestly over a condition the survey itself carries
+#   first_data_file: {}     # workbook 01. site: the name its first data file must start with, where the
+#                           # logger wrote that hour under a previous deployment's name; the discovery must
+#                           # read headers and not glob on the site name
+#   retained_failures:      # every workbook, through tests/test_conventions.py. A verdict a run reports
+#                           # honestly over a condition the survey itself carries, and which the package
+#                           # does not repair. A FAIL is excused only where an entry names both the
+#                           # workbook and a site the verdict's own text names, so a new failure cannot
+#                           # shelter behind an old entry; a survey-wide verdict that names no site cannot
+#                           # be retained this way and is reported as it stands
 #     - workbook: 02_records
 #       site: Q00
 #       reason: "what the survey carries, and why the package does not repair it"
+#   recipe_window:          # workbook 04. The hours a campaign chose by hand for a site, for the selection
+#                           # rule to be scored against; tolerance_h is how far each end may differ
+#     tolerance_h: 1
+#     Q00: {t_start: "2026-03-22T12:00:00", t_end: "2026-03-23T02:00:00", source: "who chose it and when"}
 
-# Where a dipole length is not recorded anywhere, the value written as assume:<value> and why.
+# The arm lengths in metres. A LEMI writes them into its .INF and a release MTH5 may carry them, but an EDL
+# raw folder records none at all: they are on the deployment sheet. So a survey names the CSV the sheet was
+# transcribed into, or one default with the reason it is used, or both -- the table where it has a row for
+# the site and the default, written assume:<metres>, where it does not. Apparent resistivity goes as the
+# square of the length, so a length nobody recorded is an assumption and is carried as one into the
+# provenance of every transfer function the site delivers.
+dipoles: {}
+# dipoles:
+#   table: dipoles.csv      # a path relative to this survey folder, or an absolute one. Columns: site,
+#                           # dipole_n_m, dipole_e_m, source. The expected source is the deployment sheet,
+#                           # transcribed with its date, and the `source` cell says so per site
+#   columns: {}             # {our name: their name} where the CSV spells a column differently
+#   default_m: 100          # metres, used at a site the table has no row for
+#   reason: "why that default is used, in full; it is carried into every transfer function's provenance"
+#
+# `dipole_default` is the older per-instrument spelling of the same default and is still read:
+# dipole_default:
+#   PR6-24+Mag-03: {value: 100, reason: "why that default is used, in full"}
 dipole_default: {}
 
 floors:
@@ -107,7 +146,11 @@ pool:
                                # noise floor, which spans five decades across a fleet
   own_ratio: 100               # a chunk is a candidate event above this multiple of the site's own median
   fleet_excess: 10             # ... and only where it also exceeds this multiple of the fleet's median
-  min_fleet: 3                 # below this many other sites recording, the site's own threshold decides alone
+  min_fleet: 3                 # the event test is fleet-normalised, so it needs this many other sites
+                               # with a scan to ask: a chunk recorded while fewer than this many
+                               # others were running carries no corroboration and is flagged, and a
+                               # run scoped to fewer than this many sites in all turns the event
+                               # limb OFF and judges the pool on its baseline alone
   event_frac_max: 0.02         # clean: at most this fraction of chunks flagged
   baseline_max: 10             # clean: at most this multiple of the survey median baseline
   e_burst_ratio: 100           # an E burst: this multiple of the line's own median band power
