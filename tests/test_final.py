@@ -196,6 +196,28 @@ def test_the_single_station_is_not_a_deliverable_kind():
     assert set(keep.kind) == {"remote", "stack"} and list(dropped.kind) == ["single"]
 
 
+def test_a_form_no_section_of_workbook_04_makes_is_ignored_and_not_read():
+    """Fails if a stray form enters the rows a workbook reads, or if a form workbook 04 makes is dropped.
+
+    The set is stated once, in site.forms.FORM_NAMES. `daymask_xy` and `hours_yx_random` are two of the ten
+    the removed day-mask and best-hours sections left in Q53N's run folder; `window_xy_control`, `diagonal`
+    and `replace_Hx_Q52N` are three the workbook still makes.
+    """
+    import pandas as pd
+    from auslamp_proc.site import forms as FM
+    keeps = ["", "whole", "whole10", "diagonal", "recipe", "recipe_x", "window_xy", "window_xy_control",
+             "merged_yx", "replace_Hx_Q52N", "replace_Hy_stack", "lender_Q52N"]
+    strays = ["daymask_xy", "daymask_yx_control", "hours_xy", "hours_yx_random", "hours_xy_contig2h"]
+    assert all(FM.is_form_name(f) for f in keeps if f), "a form the workbook makes is not in the set"
+    assert not any(FM.is_form_name(f) for f in strays), "a stray is in the set"
+    tfs = pd.DataFrame([dict(site="S", kind="remote", rate_hz=1.0, on_disk=True, form=f)
+                        for f in keeps + strays])
+    keep, dropped = RD.deliverable(tfs)
+    assert list(keep.form) == keeps, "a form the workbook makes was dropped"
+    assert list(dropped.form) == strays, "a stray was read"
+    assert set(dropped.why) == {"a form no section of workbook 04 makes"}
+
+
 def test_a_tf_name_is_read_off_its_kind_rate_selection_or_form():
     """Fails if the name the choice cell uses does not pick a row out of the readings table."""
     import pandas as pd

@@ -402,15 +402,27 @@ def all_tfs(sv, sites, runs="all", work_root=None, forms=True, from_names=True) 
 
 
 def deliverable(tfs: pd.DataFrame, kinds=KINDS) -> tuple:
-    """(the rows of the four reference kinds, the rows of every other kind).
+    """(the rows a workbook reads, the rows it names and ignores, each with the reason in `why`).
 
-    The second frame is what a workbook reports as read and ignored: a single-station file left on disk by an
-    earlier pass is named and not scored, so a file nobody deleted cannot enter a table or a figure.
+    A row is ignored on one of two readings. Its reference kind is not one of the four delivered, which is a
+    single-station file left on disk by an earlier pass. Or it carries a form name no section of workbook 04
+    makes, which is a stray left by a workbook that has since been cut: the section that made it took its
+    criterion with it, and a form with no criterion cannot be scored against one.
+
+    The second frame is what a workbook reports as read and ignored, so a file nobody deleted is named and
+    cannot enter a table or a figure.
     """
+    from .site.forms import is_form_name   # forms.py states the set of forms workbook 04 makes
     if not len(tfs):
-        return tfs, tfs
-    keep = tfs.kind.isin(list(kinds))
-    return tfs[keep].reset_index(drop=True), tfs[~keep].reset_index(drop=True)
+        return tfs, tfs.assign(why="") if "why" not in tfs.columns else tfs
+    d = tfs.copy()
+    kind_ok = d.kind.isin(list(kinds)).to_numpy()
+    named = d["form"] if "form" in d.columns else [""] * len(d)
+    form_ok = np.array([(not str(f or "")) or is_form_name(str(f)) for f in named])
+    d["why"] = np.where(~kind_ok, "the %s reference kind, which is never delivered" % DROPPED_KIND,
+                        np.where(~form_ok, "a form no section of workbook 04 makes", ""))
+    keep = kind_ok & form_ok
+    return d[keep].drop(columns="why").reset_index(drop=True), d[~keep].reset_index(drop=True)
 
 
 def tf_label(row) -> str:

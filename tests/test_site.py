@@ -8,6 +8,7 @@ to be on this machine is a test that is skipped on every other one.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from auslamp_proc.process import frame as FR
@@ -350,3 +351,64 @@ def test_refusal_sentence_carries_the_numbers_that_refused_the_form():
                                dict(n_runs=87, days=55.592), what="the window mask")
     for piece in ("the window mask", "0 run(s)", "3600 s", "remote", "55.59 d", "87 run(s)"):
         assert piece in s, (piece, s)
+
+
+def test_a_windowed_form_is_kept_only_where_its_recorded_bounds_are_the_rule_s_now():
+    """Fails if bounds_note calls a moved window, or one that records nothing, a match -- or if it calls a
+    match a difference.
+
+    Q53N's window forms were made under the day rule and then reused, unchecked, after the section had been
+    cut over to the hour rule. The guard is that a form records the two unix seconds, the hours, the rule
+    and its threshold, and is remade where any of the five has moved -- which includes a change of rule at
+    the same bounds, because the two rules answer different questions.
+    """
+    made = forms.window_bounds(dict(t_start=1_761_177_600, t_end=1_762_214_400),
+                               rule="days:sound", threshold=0.5)
+    assert made == dict(t_start=1_761_177_600, t_end=1_762_214_400, hours=288, rule="days:sound",
+                        threshold=0.5)
+    assert forms.bounds_note(made, made) == "", "a form on its own bounds was called stale"
+    moved = forms.window_bounds(dict(rule="stretch", t_start=1_762_596_000, t_end=1_762_660_800,
+                                     coh_min=0.5))
+    assert moved["rule"] == "stretch" and moved["hours"] == 18, moved
+    for key in ("t_start", "t_end", "hours", "rule"):
+        assert key in forms.bounds_note(made, moved), key
+    assert "records no bounds" in forms.bounds_note({}, moved), "a form recording nothing was reused"
+    assert forms.bounds_note(made, {}), "a row with no window now was called a match"
+    assert "threshold" in forms.bounds_note(dict(made, threshold=0.6), made), "a threshold change was missed"
+    assert "rule" in forms.bounds_note(dict(made, rule="days:sound+weak"), made), "a rule change was missed"
+
+
+def test_the_window_of_a_row_is_the_longest_run_of_that_line_s_sound_days():
+    """Fails if a shorter sound run is preferred, if the run is read off the other component's line, or if a
+    table with no sound day yields a window without saying it admitted the weak days.
+
+    A 1 Hz window exists for a line that died mid-record, so it is chosen on the days the elines table calls
+    that line sound and not on an hourly coherence, which dips every quiet night at a line that is alive.
+    """
+    t0 = 1_700_000_000
+    states = ["weak", "sound", "sound", "weak", "sound", "sound", "sound", "dead"]
+    el = pd.DataFrame([dict(day="d%d" % i, t_start=t0 + i * 86400, t_end=t0 + (i + 1) * 86400,
+                            Ex_state=s, Ey_state="weak") for i, s in enumerate(states)])
+    w = masks.window_from_days(el, "xy")
+    assert w["n_days"] == 3 and w["t_start"] == t0 + 4 * 86400, w
+    assert w["states"] == "sound" and w["days"] == 3.0
+    w2 = masks.window_from_days(el, "yx")
+    assert w2["n_days"] == 8 and "weak days are admitted" in w2["reason"], w2
+    assert w2["states"] == "sound+weak"
+    dead = pd.DataFrame([dict(day="d%d" % i, t_start=t0 + i * 86400, t_end=t0 + (i + 1) * 86400,
+                              Ex_state="dead", Ey_state="dead") for i in range(4)])
+    assert masks.window_from_days(dead, "xy")["t_start"] is None, "a dead line yielded a window"
+    assert masks.window_from_days(pd.DataFrame(), "xy")["reason"] == "no elines table"
+
+
+def test_a_key_of_more_than_six_entries_leaves_the_axes():
+    """Fails if a key small enough to sit in a corner is moved out, or one that would cover the curves is
+    left in, or if the columns fall outside 4 to 6."""
+    from auslamp_proc.figures import common as CM
+    labels = ["remote 1 Hz", "stack 1 Hz", "obs 1 Hz", "stack_obs 1 Hz", "window_xy", "diagonal"]
+    assert not CM.legend_below(labels), "six entries were moved out of the axes"
+    assert CM.legend_below(labels + ["whole10 10 Hz"]), "seven entries were left over the curves"
+    for n in (7, 12, 30):
+        ncol = CM.legend_columns(["remote/window_xy 1 Hz"] * n, 13.0)
+        assert CM.LEGEND_NCOL_MIN <= ncol <= CM.LEGEND_NCOL_MAX, (n, ncol)
+    assert CM.legend_columns(["a"] * 3, 13.0) == 3, "a key is never given more columns than entries"

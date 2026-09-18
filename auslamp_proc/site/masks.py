@@ -11,14 +11,22 @@ The tests and the selections, each with the criterion it applies and the values 
                            (vic_windows.cmd_clock :247-270)
     pair_coh               the coherence of one pair of channels over a band, bias-corrected
                            (vic_quality.pair_coh :81-101)
+    window_from_days       the longest run of days one line is sound in the elines table, the 1 Hz window of
+                           the impedance row that line estimates, with the weak days admitted and named
+                           where no sound run reaches the survey's floor
     random_block           a block of a named length placed at random elsewhere in the record under a named
                            seed, the control every selection here is read against
     write_windows          a component's chosen span written back to decisions.csv, and windows_table the row
                            of it a workbook prints
 
-Which hours a component is estimated over is not decided here. The one selection rule of this package is
-process.selection: whole UTC hours scored on the decided record, the longest coherent stretch, and its
-control on the same hour grid. This module holds the record-level tests the stretch rule reads around.
+Two rules choose time here, and they answer to different faults. A 10 Hz pass, and the recipe's
+`window:coherent` row, want the most coherent hours the record holds, because all that is wanted of them is
+the short end: that is process.selection, whole UTC hours scored on the decided record, the longest coherent
+stretch and its control on the same hour grid. A 1 Hz window per impedance row exists for a line that died
+mid-record, and what it wants is the weeks that line was alive: that is window_from_days below, the longest
+run of days the elines table calls sound for that line, with random_block as its control. A coherence dip at
+every quiet night is not a line dying, and an hour rule put to that question returns hours where the answer
+needs weeks.
 
 A coherence is bias-corrected as g2c = (g2 - p/nu) / (1 - p/nu) with p predictors and nu = NU_FACTOR x the
 number of 50 per cent overlapping Hann segments, because a few-segment estimate saturates at 1 or sits at the
@@ -381,6 +389,55 @@ def pair_coh(x, y, lo_s, hi_s, nperseg, fs=1.0) -> float:
         return np.nan
     g2 = float(np.median(vals))
     return float(np.clip((g2 - 1.0 / nu) / (1.0 - 1.0 / nu), 0.0, 1.0))
+
+
+# ---------------------------------------------------------------- windows
+
+def window_from_days(elines: pd.DataFrame, comp: str, states=("sound",), min_days=0.5,
+                     fallback_states=("sound", "weak")) -> dict:
+    """The longest run of days of one line in `states`, as a proposed window with its reason.
+
+    Where no run in `states` reaches min_days the fallback states are tried and the reason says so, which is
+    vic_best_hours' rule for a pool too thin to select from (:78-79) applied to a window. Returns a dict with
+    t_start, t_end, days and reason, or days = 0 where the line has no run at all.
+    """
+    line = COMPONENT_LINE[comp]
+    col = "%s_state" % line
+    if elines is None or not len(elines) or col not in elines.columns:
+        return dict(component=comp, t_start=None, t_end=None, days=0.0, n_days=0,
+                    reason="no elines table", states="")
+
+    states_col = list(elines[col])
+    t_start = [int(v) for v in elines.t_start]
+    t_end = [int(v) for v in elines.t_end]
+
+    def _longest(want):
+        best = (0, None, None)
+        cur = 0
+        for i, s in enumerate(states_col):
+            if s in want:
+                cur += 1
+                if cur > best[0]:
+                    best = (cur, t_start[i - cur + 1], t_end[i])
+            else:
+                cur = 0
+        return best
+
+    for want, tag in ((tuple(states), "sound"), (tuple(fallback_states), "fallback")):
+        n_days, ta, tb = _longest(want)
+        if ta is not None and (tb - ta) / DAY >= float(min_days):
+            reason = ("the longest run of %s days of %s: %d day(s), %s to %s"
+                      % ("+".join(want), line, n_days, _iso_day(ta), _iso_day(tb)))
+            if tag == "fallback":
+                reason += ("; no run of %s days reaches the %.2f d floor, so the weak days are admitted and "
+                           "the window is a proposal, not a finding" % ("+".join(states), min_days))
+            return dict(component=comp, t_start=int(ta), t_end=int(tb), days=round((tb - ta) / DAY, 3),
+                        n_days=int(n_days), reason=reason, states="+".join(want))
+    return dict(component=comp, t_start=None, t_end=None, days=0.0, n_days=0,
+                reason="no run of %s days reaches the %.2f d floor" % ("+".join(states), min_days),
+                states="")
+
+
 def random_block(t0, n, length_samples, seed, exclude=None, fs=1.0):
     """(i0, i1) of a block of the same length placed at random elsewhere in the record.
 

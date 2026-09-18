@@ -19,6 +19,13 @@ would be given NaN over the rest. The whole record supplies the healthy row and 
 supplies the other row, and both windows are in the provenance. A window shorter than survey.yaml
 `floors.min_window_days` is refused.
 
+FORM_NAMES states, once, the forms workbook 04 can produce. A file in a run folder whose name carries a form
+outside it is a stray left by a workbook that has since been cut, named where it is found and read by
+nothing. A windowed form also records the bounds it was estimated on -- the two unix seconds, the hours, the
+rule and its threshold -- in the file and in the run folder's provenance, so a later run compares them with
+what the rule gives now and remakes the form where they differ instead of reusing it under a rule it never
+saw.
+
 merge_component (ported from wamt_run.merge_component :540-584) replaces exactly the two impedance rows of
 one component in the whole-record file from the windowed file: the station block, the position, the tipper
 and every other row carry across untouched. Both files come off the same band file, so the expected answer is
@@ -29,6 +36,7 @@ the identity, and the grid is checked because a silent half-period shift is what
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import time
 from datetime import datetime, timezone
@@ -46,6 +54,113 @@ ELEMENTS = {"xx": (0, 0), "xy": (0, 1), "yx": (1, 0), "yy": (1, 1)}
 ELEMENT_OF = {v: k for k, v in ELEMENTS.items()}
 GRID_RTOL = 1e-9
 DEFAULT_MIN_WINDOW_DAYS = 0.5
+
+# The forms workbook 04 can produce, stated once. Every name a section of that workbook passes to run_form or
+# appends to its own table matches this, and a file in a run folder whose name does not is a stray: a form
+# left by a workbook that has since been cut. A stray is named where it is found and read by nothing, because
+# the criterion a form was judged on is what makes it readable and a cut section took its criterion with it.
+FORM_NAMES = re.compile(r"^(whole|whole10|diagonal|recipe|recipe_[xy]"
+                        r"|window_(xy|yx)(_control)?"
+                        r"|merged_(xy|yx)"
+                        r"|replace_H[xy]_[A-Za-z0-9]+"
+                        r"|lender_[A-Za-z0-9]+)$")
+
+# the keys a windowed form's bounds are compared on: the two unix seconds, the whole hours between them, the
+# name of the rule that chose them and the threshold that rule read
+BOUNDS_KEYS = ("t_start", "t_end", "hours", "rule", "threshold")
+
+
+def is_form_name(name) -> bool:
+    """True where `name` is a form workbook 04 makes. See FORM_NAMES."""
+    return bool(FORM_NAMES.match(str(name or "")))
+
+
+def strays(folder, sites) -> list:
+    """[(path, form)] for every EDI of a run folder that its forms.csv does not name and whose form is not
+    one workbook 04 makes.
+
+    A file forms.csv names is a form of this run whatever its name parses as: <form>_<kind> is ambiguous
+    where a form ends in a kind's own word, and `replace_Hx_stack` against the obs reference reads back as
+    the form `replace_Hx` on the kind `stack_obs`. Every other file is read by its name through
+    readings.parse_form_name, which is where the package reads a form off one; a name that does not parse as
+    a form at all is a workbook 03 transfer function and is not a stray.
+    """
+    from ..readings import parse_form_name   # readings parses a form's file name; forms.py states the set
+    folder = Path(folder)
+    named = set()
+    if (folder / "forms.csv").exists():
+        try:
+            named = {str(x) for x in pd.read_csv(folder / "forms.csv").transfer_function.astype(str)}
+        except Exception:
+            named = set()
+    out = []
+    for p in sorted(folder.glob("*.edi")):
+        if p.name in named:
+            continue
+        meta = parse_form_name(p, list(sites))
+        form = str((meta or {}).get("form") or "")
+        if form and not is_form_name(form):
+            out.append((p, form))
+    return out
+
+
+# ---------------------------------------------------------------- the bounds a windowed form was made on
+
+def window_bounds(selection, rule=None, threshold=None) -> dict:
+    """The bounds a windowed form is estimated on, as the guard compares them.
+
+    A selection dict from process.selection -- longest_stretch or control_stretch -- carries all five keys
+    under its own names. A window chosen by another rule states its own: masks.window_from_days names
+    neither a rule nor a threshold, so the caller passes the rule it applied and the floor it read. An empty
+    selection gives {}, which no recorded bounds can match.
+    """
+    if not selection or selection.get("t_start") is None:
+        return {}
+    ta, tb = int(selection["t_start"]), int(selection["t_end"])
+    thr = selection.get("coh_min") if threshold is None else threshold
+    return dict(t_start=ta, t_end=tb, hours=int(round((tb - ta) / 3600.0)),
+                rule=str((selection.get("rule") if rule is None else rule) or ""),
+                threshold=round(float("nan") if thr is None else float(thr), 6))
+
+
+def recorded_bounds(out_dir, site, form, kind, rate, params) -> dict:
+    """The bounds the run folder's provenance.json records for one form, or {} where it records none.
+
+    A form written before the guard existed carries none, which is not the same as carrying bounds that
+    match: the caller remakes it, because what it was estimated on cannot be read off the file.
+    """
+    want = str(Path(out_dir) / tf_name(site, form, kind, rate, params))
+    for entry in (PROV.read(Path(out_dir) / "provenance.json").get("forms") or []):
+        if str(entry.get("transfer_function")) == want:
+            return dict(entry.get("bounds") or {})
+    return {}
+
+
+def bounds_note(recorded: dict, wanted: dict) -> str:
+    """Empty where the form on disk was estimated on the bounds the rule now gives, else what differs.
+
+    The returned sentence names both sets, because a form is remade on this reading and the reading is what
+    says why. Bounds the rule cannot state -- no stretch was found -- differ from anything.
+    """
+    if not wanted:
+        return "the rule finds no stretch for this row now, so no bounds can be matched"
+    if not recorded:
+        return ("the file on disk records no bounds, so what it was estimated on cannot be read; the rule "
+                "now gives %s" % bounds_words(wanted))
+    off = [k for k in BOUNDS_KEYS if str(recorded.get(k)) != str(wanted.get(k))]
+    if not off:
+        return ""
+    return ("the file was estimated on %s and the rule now gives %s (%s differ)"
+            % (bounds_words(recorded), bounds_words(wanted), ", ".join(off)))
+
+
+def bounds_words(b: dict) -> str:
+    """One set of bounds in words: the span in UTC, the hours, the rule and the threshold."""
+    if not b:
+        return "no bounds"
+    return ("%s..%s, %s h, rule %s at %s"
+            % (_iso(b.get("t_start", 0)), _iso(b.get("t_end", 0)), b.get("hours"), b.get("rule"),
+               b.get("threshold")))
 
 
 def _iso(t) -> str:
@@ -208,7 +323,7 @@ def refused_row(sv, site, form, out_dir, kind, rate, params, reason, cov=None, c
 def run_form(sv, site, form, out_dir, kind="remote", rate=1, params="kaiser20_75",
              keep_extra=None, keep_name="", window=None, variant="", apply_e_signs=True,
              local_h=None, correction=None, turn_ne=False, turn_angle_deg=None, seed=None, controls=(),
-             criterion="", extra_lines=(), lender=None, redo=False, verbose=True) -> dict:
+             criterion="", extra_lines=(), lender=None, bounds=None, redo=False, verbose=True) -> dict:
     """One form of one site as a transfer function. Returns the row the forms table is built from.
 
     `keep_extra` is a boolean over the record's samples -- a day mask, a selection of hours -- applied on top
@@ -218,6 +333,9 @@ def run_form(sv, site, form, out_dir, kind="remote", rate=1, params="kaiser20_75
     afterwards. `turn_ne` completes the arm-diagonal turn on the written file, at `turn_angle_deg`
     (the site's own atan2(-L_E, L_N); None keeps the equal-arm -45 deg). `lender` names the site a
     borrowed channel came from and is refused where it is a member of the reference this pass reads.
+    `bounds` is window_bounds of the selection `window` came from and is written into the file and into the
+    run folder's provenance, so a later run can read what this pass was estimated on and remake it where the
+    rule has since moved.
     """
     aurora_run.silence_loggers()
     import aurora
@@ -228,7 +346,8 @@ def run_form(sv, site, form, out_dir, kind="remote", rate=1, params="kaiser20_75
     # `transfer_function` is the key forms.csv and provenance.json already carry for the file this pass wrote
     row = dict(site=site, form=form, kind=kind, rate_hz=float(rate), params=params,
                transfer_function=str(edi_out), controls=";".join(controls), criterion=criterion,
-               seed=(None if seed is None else int(seed)), status=None, error=None, seconds=None)
+               seed=(None if seed is None else int(seed)), status=None, error=None, seconds=None,
+               bounds=(dict(bounds) if bounds else None))
     if edi_out.exists() and not redo:
         # what the pass measured when it wrote this file is carried forward from the run folder's
         # provenance, so a resumed run reports the same numbers rather than blanks: without it the
@@ -237,9 +356,14 @@ def run_form(sv, site, form, out_dir, kind="remote", rate=1, params="kaiser20_75
         row["status"] = "exists"
         for old in (PROV.read(out_dir / "provenance.json").get("forms") or []):
             if old.get("transfer_function") == str(edi_out):
-                for k in ("turn", "n_runs", "days", "record_days", "kept_frac", "mask_dropped_frac",
-                          "selection_dropped_frac", "floor_dropped_frac", "rotation_deg", "remote",
-                          "seconds"):
+                carry = ["turn", "n_runs", "days", "record_days", "kept_frac", "mask_dropped_frac",
+                         "selection_dropped_frac", "floor_dropped_frac", "rotation_deg", "remote",
+                         "seconds"]
+                # the bounds the caller states are the ones it just checked the file against; where it
+                # states none, what the file records is carried forward rather than blanked
+                if not bounds:
+                    carry.append("bounds")
+                for k in carry:
                     if old.get(k) is not None:
                         row[k] = old[k]
                 break
@@ -319,6 +443,8 @@ def run_form(sv, site, form, out_dir, kind="remote", rate=1, params="kaiser20_75
         plines += ["form=%s" % form,
                    "form_selection=%s" % (keep_name or "none: the whole record"),
                    "form_window=%s" % (window_note or "none: the whole record"),
+                   "form_bounds=%s" % (json.dumps(dict(bounds), sort_keys=True) if bounds
+                                       else "none: the whole record"),
                    "form_controls=%s" % (", ".join(controls) or "none"),
                    "form_seed=%s" % ("none" if seed is None else str(int(seed))),
                    "form_criterion=%s" % (criterion or "none stated"),

@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from .common import finish
+from .common import finish, legend_below
 from .transfer_functions import _dress, tf_panels
 from .record import minute_stats
 
@@ -190,8 +190,12 @@ def form_panels(curves, site, out, title="", caption="", period_range=None, figs
         rho += tf_panels(ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx, ax_tzx, ax_tzy, tf, label,
                          colour=colour, ls=ls, marker="o", period_range=period_range, bars=True)
     _dress((ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx, ax_tzx, ax_tzy), rho, period_range, comps=comps)
-    ax_rho_xy.legend(fontsize=8, loc="best")
-    return finish(fig, title or site, caption, out)
+    handles, labels = ax_rho_xy.get_legend_handles_labels()
+    below = bool(handles) and legend_below(labels)
+    if handles and not below:
+        ax_rho_xy.legend(fontsize=8, loc="best")
+    return finish(fig, title or site, caption, out,
+                  legend=((handles, labels) if below else None))
 
 
 def rate_panels(curves, site, out, join_s=16.0, bands=((8.0, 16.0), (32.0, 100.0)),
@@ -219,8 +223,12 @@ def rate_panels(curves, site, out, join_s=16.0, bands=((8.0, 16.0), (32.0, 100.0
         for k, (lo, hi) in enumerate(bands):
             a.axvspan(lo, hi, color="C7", alpha=0.13, lw=0)
         a.axvline(join_s, color="0.3", ls="-.", lw=1)
-    ax_rho_xy.legend(fontsize=8, loc="best")
-    return finish(fig, title or "%s: the 10 Hz forms against the 1 Hz baseline" % site, caption, out)
+    handles, labels = ax_rho_xy.get_legend_handles_labels()
+    below = bool(handles) and legend_below(labels)
+    if handles and not below:
+        ax_rho_xy.legend(fontsize=8, loc="best")
+    return finish(fig, title or "%s: the 10 Hz forms against the 1 Hz baseline" % site, caption, out,
+                  legend=((handles, labels) if below else None))
 # ---------------------------------------------------------------- section 6
 
 def residual_panels(sv, site, me, built, out, days=3, elines=None, band_s=(20.0, 200.0), nperseg=4096,
@@ -487,5 +495,9 @@ def recipe_transfer_function(curves, site, out, join_s=None, title="", caption="
     if join_s and np.isfinite(join_s):
         for a in (ax_rho_xy, ax_rho_yx, ax_ph_xy, ax_ph_yx):
             a.axvline(float(join_s), color="0.3", ls="-.", lw=1)
-    ax_rho_xy.legend(fontsize=8, loc="best")
-    return finish(fig, title or "%s: the assembled recipe" % site, caption, out)
+    handles, labels = ax_rho_xy.get_legend_handles_labels()
+    below = bool(handles) and legend_below(labels)
+    if handles and not below:
+        ax_rho_xy.legend(fontsize=8, loc="best")
+    return finish(fig, title or "%s: the assembled recipe" % site, caption, out,
+                  legend=((handles, labels) if below else None))

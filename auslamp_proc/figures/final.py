@@ -27,7 +27,7 @@ import numpy as np
 
 from ..transfer_functions import rho_phase
 from ..readings import KINDS
-from .common import finish
+from .common import finish, legend_below
 from .transfer_functions import _dress, tf_panels
 
 FINAL_COLOUR = "C3"                # the delivered curve, drawn on top
@@ -69,6 +69,10 @@ def curves_page(site, curves, out, title="", caption="", period_range=None, tipp
     `curves` is a list of mappings: `tf` the TFData, `label` the legend entry or None, `colour`, `ls`,
     `marker`, `lw`, `ms`, `alpha`, `zorder`, `bars` whether the error bars are drawn, `limits` whether the
     curve sets the rho y limits, and `note` a short string written at the curve's long end.
+
+    The key goes under the panels where there are more than common.LEGEND_IN_PANEL_MAX entries, which is
+    every page that draws a site's transfer functions; `legend_ncol` is the corner key's columns and is not
+    read once the key has left the axes, where the figure's own width sets them.
     """
     import matplotlib.pyplot as plt
 
@@ -100,9 +104,11 @@ def curves_page(site, curves, out, title="", caption="", period_range=None, tipp
         ax[0][0].plot([], [], ls="--", lw=0.8, color="0.4",
                       label="the join at %g s: the 10 Hz row below it" % float(join_s))
     handles, labels = ax[0][0].get_legend_handles_labels()
-    if handles:
+    below = bool(handles) and legend_below(labels)
+    if handles and not below:
         ax[0][0].legend(handles, labels, fontsize=6.5, loc="best", ncol=legend_ncol, framealpha=0.85)
-    return finish(fig, title or "%s: the transfer functions" % site, caption, out)
+    return finish(fig, title or "%s: the transfer functions" % site, caption, out,
+                  legend=((handles, labels) if below else None))
 
 
 def transfer_functions_page(site, rows, out, title="", caption="", period_range=None, tipper=True,

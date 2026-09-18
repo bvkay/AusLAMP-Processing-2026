@@ -27,7 +27,7 @@ import numpy as np
 
 from ..process import KINDS, KIND_WORD
 from ..transfer_functions import rho_phase, tipper_parts
-from .common import finish
+from .common import finish, legend_below
 
 RHO_PAD_DEX = 0.5             # half a decade of padding above and below the data
 RHO_MIN_DEX = 1.0             # a panel never spans less than a decade
@@ -157,10 +157,12 @@ def site_page(site, tfs, read, out, title="", caption="", header_lines=(), perio
                           colour=st["colour"], kind=r.kind, rate_hz=r.rate_hz, run=r.run))
     _dress(panels, rho_curves, period_range)
     handles, labels = ax[0][0].get_legend_handles_labels()
-    if handles:
+    below = bool(handles) and legend_below(labels)
+    if handles and not below:
         ax[0][0].legend(handles, labels, fontsize=6.5, loc="best", ncol=2, framealpha=0.85)
     lines = [str(x) for x in header_lines]
     text = "; ".join(lines)
     full = "%s %s" % (str(caption).strip(), text) if caption else text
-    return finish(fig, title or "%s: every transfer function" % site, full.strip(), out), index
+    return finish(fig, title or "%s: every transfer function" % site, full.strip(), out,
+                  legend=((handles, labels) if below else None)), index
 

@@ -138,8 +138,11 @@ for (run, stamp), g in TFS.groupby(["run", "stamp"]):
              ", ".join(sorted(set(g.selection)))))
 print("forms                 %d transfer function(s) workbook 04 left" % int((TFS.form != "").sum()))
 print("kinds                 %s" % ", ".join("%s (%s)" % (KIND_WORD[k], k) for k in RD.KINDS))
-print("ignored               %d %s transfer function(s) on disk: read by nothing in this workbook"
-      % (len(IGNORED), RD.DROPPED_KIND))
+print("ignored               %d transfer function(s) on disk: read by nothing in this workbook"
+      % len(IGNORED))
+for _why, _g in (IGNORED.groupby("why") if len(IGNORED) else []):
+    print("                      %d on the reading `%s`: %s"
+          % (len(_g), _why, " ".join(sorted(Path(p).name for p in _g.path))))
 print("delivery              the transfer function of record is chosen among the %s Hz rows; the delivered "
       "file is %s"
       % (", ".join(str(r) for r in RECORD_RATES),
@@ -232,6 +235,12 @@ and it is the band the delivered file is trimmed to under TRIM_TO_HELD.
 What to look for: the kinds lying on each other at 100-1000 s, where the field is large and every reference
 sees the same source; the grey curves, which are where a line, a sign or an error bar failed; and the held
 band in the table, which is how far the delivered file reaches.
+
+Two kinds of file in a run folder are named and not read. One carries a reference kind that is never
+delivered. The other carries a form name no section of workbook 04 makes -- a stray left by a workbook that
+has since been cut, whose criterion went with the section that made it, and a form with no criterion cannot
+be read against one. Both are listed in the first cell above with the reading each was ignored on, so a file
+nobody deleted is named rather than drawn.
 
 **This check fails if any transfer function in this site's run folders is missing from the readings table, or
 if any row's three test results cannot be recomputed from its own EDI.** The recomputation opens each file
@@ -329,9 +338,10 @@ elif missing or bad:
              "; ".join(bad[:3]) or "none"))
 else:
     print("VERDICT: PASS -- all %d EDI(s) in the run folders are in the readings table or are among the %d "
-          "%s transfer function(s) named and ignored, and every one of the %d scored rows carries the three "
-          "verdicts the file itself gives when the phase fraction, the slope fraction, the bar and the "
-          "period count are worked out again" % (walked, len(IGNORED), RD.DROPPED_KIND, n_scored))
+          "transfer function(s) named and ignored (%s), and every one of the %d scored rows carries the "
+          "three verdicts the file itself gives when the phase fraction, the slope fraction, the bar and "
+          "the period count are worked out again"
+          % (walked, len(IGNORED), "; ".join(sorted(set(IGNORED.why))) or "none", n_scored))
 '''),
 
 ("md", r"""## 2. The rule's proposal

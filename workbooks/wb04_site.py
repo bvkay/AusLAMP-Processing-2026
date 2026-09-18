@@ -1,4 +1,4 @@
-r"""Workbook 04, one site in depth: the magnetics, the stretches, the forms and the recipe.
+r"""Workbook 04, one site in depth: the magnetics, the windows, the forms and the recipe.
 
 The cells are a Python list of ("md", text) and ("code", source). workbooks/make_workbooks.py imports the
 list from here and writes 04_site.ipynb.
@@ -13,7 +13,7 @@ RUN = "site"                  # the forms' run name; the folder is <work_root>/<
 STAMP = None                  # None = the newest <RUN>_* folder if there is one, else a new stamp
 BASELINE_KIND = "remote"      # the reference every form is built on: remote | stack | obs | stack_obs
 RATES = [1, 10]               # [1] is the 1 Hz lane alone; 10 adds the short end of section 5
-COMPONENTS = ["xy", "yx"]     # the components the stretches and the forms are read for
+COMPONENTS = ["xy", "yx"]     # the components the windows and the forms are read for
 REDO = False                  # True remakes a form whose EDI is already in the run folder
 WRITE_DECISIONS = False       # decisions are Ben's: True writes the proposed cells into decisions.csv
 WORK_ROOT = None              # None = survey.yaml work_root; every transfer function and figure lands there
@@ -21,7 +21,7 @@ WORK_ROOT = None              # None = survey.yaml work_root; every transfer fun
 
 WB04_RULES = '''# ---- the method parameters: a change here changes what a form is built on ----
 K_NEAREST = 2                 # the neighbours the daily magnetics test reads a day against
-SEED = 20260916               # the named seed every control stretch is drawn under
+SEED = 20260916               # the named seed every control is drawn under
 CENTRE_DAYS = 3               # the days of highest Ex-Ey coherence the residual test is read over
 REPLACE_CHANNEL = None        # None = from the DC flags and the candidates table | "Hx" | "Hy"
 LENDER = None                 # None = the nearest candidate that is not in the reference | a site name
@@ -35,6 +35,7 @@ WB04_SETUP = '''import os
 for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
     os.environ.setdefault(_v, "3")
 
+import json
 import shutil
 import time
 import warnings
@@ -167,7 +168,7 @@ print("baseline     %s (%s)" % (Path(BASE).name if BASE else "NONE", BASE_WHY))
 print("record       %.2f d of 1 Hz samples from %s UTC" % (n_rec / 86400.0,
                                                            pd.Timestamp(t0_rec, unit="s")))
 print("rates        %s Hz; components %s" % (", ".join(str(r) for r in RATES), ", ".join(COMPONENTS)))
-print("seed         %d, used by every control stretch in this workbook" % SEED)
+print("seed         %d, used by every control in this workbook" % SEED)
 '''
 
 WB04 = [
@@ -181,26 +182,29 @@ function carrying the header a workbook 03 transfer function carries. Section 8 
 one frame and, per impedance row, which hours that row is estimated on and at which rate, assembled into one
 transfer function.
 
-The rule this workbook is written around: a selection of hours is never delivered without its control. Each
+The rule this workbook is written around: a selection of time is never delivered without its control. Each
 selection carries
 
-1. a control of the same length and the same shape -- a contiguous stretch placed at random elsewhere in the
-   record under a seed written into the file's header, not overlapping the selection -- so the two cost the
-   same number of hours and only the choosing differs;
-2. the selecting statistic with its band and its threshold, so the stretch can be read back from the hour
-   score table it was chosen on;
+1. a control of the same length and the same shape -- a contiguous block placed at random elsewhere in the
+   record under a seed written into the file's header -- so the two cost the same and only the choosing
+   differs;
+2. the rule that chose it with its threshold, so the selection can be read back from the table it was chosen
+   on: the elines table for a window of days, the hour score table for a stretch of hours;
 3. the transfer function itself scored against its control on the 10-1000 s bar, on smoothness, and on
    agreement with the baseline at 100-1000 s.
 
 The control is scored on the transfer function that would be delivered, not only on the statistic that chose
-the hours. A selection whose transfer function does not beat its control has narrowed its error bars and
+the time. A selection whose transfer function does not beat its control has narrowed its error bars and
 not changed the answer, and is not promoted.
 
-Selecting on the target's own E-H coherence uses the target's own response and favours the hours where the
-linear model already fits: for a dead electrode that is the truth, for a merely noisy one it can bias the
-estimate towards the quiet hours. The threshold therefore sits well below live -- 0.5 over 20-200 s, where a
-live line reads above 0.85 -- and a stretch is a contiguous run of whole hours rather than a scattered set,
-so one Aurora window at the deepest decimation level, 65,536 s, still fits inside a long stretch.
+Two rules choose time here and they answer to different faults. A 1 Hz window per impedance row, section 3,
+is the longest run of days that row's own line is sound in the elines table: a line that died mid-record
+takes weeks of the record with it, and the window is the weeks it was alive. A 10 Hz pass, section 5, and the
+recipe's `window:coherent` row, section 8, take the longest contiguous stretch of whole UTC hours in which
+the line reads above 0.5 over 20-200 s, because the short end is all that is wanted of them. Selecting on the
+target's own E-H coherence uses the target's own response and favours the hours where the linear model
+already fits, so the threshold sits well below live, where a live line reads above 0.85; and a coherence dip
+at every quiet night is not a line dying, which is why the 1 Hz window is not chosen that way.
 
 Seven checks state their failure criterion in bold above the cell and print a verdict below it. A check that
 scores zero items prints UNJUDGED and counts as a failure. A criterion that is met is reported as FAIL and is
@@ -247,9 +251,9 @@ for name in ("01_record.png", "02_coherence_bands.png"):
 
 The methods are keyed to the three tables above: a common-mode signature on the two lines calls for the
 shared-centre test of section 4, a magnetic flag or a channel reading low against its neighbours calls for
-the replacement of section 6, and a line that dies mid-record calls for the stretch of section 3. Section 3
-applies wherever a line is alive but noisy as well, because the rule that chooses a stretch is the same
-rule either way."""),
+the replacement of section 6, and a line that dies mid-record calls for the window of section 3. A line
+alive but noisy throughout is not what a window is for: the days it was alive are all of them, and the
+answer to noise is the reference, the mask or the recipe's coherent hours."""),
 
 ("code", '''common = float(np.nanmedian(ELINES.coh_Ex_Ey)) if len(ELINES) else np.nan
 # DC["flags"], not DC.flags: a DataFrame carries a `flags` attribute of its own and attribute access
@@ -356,87 +360,137 @@ else:
 ("md", r"""## 3. Windows
 
 A line that dies mid-record is not a reason to throw the record away. The rule is the whole record for the
-healthy row and for the tipper, a stretch of hours for the other row, and both stretches in the provenance.
+healthy row and for the tipper, a window for the other row, and both windows in the provenance.
 
-Which hours is one rule, the same rule the recipe of section 8 reads. Each whole UTC hour of the 1 Hz cache
-is scored by the median squared coherence over 20-200 s, Welch at 1,024 s segments, of Ex with Hy and of Ey
-with Hx. A stretch is a contiguous run of whole UTC hours in which every line named reads above
-WINDOW_COH = 0.5. A component's stretch is read on that component's own line alone -- the xy component on Ex
-against Hy, the yx component on Ey against Hx -- because the x impedance row is estimated from Ex and the y
-row from Ey, and a stretch exists to find where that electrode was measuring. The selection is the longest
-such stretch, and where it runs longer than STRETCH_MAX_H = 48 h the 48 contiguous hours inside it with the
-highest mean score are taken. The hours are scored on the 1 Hz cache read decided, because 200 s is measured
-on the long record and because an exchange or a shift of an electric line moves an E-H coherence.
+The window of a row is the longest run of days on which that row's own line is `sound` in the elines table
+workbook 02 wrote -- the xy row on Ex, the yx row on Ey, because the x impedance row is estimated from Ex and
+the y row from Ey. Where no run of sound days reaches the `floors.min_window_days` the survey names, the weak
+days are admitted, the row says so, and the window is a proposal and not a finding. A window already in
+decisions.csv is used instead of the proposal.
 
-The windowed pass slices everything to the stretch, H included: the point of a stretch is that this
-component's estimate sees only the hours its electrode was measuring, and an estimator handed a longer H than
-E would be given NaN over the rest. The merge then replaces exactly that component's two impedance rows in a
+This is not the rule sections 5 and 8 apply, and the two answer to different faults. A 10 Hz pass, and the
+recipe's `window:coherent` row, want the most coherent hours the record holds, because the short end is all
+that is wanted of them; a 1 Hz window per row exists for a line that died, and what it wants is the weeks
+that line was alive. An hour rule put to the second question returns hours where the answer needs weeks, and
+a coherence dip at every quiet night is not a line dying.
+
+The windowed pass slices everything to the window, H included: the point of a window is that this
+component's estimate sees only the days its electrode was alive, and an estimator handed a longer H than E
+would be given NaN over the rest. The merge then replaces exactly that component's two impedance rows in a
 copy of the whole-record file; the station block, the position, the tipper and every other row carry across
 untouched.
 
-The control is a stretch of the same length placed at random elsewhere in the record under the seed printed
-below, not overlapping the selection: what a stretch buys beyond its length is the difference between the
-two.
+The control is a block of the same length placed at random elsewhere in the record under the seed printed
+below: a window that buys nothing beyond its length is one a block of the same length placed anywhere would
+buy.
 
-**This check fails if the merge changes any row other than the windowed component's two, if a stretch lacks
-its equal-length control, or if a promoted stretch does not beat that control on the 10-1000 s bar by at
-least 20 per cent.** A stretch that does not beat its control is not promoted, which is a finding about the
+A windowed form on disk is reused only where it records the bounds this rule gives now. Each pass writes the
+two unix seconds, the hours, the name of the rule and its threshold into its own file and into the run
+folder's provenance, and the cell below reads them back and compares them before it asks for the pass. A
+difference, or a file that records no bounds at all, remakes the form and its control together and says so:
+a window and its control are one pair, because the control is a block of the window's own length. This is
+the guard the arm-diagonal cache of section 4 already carries, on the one thing a window is: the span it saw.
+REDO False therefore keeps a form whose bounds match and no other.
+
+**This check fails if the merge changes any row other than the windowed component's two, if a window lacks
+its equal-length random block, or if a promoted window does not beat that block on the 10-1000 s bar by at
+least 20 per cent.** A window that does not beat its block is not promoted, which is a finding about the
 site and not a failure of the check."""),
 
 ("code", '''t = time.time()
 HOUR_TABLE = SEL.site_scores(sv, SITE, rate=SEL.SCORE_RATE)
 print("the hour score over %d whole UTC hour(s) of the %g Hz cache in %.0f s: the median squared coherence "
-      "of Ex with Hy and of Ey with Hx over %g-%g s, Welch at %d s segments, written to %s"
+      "of Ex with Hy and of Ey with Hx over %g-%g s, Welch at %d s segments, written to %s. It is read by "
+      "section 5's 10 Hz selection and by section 8's window:coherent rows, and not by this section"
       % (len(HOUR_TABLE), SEL.SCORE_RATE, time.time() - t, SEL.SCORE_BAND_S[0], SEL.SCORE_BAND_S[1],
          SEL.SCORE_SEGMENT_S, SEL.scores_path(WORK, SITE).name))
+print()
+MIN_WINDOW_DAYS = FM.min_window_days(sv)
 WINDOWS, WIN_ROWS = {}, []
+DEC_WINDOWS = {}
+_cell = str(sv.decision(SITE).get("windows", "")).strip()
+if _cell and _cell.lower() not in ("decide", "nan", "none", ""):
+    try:
+        DEC_WINDOWS = json.loads(_cell)
+    except Exception as exc:
+        print("decisions.csv windows does not parse as JSON (%s); the proposal below is used" % exc)
 for comp in COMPONENTS:
     seed = SEED + (0 if comp == "xy" else 1)
-    s = SEL.longest_stretch(HOUR_TABLE, coh_min=SEL.WINDOW_COH, lines=(comp,), max_h=SEL.STRETCH_MAX_H)
-    c = (SEL.control_stretch(t0_rec, n_rec, s, seed=seed, fs=float(SEL.SCORE_RATE))
-         if s["t_start"] is not None else None)
-    WINDOWS[comp] = dict(component=comp, line=LINE[comp], t_start=s["t_start"], t_end=s["t_end"],
-                         hours=s["hours"], days=(round(s["hours"] / 24.0, 3) if s["t_start"] else None),
-                         n_days=round(s["n_hours_above"] / 24.0, 3), cut=s["cut"],
-                         mean_score=s["mean_score"], reason=s["reason"], runs=s["runs"], states="",
-                         control=((c["t_start"], c["t_end"]) if c else None),
-                         control_reason=(c["reason"] if c else ""), seed=seed)
-    w = WINDOWS[comp]
+    d = DEC_WINDOWS.get(comp) or {}
+    if d.get("t_start"):
+        w = dict(component=comp, t_start=int(pd.Timestamp(d["t_start"], tz="UTC").timestamp()),
+                 t_end=int(pd.Timestamp(d["t_end"], tz="UTC").timestamp()), days=d.get("days"),
+                 n_days=d.get("days"), states="", rule="decisions.csv",
+                 reason="decisions.csv: %s" % d.get("reason", ""))
+    else:
+        w = dict(MK.window_from_days(ELINES, comp, min_days=MIN_WINDOW_DAYS), rule="")
+        w["rule"] = "days:%s" % (w["states"] or "none")
+    w["line"] = LINE[comp]
+    w["seed"] = seed
+    if w["t_start"]:
+        a, b = MK.random_block(t0_rec, n_rec, int(w["t_end"] - w["t_start"]), seed,
+                               exclude=(w["t_start"] - t0_rec, w["t_end"] - t0_rec))
+        w["control"] = (t0_rec + a, t0_rec + b)
+        w["control_reason"] = ("a block of the same %.2f d placed at random elsewhere in the record, "
+                               "seed %d: %s to %s UTC"
+                               % (w["days"], seed, pd.Timestamp(w["control"][0], unit="s"),
+                                  pd.Timestamp(w["control"][1], unit="s")))
+        w["bounds"] = FM.window_bounds(w, rule=w["rule"], threshold=MIN_WINDOW_DAYS)
+        w["control_bounds"] = FM.window_bounds(dict(t_start=w["control"][0], t_end=w["control"][1]),
+                                               rule="random_block", threshold=MIN_WINDOW_DAYS)
+    else:
+        w["control"], w["control_reason"] = None, ""
+        w["bounds"], w["control_bounds"] = {}, {}
+    WINDOWS[comp] = w
     WIN_ROWS.append(dict(component=comp, line=LINE[comp], against=COMP_H[comp], t_start=w["t_start"],
-                         t_end=w["t_end"], hours=w["hours"], days=w["days"], cut=w["cut"],
-                         mean_score=w["mean_score"], hours_above=s["n_hours_above"],
-                         hours_scored=s["n_hours_scored"], seed=seed,
+                         t_end=w["t_end"], days=w["days"], n_days=w["n_days"], states=w["states"],
+                         rule=w["rule"], seed=seed,
                          control_start=(w["control"][0] if w["control"] else None)))
+print("the window of each row: the longest run of sound days of that row's own line, floor %.2f d"
+      % MIN_WINDOW_DAYS)
 print(pd.DataFrame(WIN_ROWS).to_string(index=False))
 for comp in COMPONENTS:
     w = WINDOWS[comp]
     print("   %s: %s" % (comp, w["reason"]))
     if w["control"]:
         print("      control: %s" % w["control_reason"])
-    for _h, _a, _b in w["runs"][:5]:
-        print("      %4d h  %s .. %s UTC" % (_h, pd.Timestamp(_a, unit="s"), pd.Timestamp(_b, unit="s")))
 '''),
 
 ("code", '''for comp in COMPONENTS:
     w = WINDOWS[comp]
     if not w["t_start"]:
-        print("   %s: no stretch (%s)" % (comp, w["reason"]))
+        print("   %s: no window proposed (%s)" % (comp, w["reason"]))
         continue
+    # the guard: a form on disk is kept only where the bounds it records are the ones the rule gives now.
+    # A window and its control are one pair -- the control is a block of the window's own length -- so a
+    # difference on either remakes both.
+    notes = []
+    for name, want in (("window_%s" % comp, w["bounds"]),
+                       ("window_%s_control" % comp, w["control_bounds"])):
+        why = FM.bounds_note(FM.recorded_bounds(OUT, SITE, name, BASELINE_KIND, 1, PARAMS), want)
+        if why:
+            notes.append("%s: %s" % (name, why))
+    stale = bool(notes)
+    for note in notes:
+        print("   stale, remade: %s" % note)
+    if not stale:
+        print("   %s: the pair on disk records the bounds the rule gives now (%s), so neither is remade"
+              % (comp, FM.bounds_words(w["bounds"])))
     form("window_%s" % comp, window=(w["t_start"], w["t_end"]), seed=w["seed"],
-         keep_name="the %s stretch, %d h" % (comp, w["hours"]),
-         controls=["window_%s_control" % comp],
-         criterion="beats an equal-length control stretch on the %g-%g s bar by %.0f %%"
+         keep_name="the %s window, %.2f d" % (comp, w["days"]),
+         controls=["window_%s_control" % comp], bounds=w["bounds"], redo=bool(REDO or stale),
+         criterion="beats an equal-length random block on the %g-%g s bar by %.0f %%"
                    % (BAR_BAND[0], BAR_BAND[1], 100 * BAR_MARGIN),
          extra_lines=["window_rule=%s" % w["reason"]])
     form("window_%s_control" % comp, window=w["control"], seed=w["seed"],
-         keep_name="a stretch of the same length placed at random elsewhere in the record, seed %d"
-                   % w["seed"])
+         bounds=w["control_bounds"], redo=bool(REDO or stale),
+         keep_name="a random block of the same length elsewhere in the record, seed %d" % w["seed"])
 '''),
 
-("md", r"""The record with each component's stretch as a solid span and its equal-length control hatched.
-What to look for is the stretch sitting where that line's hours score above the threshold and the control
-landing somewhere the line is neither obviously better nor worse: the two cost the same number of hours, so
-the difference between their transfer functions is what the stretch bought."""),
+("md", r"""The record with each component's window as a solid span and its equal-length random block
+hatched. What to look for is the window sitting where that line's days are alive and the block landing
+somewhere the line is neither obviously better nor worse: the two cost the same, so the difference between
+their transfer functions is what the window bought."""),
 
 ("code", '''_t0w, _arrw, _metaw = CACHE.load(SITE, WORK, 1)
 spans = []
@@ -444,23 +498,22 @@ for comp in COMPONENTS:
     w = WINDOWS[comp]
     if not w["t_start"]:
         continue
-    spans.append(("%s stretch, %d h" % (comp, w["hours"]), FF.SPAN_COLOUR[comp], None,
+    spans.append(("%s window, %.1f d" % (comp, w["days"]), FF.SPAN_COLOUR[comp], None,
                   [(w["t_start"], w["t_end"])]))
-    spans.append(("%s control, seed %d" % (comp, w["seed"]), "0.4", "//", [w["control"]]))
+    spans.append(("%s block, seed %d" % (comp, w["seed"]), "0.4", "//", [w["control"]]))
 fig = FF.record_spans(_t0w, _arrw, OUT / "08_windows_record.png", site=SITE, spans=spans,
-                      title="%s: the stretches and their equal-length controls" % SITE,
+                      title="%s: the windows and their equal-length blocks" % SITE,
                       caption="The record as a per-minute mean over its per-minute envelope, with each "
-                              "component's stretch drawn as a solid span in that component's colour and its "
-                              "control hatched beside it. A stretch is the longest contiguous run of whole "
-                              "UTC hours in which that component's own line reads above %.2f against the "
-                              "magnetic channel it couples to, over %g-%g s at %d s Welch segments on the "
-                              "%g Hz cache, cut to its best %d h where it runs longer. The control is a "
-                              "stretch of the same length placed at random elsewhere in the record under the "
-                              "seed printed above and not overlapping the selection, so the two cost the "
-                              "same number of hours and only the choosing differs: %s."
-                              % (SEL.WINDOW_COH, SEL.SCORE_BAND_S[0], SEL.SCORE_BAND_S[1],
-                                 SEL.SCORE_SEGMENT_S, SEL.SCORE_RATE, SEL.STRETCH_MAX_H,
-                                 "; ".join("%s keeps %s h" % (c, WINDOWS[c]["hours"])
+                              "component's window drawn as a solid span in that component's colour and its "
+                              "control hatched beside it. A window is the longest run of days the elines "
+                              "table calls sound for that component's own line, with the weak days admitted "
+                              "and named where no sound run reaches the %.2f d floor. The control is a "
+                              "block of the same length placed at random elsewhere in the record under the "
+                              "seed printed above, so the two cost the same and only the choosing differs: "
+                              "%s."
+                              % (MIN_WINDOW_DAYS,
+                                 "; ".join("%s keeps %s d on %s days" % (c, WINDOWS[c]["days"],
+                                                                         WINDOWS[c]["states"] or "decided")
                                            for c in COMPONENTS)))
 WRITTEN.append(OUT / "08_windows_record.png")
 display(Image(filename=str(OUT / "08_windows_record.png")))
@@ -480,7 +533,7 @@ for comp in COMPONENTS:
              got["untouched_unchanged"]))
     FORM_ROWS.append(dict(site=SITE, form="merged_%s" % comp, kind=BASELINE_KIND, rate_hz=1.0,
                           params=PARAMS, transfer_function=str(out), controls="", seed=None, status="made",
-                          criterion="the whole record for the healthy row and the tipper, the %s stretch for "
+                          criterion="the whole record for the healthy row and the tipper, the %s window for "
                                     "the other" % comp, error="", days=None, n_runs=None, seconds=None))
 if not MERGES:
     print("   no windowed transfer function was made, so nothing was merged")
@@ -490,7 +543,7 @@ if not MERGES:
 for comp in COMPONENTS:
     w = WINDOWS[comp]
     if not w["t_start"]:
-        bad.append("%s: no stretch was found (%s)" % (comp, w["reason"][:80]))
+        bad.append("%s: no window was proposed (%s)" % (comp, w["reason"][:80]))
         continue
     for name in ("window_%s" % comp, "window_%s_control" % comp):
         r = made_tf(name)
@@ -519,23 +572,23 @@ for m in MERGES:
 if bad:
     print("VERDICT: FAIL -- %s" % "; ".join(bad))
 elif not MERGES:
-    print("VERDICT: UNJUDGED -- no stretch was merged, so the merge was not scored")
+    print("VERDICT: UNJUDGED -- no window was merged, so the merge was not scored")
 elif not all(m["ok"] for m in MERGES):
     print("VERDICT: FAIL -- a merge changed a row other than its component's two: %s"
           % "; ".join("%s changed %s" % (m["component"], ",".join(m["rows_changed"]))
                       for m in MERGES if not m["ok"]))
 elif not beaten:
-    print("VERDICT: UNJUDGED -- no stretch and control pair was scored")
+    print("VERDICT: UNJUDGED -- no window and block pair was scored")
 else:
     promoted = [c for c, ok, _x, _y in beaten if ok]
     inconsistent = [c for c, ok, x, y in beaten if ok and not DL.beats(x, y, BAR_MARGIN)]
     if inconsistent:
-        print("VERDICT: FAIL -- %s promoted without beating its control stretch on the %g-%g s bar by %.0f %%"
+        print("VERDICT: FAIL -- %s promoted without beating its random block on the %g-%g s bar by %.0f %%"
               % (", ".join(inconsistent), BAR_BAND[0], BAR_BAND[1], 100 * BAR_MARGIN))
     else:
         print("VERDICT: PASS -- every merge changed exactly its component's two rows (%s) and left the rest "
-              "untouched, every stretch carries a control of the same length drawn under its seed, and the "
-              "%d promoted stretch(es) (%s) beat their control on the %g-%g s bar by at least %.0f %%: %s"
+              "untouched, every window carries an equal-length random block drawn under its seed, and the "
+              "%d promoted window(s) (%s) beat their block on the %g-%g s bar by at least %.0f %%: %s"
               % ("; ".join("%s -> %s" % (m["component"], ",".join(m["rows_changed"])) for m in MERGES),
                  len(promoted), ", ".join(promoted) or "none", BAR_BAND[0], BAR_BAND[1],
                  100 * BAR_MARGIN,
@@ -544,7 +597,7 @@ else:
 '''),
 
 ("md", r"""The windowed transfer function, its control and the merged file against the whole record. What to
-look for is the merged curve following the whole record on the row the stretch did not touch and the
+look for is the merged curve following the whole record on the row the window did not touch and the
 windowed curve on the row it did: that is the merge rule drawn, and a departure on the untouched row is the
 failure the check above scores."""),
 
@@ -559,9 +612,9 @@ for k, comp in enumerate(COMPONENTS):
             curves.append((name, read(r["transfer_function"]), "C%d" % (3 * k + off), ls))
 if len(curves) > 1:
     fig = FF.form_panels(curves, SITE, OUT / "09_window_transfer_functions.png",
-                         title="%s: the stretch transfer functions and the merges" % SITE,
-                         caption="Each component's windowed pass, the equal-length control stretch that "
-                                 "sizes it, and the merged file that carries the stretch's two impedance "
+                         title="%s: the window transfer functions and the merges" % SITE,
+                         caption="Each component's windowed pass, the equal-length random block that "
+                                 "sizes it, and the merged file that carries the window's two impedance "
                                  "rows into a copy of the whole record, all against the whole record in "
                                  "black. The merged curve is the one delivered: only that component's two "
                                  "rows differ from the black, and the tipper and the other row are the "
@@ -1675,7 +1728,13 @@ record carries no control at all and is read and not promoted, like any other fo
 The decisions.csv cells this workbook proposes are printed below and are not written unless WRITE_DECISIONS
 is True. Decisions are the analyst's."""),
 
-("code", '''TABLE = DL.forms_table(FORM_ROWS, OUT / "forms.csv", baseline_path=BASE, bar_band=tuple(BAR_BAND),
+("code", '''REFUSED = [r for r in FORM_ROWS if not FM.is_form_name(r.get("form"))]
+if REFUSED:
+    print("refused, not carried into the table: %d row(s) name a form no section of this workbook makes "
+          "(%s); the set is auslamp_proc.site.forms.FORM_NAMES"
+          % (len(REFUSED), ", ".join(sorted({str(r.get("form")) for r in REFUSED}))))
+FORM_ROWS[:] = [r for r in FORM_ROWS if FM.is_form_name(r.get("form"))]
+TABLE = DL.forms_table(FORM_ROWS, OUT / "forms.csv", baseline_path=BASE, bar_band=tuple(BAR_BAND),
                        agree_band=tuple(AGREE_BAND), margin=BAR_MARGIN)
 WRITTEN.append(OUT / "forms.csv")
 cols = ["form", "kind", "rate_hz", "status", "controls", "bar_10_1000", "control_bar", "rho_ratio_xy",
@@ -1704,7 +1763,7 @@ for c in COMPONENTS:
     bars = ";".join("%s %.4f" % (r.form, r.bar_10_1000) for r in TABLE.itertuples()
                     if str(r.form).startswith("window_%s" % c) and np.isfinite(r.bar_10_1000))
     evidence.append(dict(component=c, record_days=round(n_rec / 86400.0, 2), in_use=False,
-                         evidence="control: a stretch of the same length placed at random elsewhere, "
+                         evidence="control: a block of the same length placed at random elsewhere, "
                                   "seed %d; %g-%g s bar %s"
                                   % (WINDOWS[c]["seed"], BAR_BAND[0], BAR_BAND[1], bars or "not scored")))
 WIN_TABLE = MK.windows_table(SITE, OUT.name, WINDOWS, evidence)
@@ -1736,7 +1795,12 @@ else:
     print("NOT written: WRITE_DECISIONS is False, and decisions are the analyst's")
 '''),
 
-("md", r"""## 10. What was written"""),
+("md", r"""## 10. What was written
+
+The run folder is also read back for strays: an EDI whose form name is outside the set this workbook can
+produce, which is a form left by a workbook that has since been cut. It is named here and read by nothing --
+workbook 05 skips it and names it in its own first cell -- because the section that made it took with it the
+criterion the form was judged on, and a form with no criterion cannot be read against one."""),
 
 ("code", '''rows = []
 for p in list(WRITTEN) + sorted(OUT.glob("*")):
@@ -1746,6 +1810,15 @@ for p in list(WRITTEN) + sorted(OUT.glob("*")):
 files = pd.DataFrame(rows).drop_duplicates("file").sort_values("file")
 print("%d file(s), %.1f MB, in %.1f minutes" % (len(files), files.kb.sum() / 1024, (time.time() - T0) / 60))
 print(files.to_string(index=False))
+print()
+STRAYS = FM.strays(OUT, [SITE])
+if STRAYS:
+    print("%d stray transfer function(s) in the run folder: a form no section of this workbook makes, read "
+          "by nothing here and skipped by workbook 05" % len(STRAYS))
+    for p, name in STRAYS:
+        print("   %-14s %s (%.1f kB)" % (name, p.name, p.stat().st_size / 1024))
+else:
+    print("no stray transfer function in the run folder: every EDI here carries a form this workbook makes")
 print()
 cost = pd.DataFrame([dict(form=r.get("form"), rate_hz=r.get("rate_hz"), status=r.get("status"),
                           days=r.get("days"), runs=r.get("n_runs"), seconds=r.get("seconds"),
