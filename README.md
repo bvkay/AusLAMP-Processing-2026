@@ -22,7 +22,7 @@ Author: Ben Kay (bvkay). Started 2026-09-13; re-cut for the workbook layout 2026
 
 The readers are the released packages (mt-io 0.0.5, mth5 0.6.9, mt-metadata 1.0.11); nothing depends on a fork.
 
-Launch the workbooks as `python -m jupyterlab`, and run the runner as `python workbooks/run_workbooks.py 01`,
+Launch the workbooks as `python -m jupyterlab`, and run the runner as `python generator/run_workbooks.py 01`,
 with the environment's own interpreter. The `jupyter` dispatcher resolves its subcommands from PATH, which on
 a machine with a base Anaconda install is a different nbconvert from the environment's, so `python -m jupyter
 ...` silently escapes the environment where `python -m jupyterlab` and `python -m nbconvert` do not.
@@ -47,10 +47,10 @@ A survey is processed by the batch entry, which runs workbook 03's own code path
 `--redo --sites Q49 Q84` rebuilds those sites' references and remakes every transfer function of theirs, and
 leaves every other site alone.
 
-Each workbook is generated from its own module -- `workbooks/wb01_survey.py` to `workbooks/wb05_final.py`,
+Each workbook is generated from its own module -- `generator/wb01_survey.py` to `generator/wb05_final.py`,
 each holding that workbook as one Python list of markdown and code cells -- which
-`workbooks/make_workbooks.py` imports and writes. A workbook is executed in place by
-`workbooks/run_workbooks.py`, which fails on a non-zero nbconvert exit, on any cell carrying an error output
+`generator/make_workbooks.py` imports and writes into `workbooks/`. A workbook is executed in place by
+`generator/run_workbooks.py`, which fails on a non-zero nbconvert exit, on any cell carrying an error output
 and on any code cell that was not run. A student changes the parameter cell of a notebook (the site, the survey,
 a threshold) and runs it; a change to what a workbook does is made in its module and the notebook regenerated,
 because the modules are the source the shipped notebooks are checked against.
@@ -76,7 +76,8 @@ electric line.
 
     auslamp_proc/     the package (survey tables, raw readers and placement, cache, look, geo, observatory, register, figures, processing, transfer functions and agreement)
     auslamp_proc/bands/   the two EMTF band files with the level count and window length each belongs to
-    workbooks/        one module per workbook, the generator, the runner and the five workbooks
+    workbooks/        the five workbooks a student opens, one site at a time after the survey
+    generator/        one module per workbook (the cells as Python lists), the generator that writes workbooks/ and the runner
     surveys/          one folder per survey: survey.yaml, sites.csv, decisions.csv, SITES_COLUMNS.md in _template/
     tools/            one-off builders: the coastline the map draws, the sheet cells merged into a survey's tables
     tests/            pytest over the raw readers, the register, the selection rule and the regression the delivery must reproduce

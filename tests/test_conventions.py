@@ -233,7 +233,7 @@ def test_the_generator_reproduces_every_shipped_notebook(tmp_path):
     A notebook is never edited in place: the generator is edited and re-run. This is the test of that rule,
     and it compares the cell SOURCES and not the outputs, which are the record of one execution.
     """
-    sys.path.insert(0, str(ROOT / "workbooks"))
+    sys.path.insert(0, str(ROOT / "generator"))
     for mod in ("make_workbooks", "wb01_survey", "wb02_records", "wb03_site", "wb04_site", "wb05_final"):
         sys.modules.pop(mod, None)
     import make_workbooks as MW

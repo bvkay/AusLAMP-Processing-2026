@@ -1,6 +1,6 @@
 r"""Workbook 03, one site: its references, its transfer functions and the page of them.
 
-The cells are a Python list of ("md", text) and ("code", source). workbooks/make_workbooks.py imports the
+The cells are a Python list of ("md", text) and ("code", source). generator/make_workbooks.py imports the
 list from here and writes 03_site.ipynb.
 
 @author: ben kay (ben@auscope.org.au)

@@ -1,6 +1,6 @@
 r"""Workbook 01, the survey: the site table, the map, the register and the observatory.
 
-The cells are a Python list of ("md", text) and ("code", source). workbooks/make_workbooks.py imports the
+The cells are a Python list of ("md", text) and ("code", source). generator/make_workbooks.py imports the
 list from here and writes 01_survey.ipynb.
 
 @author: ben kay (ben@auscope.org.au)

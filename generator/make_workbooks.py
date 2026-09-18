@@ -1,11 +1,11 @@
 r"""Write the workbooks. Each is a Python list of ("md", text) and ("code", source) held in its own module.
 
-    python workbooks/make_workbooks.py            all
-    python workbooks/make_workbooks.py 01         some, by prefix
+    python generator/make_workbooks.py            all
+    python generator/make_workbooks.py 01         some, by prefix
 
 Then execute them, which is what puts the outputs in:
 
-    python workbooks/run_workbooks.py 01
+    python generator/run_workbooks.py 01
 
 A notebook is never edited in place; the generator is edited and re-run.
 
@@ -24,7 +24,8 @@ from pathlib import Path
 
 import nbformat as nbf
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent          # the generator modules
+WORKBOOKS = HERE.parent / "workbooks"            # where the notebooks are written
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
@@ -53,7 +54,7 @@ def main(argv):
     if argv:
         names = [n for n in names if any(n.startswith(a) for a in argv)]
     for name in names:
-        path = HERE / name
+        path = WORKBOOKS / name
         nbf.write(nb(NOTEBOOKS[name]), path)
         print("wrote %s (%d cells)" % (path, len(NOTEBOOKS[name])))
     return 0

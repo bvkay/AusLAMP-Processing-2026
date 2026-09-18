@@ -1,10 +1,10 @@
 """Execute the workbooks in place and report every error cell.
 
-    python workbooks/run_workbooks.py 01                              by prefix, in place
-    python workbooks/run_workbooks.py                                 all, in order
-    python workbooks/run_workbooks.py 01 --survey queensland_phase2   a copy, on another survey
-    python workbooks/run_workbooks.py 02 --survey victoria --set SITES='"largest"' --set MAX_SITES=13
-    python workbooks/run_workbooks.py 03 --timeout 21600              a workbook that processes
+    python generator/run_workbooks.py 01                              by prefix, in place
+    python generator/run_workbooks.py                                 all, in order
+    python generator/run_workbooks.py 01 --survey queensland_phase2   a copy, on another survey
+    python generator/run_workbooks.py 02 --survey victoria --set SITES='"largest"' --set MAX_SITES=13
+    python generator/run_workbooks.py 03 --timeout 21600              a workbook that processes
 
 With --survey the workbook is copied to workbooks/examples/<survey>/<name>.ipynb with its outputs cleared and
 its SURVEY assignment rewritten, and that copy is executed. The workbook in workbooks/ is not touched, so the
@@ -41,7 +41,7 @@ from pathlib import Path
 
 import nbformat as nbf
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent.parent / "workbooks"   # the notebooks, one folder up
 PY = sys.executable
 KERNEL = "auslamp-processing-2026"
 

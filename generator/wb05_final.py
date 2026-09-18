@@ -1,6 +1,6 @@
 r"""Workbook 05, one site's final transfer function: the tests, the choice, the file.
 
-The cells are a Python list of ("md", text) and ("code", source). workbooks/make_workbooks.py imports the
+The cells are a Python list of ("md", text) and ("code", source). generator/make_workbooks.py imports the
 list from here and writes 05_final.ipynb.
 
 @author: ben kay (ben@auscope.org.au)

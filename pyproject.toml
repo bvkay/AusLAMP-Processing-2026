@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "auslamp-proc"
 version = "0.1.0"
-description = "Long-period AusLAMP MT processing (EDL PR6-24 and LEMI-424) in six workbooks on mt-metadata, mt-io, mth5 and Aurora"
+description = "Long-period AusLAMP MT processing (EDL PR6-24 and LEMI-424) in five workbooks on mt-metadata, mt-io, mth5 and Aurora"
 authors = [{ name = "Ben Kay" }]
 requires-python = ">=3.12"
 dependencies = [
